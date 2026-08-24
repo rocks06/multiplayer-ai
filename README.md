@@ -30,6 +30,23 @@ Phase 1A is being implemented as incremental, runnable vertical slices.
 
 PostgreSQL remains the source of truth. Notifications only wake the realtime gateway; every delivery/recovery pump reads the durable room event stream after the connection's last sent contiguous sequence. HTTP remains the command channel and no mutation exists only in WebSocket memory.
 
+### Slice 3 — Durable agent runtime
+
+- durable PostgreSQL `agent_runs` queue, checkpoints, attempts, leases, and terminal status;
+- independent worker process with renewable leases and expired-lease recovery;
+- bounded fake-provider retries and durable retry status;
+- run-local cancellation generations plus agent-wide pause generations;
+- a Phase 1A scheduler-only one-active-run-per-agent/per-room partial index;
+- normalized briefing and authorized room snapshot context assembly;
+- deterministic scripted fake provider with controlled barriers and failures;
+- `room.send_message`, `task.get`, `task.list_eligible`, `task.update_status`, and `task.complete` tools only;
+- tool execution through `RoomService` under the agent principal, never its human owner;
+- in-transaction lease, generation, status, and membership fencing on every room mutation;
+- stable per-run tool idempotency keys and durable `agent_tool_calls` records;
+- durable run queued/started/resumed/retry/completed/failed/cancelled events.
+
+The worker does not mutate `messages`, `tasks`, or other room domain tables directly. Mutating tools use the same permissioned, optimistic, idempotent application commands used by human principals. The deterministic provider and its scripted input are development/test infrastructure for Phase 1A—not a general provider API or production model integration.
+
 ## Realtime protocol
 
 Connect to:
@@ -68,7 +85,11 @@ docker compose -f infra/docker-compose.yml up -d
 pnpm install
 DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm db:migrate
 DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm test
+pnpm build
 DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm start
+DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm start:worker
 ```
 
-Advanced OIDC, agent execution, decisions/approval/resume, provider adapters, and the product UI remain subsequent slices.
+The API queues and controls runs; the worker claims and executes them independently. `WORKER_ID`, `AGENT_LEASE_MS`, and `AGENT_POLL_MS` may be set for local runtime testing.
+
+Real model providers, production authentication, decisions/approval/resume, external actions, agent memory, artifacts, and the product UI remain subsequent slices.

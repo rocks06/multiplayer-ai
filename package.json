@@ -5,7 +5,9 @@
   "packageManager": "pnpm@10.32.1",
   "scripts": {
     "dev": "tsx watch apps/api/src/server.ts",
-    "start": "tsx apps/api/src/server.ts",
+    "dev:worker": "tsx watch apps/worker/src/server.ts",
+    "start": "node dist/apps/api/src/server.js",
+    "start:worker": "node dist/apps/worker/src/server.js",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
