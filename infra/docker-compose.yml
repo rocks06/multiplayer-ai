@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: multiplayer_ai
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d multiplayer_ai"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - multiplayer_ai_pg:/var/lib/postgresql/data
+
+volumes:
+  multiplayer_ai_pg:

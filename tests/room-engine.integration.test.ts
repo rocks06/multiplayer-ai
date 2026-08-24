@@ -1,0 +1,31 @@
+import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
+import * as pg from "pg";
+import { readFile } from "node:fs/promises";
+import { buildApp } from "../apps/api/src/app.js";
+const {Pool}=pg;
+const connectionString=process.env.DATABASE_URL??'postgres://postgres:postgres@127.0.0.1:55432/multiplayer_ai';
+const pool=new Pool({connectionString});
+const app=buildApp(pool);
+async function reset(){await pool.query(`TRUNCATE command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`)}
+async function post(url:string,payload:unknown,headers:Record<string,string>={}): Promise<any> {return await app.inject({method:'POST',url,payload:payload as any,headers})}
+async function setup(){
+ const company=(await post('/v1/companies',{name:'Acme'})).json();
+ const alex=(await post(`/v1/companies/${company.id}/humans`,{email:`alex-${crypto.randomUUID()}@example.com`,display_name:'Alex'})).json();
+ const sarah=(await post(`/v1/companies/${company.id}/humans`,{email:`sarah-${crypto.randomUUID()}@example.com`,display_name:'Sarah'})).json();
+ const alexAgent=(await post(`/v1/companies/${company.id}/agents`,{owner_user_id:alex.user_id,name:"Alex's Agent"})).json();
+ const project=(await post(`/v1/companies/${company.id}/projects`,{name:'Launch',objective:'Ship the multiplayer room'},{'x-principal-id':alex.principal_id})).json();
+ const room=(await post(`/v1/companies/${company.id}/projects/${project.id}/rooms`,{name:'Launch Room',responsibilities:'Manage delivery'},{'x-principal-id':alex.principal_id})).json();
+ await post(`/v1/companies/${company.id}/rooms/${room.id}/members`,{principal_id:sarah.principal_id,role:'contributor',responsibilities:'Product research'},{'x-principal-id':alex.principal_id,'idempotency-key':'member-sarah'});
+ await post(`/v1/companies/${company.id}/rooms/${room.id}/members`,{principal_id:alexAgent.principal_id,role:'worker_agent',responsibilities:'Backend implementation'},{'x-principal-id':alex.principal_id,'idempotency-key':'member-agent'});
+ return {company,alex,sarah,alexAgent,project,room};
+}
+beforeAll(async()=>{await pool.query(await readFile('packages/db/schema.sql','utf8'));await app.ready()});
+beforeEach(reset);
+afterAll(async()=>{await app.close()});
+
+describe('Phase 1A vertical slice',()=>{
+ it('keeps conversation first-class and agent-addressed communication manager-auditable',async()=>{const s=await setup(); const first=await post(`/v1/companies/${s.company.id}/rooms/${s.room.id}/messages`,{body:'Can you send the implementation summary?',addressed_principal_id:s.alexAgent.principal_id},{'x-principal-id':s.sarah.principal_id,'idempotency-key':'message-1'}); expect(first.statusCode).toBe(200); const snap=await app.inject({method:'GET',url:`/v1/companies/${s.company.id}/rooms/${s.room.id}/snapshot`,headers:{'x-principal-id':s.alex.principal_id}}); expect(snap.statusCode).toBe(200); expect(snap.json().messages[0].body_text).toContain('implementation summary'); expect(snap.json().messages[0].task_id).toBeNull(); expect(snap.json().briefing.project_objective).toBe('Ship the multiplayer room'); expect(snap.json().briefing.joining_principal.role).toBe('manager');});
+ it('makes duplicate commands idempotent and events ordered',async()=>{const s=await setup(); const url=`/v1/companies/${s.company.id}/rooms/${s.room.id}/tasks`; const headers={'x-principal-id':s.alex.principal_id,'idempotency-key':'task-1'}; const a=await post(url,{title:'Build API',description:'First slice',assignee_principal_id:s.alexAgent.principal_id},headers); const b=await post(url,{title:'Build API',description:'First slice',assignee_principal_id:s.alexAgent.principal_id},headers); expect(a.statusCode).toBe(200); expect(b.json().id).toBe(a.json().id); const events=await app.inject({method:'GET',url:`/v1/companies/${s.company.id}/rooms/${s.room.id}/events?after_seq=0`,headers:{'x-principal-id':s.alex.principal_id}}); const rows=events.json().events; expect(rows.map((e:any)=>e.room_seq)).toEqual(rows.map((_:any,i:number)=>i+1)); expect(rows.filter((e:any)=>e.event_type==='task.created')).toHaveLength(1);});
+ it('rejects stale simultaneous task writes',async()=>{const s=await setup(); const made=await post(`/v1/companies/${s.company.id}/rooms/${s.room.id}/tasks`,{title:'Concurrent task',description:'',assignee_principal_id:s.alexAgent.principal_id},{'x-principal-id':s.alex.principal_id,'idempotency-key':'task-c'}); const task=made.json(); const url=`/v1/companies/${s.company.id}/rooms/${s.room.id}/tasks/${task.id}/status`; const one=await app.inject({method:'PATCH',url,payload:{status:'in_progress',expected_version:1},headers:{'x-principal-id':s.alexAgent.principal_id,'idempotency-key':'status-1'}}); const stale=await app.inject({method:'PATCH',url,payload:{status:'cancelled',expected_version:1},headers:{'x-principal-id':s.alex.principal_id,'idempotency-key':'status-2'}}); expect(one.statusCode).toBe(200); expect(stale.statusCode).toBe(409); expect(stale.json().error.code).toBe('version_conflict');});
+ it('enforces room isolation for snapshots and event replay',async()=>{const a=await setup(); const outsiderCompany=(await post('/v1/companies',{name:'Other'})).json(); const outsider=(await post(`/v1/companies/${outsiderCompany.id}/humans`,{email:`out-${crypto.randomUUID()}@example.com`,display_name:'Outsider'})).json(); const snap=await app.inject({method:'GET',url:`/v1/companies/${a.company.id}/rooms/${a.room.id}/snapshot`,headers:{'x-principal-id':outsider.principal_id}}); const events=await app.inject({method:'GET',url:`/v1/companies/${a.company.id}/rooms/${a.room.id}/events`,headers:{'x-principal-id':outsider.principal_id}}); expect(snap.statusCode).toBe(403); expect(events.statusCode).toBe(403);});
+});
