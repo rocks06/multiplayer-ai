@@ -7,6 +7,6 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["apps/**/*.ts", "packages/**/*.ts"],
+  "include": ["apps/api/**/*.ts", "apps/worker/**/*.ts", "packages/**/*.ts"],
   "exclude": ["tests", "dist", "node_modules"]
 }

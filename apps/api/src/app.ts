@@ -1,5 +1,8 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
+import fastifyStatic from "@fastify/static";
+import {existsSync} from "node:fs";
+import {resolve} from "node:path";
 import { z } from "zod";
 import { DomainError } from "../../../packages/domain/src/index.js";
 import { createPool, type DbPool } from "./db.js";
@@ -72,6 +75,11 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
       }
     });
   });
+  const webRoot=resolve(process.cwd(),'dist/web');
+  if(existsSync(webRoot)){
+    app.register(fastifyStatic,{root:webRoot,wildcard:false});
+    app.get('/rooms/*',async(_request,reply)=>reply.sendFile('index.html'));
+  }
   app.addHook('onReady',async()=>{await realtime.start()});
   app.addHook('onClose',async()=>{await realtime.stop();await pool.end()});
   return app;
