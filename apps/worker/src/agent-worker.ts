@@ -7,7 +7,7 @@ export interface WorkerHooks {beforeTool?:(lease:RunLease,step:Extract<FakeScrip
 
 export class AgentWorker {
  constructor(private readonly runtime:AgentRuntimeService,private readonly provider:DeterministicFakeProvider,private readonly options:{workerId:string;leaseMs:number;hooks?:WorkerHooks}){}
- async runOnce():Promise<'idle'|'completed'|'failed'|'retry_scheduled'|'cancelled'> {
+ async runOnce():Promise<'idle'|'waiting_for_decision'|'completed'|'failed'|'retry_scheduled'|'cancelled'> {
   const lease=await this.runtime.claimNext(this.options.workerId,this.options.leaseMs);if(!lease)return 'idle';
   const heartbeat=setInterval(()=>{void this.runtime.renewLease(lease,this.options.leaseMs)},Math.max(10,Math.floor(this.options.leaseMs/3)));heartbeat.unref();
   try {
@@ -27,6 +27,7 @@ export class AgentWorker {
      await this.options.hooks?.beforeTool?.(lease,instruction.step);
      const result=await this.runtime.executeTool(lease,instruction.step);
      await this.options.hooks?.afterTool?.(lease,instruction.step,result);
+     if(result&&typeof result==='object'&&'waiting_for_decision' in result&&result.waiting_for_decision===true)return 'waiting_for_decision';
      await this.runtime.checkpoint(lease,instruction.step,result);
     }catch(error){
      if(error instanceof SimulatedWorkerCrash)throw error;

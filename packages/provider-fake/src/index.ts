@@ -1,14 +1,15 @@
-export type FakeToolName='room.send_message'|'task.get'|'task.list_eligible'|'task.update_status'|'task.complete';
+export type FakeToolName='room.send_message'|'task.get'|'task.list_eligible'|'task.update_status'|'task.complete'|'decision.request'|'decision.get';
 export type FakeScriptStep=
  | {kind:'tool';id:string;name:FakeToolName;arguments:Record<string,unknown>}
  | {kind:'barrier';id:string;name:string}
  | {kind:'expect_message';id:string;includes:string;sender_principal_id?:string}
+ | {kind:'expect_decision';id:string;status:'approved'|'rejected';note_includes?:string}
  | {kind:'transient_failure';id:string;times:number}
  | {kind:'permanent_failure';id:string;message:string}
  | {kind:'complete';id:string};
 export type FakeScript=FakeScriptStep[];
 
-export interface FakeContext {messages:Array<{body_text:string;sender_principal_id:string}>;[key:string]:unknown}
+export interface FakeContext {messages:Array<{body_text:string;sender_principal_id:string}>;decision?:{status:string;resolution_note:string|null};[key:string]:unknown}
 export type FakeInstruction={kind:'tool';step:Extract<FakeScriptStep,{kind:'tool'}>}|{kind:'advance'}|{kind:'complete'};
 
 export class FakeProviderError extends Error {
@@ -39,6 +40,11 @@ export class DeterministicFakeProvider {
    case 'expect_message': {
     const found=context.messages.some(message=>message.body_text.includes(step.includes)&&(!step.sender_principal_id||message.sender_principal_id===step.sender_principal_id));
     if(!found)throw new FakeProviderError(`Expected message containing: ${step.includes}`,true,'expected_message_missing');
+    return {kind:'advance'};
+   }
+   case 'expect_decision': {
+    const decision=context.decision;
+    if(!decision||decision.status!==step.status||Boolean(step.note_includes&&!decision.resolution_note?.includes(step.note_includes)))throw new FakeProviderError(`Expected ${step.status} decision context`,true,'expected_decision_missing');
     return {kind:'advance'};
    }
    case 'transient_failure': if(stepAttempt<=step.times)throw new FakeProviderError('Scripted transient provider failure',true,'provider_transient'); return {kind:'advance'};

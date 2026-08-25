@@ -47,6 +47,23 @@ PostgreSQL remains the source of truth. Notifications only wake the realtime gat
 
 The worker does not mutate `messages`, `tasks`, or other room domain tables directly. Mutating tools use the same permissioned, optimistic, idempotent application commands used by human principals. The deterministic provider and its scripted input are development/test infrastructure for Phase 1A—not a general provider API or production model integration.
 
+### Slice 4 — Human decision and agent resume workflow
+
+- structured, room-scoped decisions with `pending`, `approved`, `rejected`, `cancelled`, and `expired` states;
+- immutable proposed actions protected by a canonical SHA-256 digest;
+- durable `waiting_for_decision` agent runs with released leases and persisted checkpoints/context cursors;
+- `decision.request` and `decision.get` agent tools through the runtime authority boundary;
+- human-only approval/rejection under the resolving human's own principal and current manager permission;
+- optional human notes/instructions and optional decision expiry timestamps;
+- optimistic decision versions and idempotent create/approve/reject/cancel commands;
+- automatic durable requeue after approval or rejection, with one-time resume under normal lease/generation fencing;
+- resumed context containing the original request, exact proposed action, human resolution/note, and authorized room events since the pause;
+- cancellation propagation for manager cancellation, agent pause, membership loss, principal/agent invalidation, and expiry;
+- correctly attributed `decision.*`, `agent.run_waiting_for_decision`, and `agent.run_resumed` room events;
+- scoped HTTP create/read/list/approve/reject/cancel endpoints.
+
+A waiting run remains active for the Phase 1A same-agent/room scheduler constraint. Resolution verifies the exact proposed-action digest and expected decision version transactionally before requeueing the run. An agent cannot inherit a supervising human's authority and cannot approve or reject decisions.
+
 ## Realtime protocol
 
 Connect to:
@@ -92,4 +109,4 @@ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm start:w
 
 The API queues and controls runs; the worker claims and executes them independently. `WORKER_ID`, `AGENT_LEASE_MS`, and `AGENT_POLL_MS` may be set for local runtime testing.
 
-Real model providers, production authentication, decisions/approval/resume, external actions, agent memory, artifacts, and the product UI remain subsequent slices.
+Real model providers, production authentication, external actions, agent memory, artifacts, multi-person quorum/approval chains, and the product UI remain subsequent slices.

@@ -35,7 +35,7 @@ const start=(taskId:string):FakeScript[number]=>({kind:'tool',id:'start',name:'t
 const complete=(taskId:string):FakeScript[number]=>({kind:'tool',id:'complete',name:'task.complete',arguments:{task_id:taskId,expected_version:2}});
 const message=(id:string,body:string,addressed?:string):FakeScript[number]=>({kind:'tool',id,name:'room.send_message',arguments:{body,addressed_principal_id:addressed}});
 
-beforeAll(async()=>{await pool.query(await readFile('packages/db/schema.sql','utf8'));await pool.query(await readFile('packages/db/migrations/0002_agent_runtime.sql','utf8'))});
+beforeAll(async()=>{await pool.query(await readFile('packages/db/schema.sql','utf8'))});
 beforeEach(reset);
 afterAll(async()=>pool.end());
 

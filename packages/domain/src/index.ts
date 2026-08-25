@@ -8,12 +8,14 @@ export type Permission =
   | "task.create"
   | "task.update.own"
   | "task.update.any"
-  | "member.manage";
+  | "member.manage"
+  | "decision.request"
+  | "decision.resolve";
 
 export const ROLE_PERMISSIONS: Record<RoomRole, ReadonlySet<Permission>> = {
-  manager: new Set<Permission>(["room.read", "message.send", "task.create", "task.update.own", "task.update.any", "member.manage"]),
+  manager: new Set<Permission>(["room.read", "message.send", "task.create", "task.update.own", "task.update.any", "member.manage", "decision.resolve"]),
   contributor: new Set<Permission>(["room.read", "message.send", "task.create", "task.update.own"]),
-  worker_agent: new Set<Permission>(["room.read", "message.send", "task.update.own"]),
+  worker_agent: new Set<Permission>(["room.read", "message.send", "task.update.own", "decision.request"]),
 };
 
 export function roleHasPermission(role: RoomRole, permission: Permission): boolean {
