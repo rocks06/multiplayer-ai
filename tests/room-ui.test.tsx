@@ -50,6 +50,14 @@ describe('Slice 6 room interface',()=>{
   const calls=vi.mocked(fetch).mock.calls;
   expect(calls.some(([,init])=>init?.method==='POST'&&String(init.body).includes('Check the final citations.'))).toBe(true);
  });
+ it('creates command keys when randomUUID is unavailable on an insecure LAN origin',async()=>{
+  vi.stubGlobal('crypto',{getRandomValues:(bytes:Uint8Array)=>{bytes.fill(7);return bytes}});
+  render(<RoomApp/>);await screen.findByRole('heading',{name:'Launch room'});
+  fireEvent.change(screen.getByLabelText('Message'),{target:{value:'LAN-safe message'}});
+  await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Send message'})));
+  await waitFor(()=>expect(screen.getByLabelText('Message')).toHaveValue(''));
+  expect(vi.mocked(fetch).mock.calls.some(([,init])=>new Headers(init?.headers).get('idempotency-key')==='07070707-0707-4707-8707-070707070707')).toBe(true);
+ });
  it('prevents contributors from resolving decisions',async()=>{
   const contributor={...snapshot,members:snapshot.members.map(member=>member.principal_id===alex?{...member,role:'contributor' as const}:member),briefing:{...snapshot.briefing,joining_principal:{...snapshot.briefing.joining_principal,role:'contributor' as const}}};
   vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(contributor),{status:200,headers:{'content-type':'application/json'}}));
