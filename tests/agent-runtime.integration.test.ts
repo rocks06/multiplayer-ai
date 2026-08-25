@@ -53,7 +53,7 @@ describe('Vertical Slice 3 durable agent runtime',()=>{
   const events=await roomService.events(s.company.id,s.room.id,s.alex.principal_id,0,500);
   const agentEvents=events.events.filter((e:any)=>['message.sent','task.in_progress','task.completed'].includes(e.event_type));
   expect(agentEvents.some((e:any)=>e.actor_principal_id===s.agentA.principal_id&&e.actor_kind==='agent'&&e.actor_display_name==="Alex's Agent — AI")).toBe(true);
-  expect(agentEvents.some((e:any)=>e.actor_principal_id===s.agentB.principal_id&&e.actor_kind==='agent')).toBe(true);
+  expect(agentEvents.some((e:any)=>e.actor_principal_id===s.agentB.principal_id&&e.actor_kind==='agent'&&e.actor_display_name==="Sarah's Agent — AI")).toBe(true);
   expect(agentEvents.every((e:any)=>e.actor_principal_id!==s.alex.principal_id)).toBe(true);
  });
 
@@ -75,9 +75,24 @@ describe('Vertical Slice 3 durable agent runtime',()=>{
   const s=await fixture(); const run=await queue(s,s.agentA,s.taskA,[message('once','after-tool recovery'),{kind:'complete',id:'done'}],'crash-after'); let once=true;
   await expect(worker('crasher',new FakeBarrierController(),{afterTool:()=>{if(once){once=false;throw new SimulatedWorkerCrash('after_tool')}}}).runOnce()).rejects.toBeInstanceOf(SimulatedWorkerCrash);
   expect((await pool.query(`SELECT count(*)::int n FROM messages WHERE body_text='after-tool recovery'`)).rows[0].n).toBe(1);
+  expect((await pool.query(`SELECT count(*)::int n FROM room_events WHERE event_type='message.sent' AND payload->>'body_text'='after-tool recovery'`)).rows[0].n).toBe(1);
   await expire(run.id); await worker('replacement').runOnce();
   expect((await pool.query(`SELECT count(*)::int n FROM messages WHERE body_text='after-tool recovery'`)).rows[0].n).toBe(1);
+  expect((await pool.query(`SELECT count(*)::int n FROM room_events WHERE event_type='message.sent' AND payload->>'body_text'='after-tool recovery'`)).rows[0].n).toBe(1);
+  expect((await pool.query(`SELECT count(*)::int n FROM command_receipts WHERE idempotency_key=$1`,[`agent-run:${run.id}:g${run.run_generation}:once`])).rows[0].n).toBe(1);
+  expect((await pool.query(`SELECT count(*)::int n FROM agent_tool_calls WHERE run_id=$1 AND provider_call_id='once'`,[run.id])).rows[0].n).toBe(1);
   expect((await row(run.id)).status).toBe('completed');
+ });
+
+ it('reuses a committed task completion after a crash without a second transition or event',async()=>{
+  const s=await fixture(); const run=await queue(s,s.agentA,s.taskA,[start(s.taskA.id),complete(s.taskA.id),{kind:'complete',id:'done'}],'crash-after-task'); let toolCount=0;
+  await expect(worker('crasher',new FakeBarrierController(),{afterTool:()=>{toolCount++;if(toolCount===2)throw new SimulatedWorkerCrash('after_task_complete')}}).runOnce()).rejects.toBeInstanceOf(SimulatedWorkerCrash);
+  expect((await pool.query(`SELECT status,version FROM tasks WHERE id=$1`,[s.taskA.id])).rows[0]).toMatchObject({status:'completed',version:3});
+  expect((await pool.query(`SELECT count(*)::int n FROM room_events WHERE event_type='task.completed' AND entity_id=$1`,[s.taskA.id])).rows[0].n).toBe(1);
+  await expire(run.id); expect(await worker('replacement').runOnce()).toBe('completed');
+  expect((await pool.query(`SELECT status,version FROM tasks WHERE id=$1`,[s.taskA.id])).rows[0]).toMatchObject({status:'completed',version:3});
+  expect((await pool.query(`SELECT count(*)::int n FROM room_events WHERE event_type='task.completed' AND entity_id=$1`,[s.taskA.id])).rows[0].n).toBe(1);
+  expect((await pool.query(`SELECT count(*)::int n FROM command_receipts WHERE idempotency_key=$1`,[`agent-run:${run.id}:g${run.run_generation}:complete`])).rows[0].n).toBe(1);
  });
 
  it('rejects lease renewal and terminal writes from an expired worker',async()=>{
@@ -91,9 +106,11 @@ describe('Vertical Slice 3 durable agent runtime',()=>{
  });
 
  it('retries transient provider failure within the bound and fails permanent provider errors',async()=>{
-  const s=await fixture(); const transient=await queue(s,s.agentA,s.taskA,[{kind:'transient_failure',id:'flaky',times:2},{kind:'complete',id:'done'}],'transient',3);
+  const s=await fixture(); const transient=await queue(s,s.agentA,s.taskA,[message('before-retry','committed before retry'),{kind:'transient_failure',id:'flaky',times:2},{kind:'complete',id:'done'}],'transient',3);
   expect(await worker('w1').runOnce()).toBe('retry_scheduled'); expect(await worker('w2').runOnce()).toBe('retry_scheduled'); expect(await worker('w3').runOnce()).toBe('completed');
   expect((await row(transient.id)).attempt_count).toBe(3);
+  expect((await pool.query(`SELECT count(*)::int n FROM messages WHERE body_text='committed before retry'`)).rows[0].n).toBe(1);
+  expect((await pool.query(`SELECT count(*)::int n FROM room_events WHERE event_type='message.sent' AND payload->>'body_text'='committed before retry'`)).rows[0].n).toBe(1);
   const permanent=await queue(s,s.agentB,s.taskB,[{kind:'permanent_failure',id:'bad',message:'invalid response'}],'permanent',3);
   expect(await worker('w4').runOnce()).toBe('failed'); expect((await row(permanent.id)).status).toBe('failed');
  });
