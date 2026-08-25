@@ -64,6 +64,19 @@ The worker does not mutate `messages`, `tasks`, or other room domain tables dire
 
 A waiting run remains active for the Phase 1A same-agent/room scheduler constraint. Resolution verifies the exact proposed-action digest and expected decision version transactionally before requeueing the run. An agent cannot inherit a supervising human's authority and cannot approve or reject decisions.
 
+### Slice 5 — External Agent Gateway v0.1
+
+- provider/framework-neutral `agent-gateway.v1` over narrow HTTP queries/commands and WebSocket event transport;
+- one-time, hash-only machine credentials bound to one company and one active agent principal;
+- independently hashed, durable, room-bound gateway sessions with connection state, runtime status, heartbeat, last seen, and monotonic acknowledged room sequence;
+- active credential, principal, agent, company, room-membership, and worker-agent-role validation at every protected gateway boundary;
+- authorized room discovery, normalized snapshots/briefings, task reads/updates/completion, room and agent-addressed messages, and external decision request/read;
+- the existing PostgreSQL-authoritative Slice 2 room event stream reused for ordered delivery, replay, duplicate suppression, gap recovery, access revocation, and slow-client resynchronization;
+- identical RoomService permission results and event attribution for hosted and external agents;
+- deterministic fake external-agent HTTP/WebSocket client and concurrent two-agent integration coverage.
+
+External decision requests use the same durable decision model and room events but do not fabricate an internally hosted `agent_run`; the external runtime observes the resolution and owns its continuation. See [`docs/agent-gateway-v1.md`](docs/agent-gateway-v1.md) for authentication, lifecycle, complete HTTP/WebSocket contracts, reconnect semantics, parity guarantees, an adapter-ready connection flow, and explicit Phase 1A security limitations.
+
 ## Realtime protocol
 
 Connect to:
@@ -109,4 +122,4 @@ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm start:w
 
 The API queues and controls runs; the worker claims and executes them independently. `WORKER_ID`, `AGENT_LEASE_MS`, and `AGENT_POLL_MS` may be set for local runtime testing.
 
-Real model providers, production authentication, external actions, agent memory, artifacts, multi-person quorum/approval chains, and the product UI remain subsequent slices.
+Real model providers, production-grade human/machine authentication administration, external actions, agent memory, artifacts, SDK/framework adapters, multi-person quorum/approval chains, and the product UI remain subsequent slices.

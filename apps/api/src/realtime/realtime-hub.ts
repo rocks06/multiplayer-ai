@@ -23,6 +23,11 @@ interface Session {
   lastAckedSeq: number;
   pumping: boolean;
   rerun: boolean;
+  protocol: "room.v1" | "agent-gateway.v1";
+  gatewaySessionId?: string;
+  validate?: () => Promise<void>;
+  onAck?: (roomSeq:number) => Promise<void>;
+  onDisconnect?: () => Promise<void>;
 }
 
 const defaults: Required<RealtimeOptions> = {
@@ -75,7 +80,7 @@ export class RealtimeHub {
     }
   }
 
-  async attach(socket: WebSocket, input: {companyId:string; roomId:string; principalId:string; afterSeq?:number}) {
+  async attach(socket: WebSocket, input: {companyId:string; roomId:string; principalId:string; afterSeq?:number; protocol?:"room.v1"|"agent-gateway.v1"; gatewaySessionId?:string; validate?:()=>Promise<void>; onAck?:(roomSeq:number)=>Promise<void>; onDisconnect?:()=>Promise<void>}) {
     const session: Session = {
       socket,
       companyId: input.companyId,
@@ -85,25 +90,36 @@ export class RealtimeHub {
       lastAckedSeq: input.afterSeq ?? 0,
       pumping: false,
       rerun: false,
+      protocol: input.protocol ?? "room.v1",
+      gatewaySessionId: input.gatewaySessionId,
+      validate: input.validate,
+      onAck: input.onAck,
+      onDisconnect: input.onDisconnect,
     };
-    const cleanup = () => this.sessions.delete(session);
+    let cleaned = false;
+    const cleanup = () => { if(cleaned)return; cleaned=true; this.sessions.delete(session); if(session.onDisconnect)void session.onDisconnect().catch(()=>{}); };
     socket.on("close", cleanup);
     socket.on("error", cleanup);
     socket.on("message", data => this.onClientFrame(session, data.toString()));
 
     try {
+      if(session.validate) await session.validate();
       const latestSeq = await this.service.roomCursor(input.companyId, input.roomId, input.principalId);
       if (input.afterSeq === undefined) {
         const snapshot = await this.service.snapshot(input.companyId, input.roomId, input.principalId);
         session.lastSentSeq = snapshot.snapshot_seq;
         session.lastAckedSeq = snapshot.snapshot_seq;
         this.sessions.add(session);
-        this.send(session, {type:"snapshot",room_id:input.roomId,snapshot_seq:snapshot.snapshot_seq,snapshot});
+        if(session.protocol==="agent-gateway.v1") {
+          this.send(session,{type:"session.ready",protocol:"agent-gateway.v1",session_id:session.gatewaySessionId!,room_id:input.roomId,agent_principal_id:input.principalId,latest_seq:snapshot.snapshot_seq});
+          this.send(session,{type:"room.snapshot",room_id:input.roomId,snapshot_seq:snapshot.snapshot_seq,snapshot});
+        } else this.send(session, {type:"snapshot",room_id:input.roomId,snapshot_seq:snapshot.snapshot_seq,snapshot});
       } else {
         if (input.afterSeq > latestSeq) return this.requireResync(session, "cursor_ahead", latestSeq);
         if (latestSeq - input.afterSeq > this.options.maxReplayEvents) return this.requireResync(session, "stale_cursor", latestSeq);
         this.sessions.add(session);
-        this.send(session, {type:"resumed",room_id:input.roomId,after_seq:input.afterSeq,latest_seq:latestSeq});
+        if(session.protocol==="agent-gateway.v1") this.send(session,{type:"session.ready",protocol:"agent-gateway.v1",session_id:session.gatewaySessionId!,room_id:input.roomId,agent_principal_id:input.principalId,after_seq:input.afterSeq,latest_seq:latestSeq});
+        else this.send(session, {type:"resumed",room_id:input.roomId,after_seq:input.afterSeq,latest_seq:latestSeq});
       }
       await this.pump(session);
     } catch (error) {
@@ -168,6 +184,7 @@ export class RealtimeHub {
     if (session.pumping) { session.rerun = true; return; }
     session.pumping = true;
     try {
+      if(session.validate) await session.validate();
       const latestSeq = await this.service.roomCursor(session.companyId,session.roomId,session.principalId);
       if (session.lastSentSeq > latestSeq) return this.requireResync(session,"cursor_ahead",latestSeq);
       if (this.isSlow(session)) return this.requireResync(session,"slow_client",latestSeq);
@@ -178,12 +195,12 @@ export class RealtimeHub {
         if (observation === "duplicate") continue;
         if (observation === "gap") return this.requireResync(session,"gap",latestSeq);
         if (this.isSlow(session)) return this.requireResync(session,"slow_client",latestSeq);
-        this.send(session,{type:"event",room_id:session.roomId,event});
+        this.send(session,session.protocol==="agent-gateway.v1"?{type:"room.event",room_id:session.roomId,event}:{type:"event",room_id:session.roomId,event});
         session.lastSentSeq = event.room_seq;
       }
       if (result.events.length === this.options.batchSize && session.lastSentSeq < latestSeq) session.rerun = true;
     } catch (error) {
-      if (error instanceof DomainError && (error.code === "room_access_denied" || error.code === "forbidden")) {
+      if (error instanceof DomainError && (error.code === "room_access_denied" || error.code === "forbidden" || error.code === "gateway_session_invalid")) {
         this.send(session,{type:"access_revoked",room_id:session.roomId});
         session.socket.close(4403,"access_revoked");
         this.sessions.delete(session);
@@ -199,7 +216,7 @@ export class RealtimeHub {
     try { frame=JSON.parse(raw) as ClientFrame; } catch { return this.protocolError(session,"invalid_json","Frame must be valid JSON"); }
     if (frame.type !== "ack" || !Number.isSafeInteger(frame.room_seq) || frame.room_seq < 0) return this.protocolError(session,"invalid_frame","Expected {type:'ack',room_seq:number}");
     if (frame.room_seq > session.lastSentSeq) return this.protocolError(session,"ack_ahead","Cannot acknowledge an event not sent by this gateway");
-    if (frame.room_seq > session.lastAckedSeq) session.lastAckedSeq = frame.room_seq;
+    if (frame.room_seq > session.lastAckedSeq) { session.lastAckedSeq = frame.room_seq; if(session.onAck)void session.onAck(frame.room_seq).catch(()=>{}); }
   }
 
   private isSlow(session:Session) {

@@ -21,6 +21,9 @@ export type ServerFrame =
   | { type: "snapshot"; room_id: string; snapshot_seq: number; snapshot: unknown }
   | { type: "resumed"; room_id: string; after_seq: number; latest_seq: number }
   | RoomEventFrame
+  | { type: "session.ready"; protocol:"agent-gateway.v1"; session_id:string; room_id:string; agent_principal_id:string; latest_seq:number; after_seq?:number }
+  | { type: "room.snapshot"; room_id:string; snapshot_seq:number; snapshot:unknown }
+  | { type: "room.event"; room_id:string; event:Record<string,unknown>&{room_seq:number} }
   | { type: "resync_required"; room_id: string; reason: "stale_cursor" | "cursor_ahead" | "gap" | "slow_client"; latest_seq: number }
   | { type: "access_revoked"; room_id: string }
   | { type: "protocol_error"; code: string; message: string };

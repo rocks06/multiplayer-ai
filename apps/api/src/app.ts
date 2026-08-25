@@ -6,6 +6,8 @@ import { createPool, type DbPool } from "./db.js";
 import { RoomService } from "./room-service.js";
 import { RealtimeHub, type RealtimeOptions } from "./realtime/realtime-hub.js";
 import { AgentRuntimeService } from "./agent-runtime/runtime-service.js";
+import { AgentGatewayService } from "./agent-gateway/gateway-service.js";
+import { registerAgentGatewayRoutes } from "./agent-gateway/gateway-routes.js";
 
 const fakeStep=z.discriminatedUnion('kind',[
   z.object({kind:z.literal('tool'),id:z.string().min(1),name:z.enum(['room.send_message','task.get','task.list_eligible','task.update_status','task.complete','decision.request','decision.get']),arguments:z.record(z.string(),z.unknown())}),
@@ -26,6 +28,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const service=new RoomService(pool);
   const agentRuntime=new AgentRuntimeService(pool,service);
   const realtime=new RealtimeHub(pool,service,realtimeOptions);
+  const agentGateway=new AgentGatewayService(pool);
   app.register(websocket);
   app.setErrorHandler((error,request,reply)=>{ if(error instanceof DomainError) return reply.status(error.statusCode).send({error:{code:error.code,message:error.message,request_id:request.id,details:error.details}}); if(error instanceof z.ZodError) return reply.status(400).send({error:{code:"validation_error",message:"Invalid request",request_id:request.id,details:error.issues}}); request.log.error(error); return reply.status(500).send({error:{code:"internal_error",message:"Internal server error",request_id:request.id}}); });
   app.get('/health',async()=>({status:'ok'}));
@@ -52,6 +55,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.post('/v1/companies/:companyId/rooms/:roomId/agents/:agentId/pause',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),agentId:z.string().uuid()}),req.params);return agentRuntime.pauseAgent({companyId:p.companyId,roomId:p.roomId,actorId:principal(req),agentId:p.agentId,idempotencyKey:idem(req)})});
   app.get('/v1/companies/:companyId/rooms/:roomId/snapshot',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.snapshot(p.companyId,p.roomId,principal(req))});
   app.get('/v1/companies/:companyId/rooms/:roomId/events',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const q=body(z.object({after_seq:z.coerce.number().int().min(0).default(0),limit:z.coerce.number().int().positive().max(500).default(100)}),req.query);return service.events(p.companyId,p.roomId,principal(req),q.after_seq,q.limit)});
+  registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime);
   app.register(async realtimeRoutes=>{
     realtimeRoutes.get('/v1/companies/:companyId/rooms/:roomId/stream',{websocket:true},(socket,req)=>{
       try {

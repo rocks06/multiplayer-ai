@@ -1,0 +1,93 @@
+import {afterEach,beforeEach,describe,expect,it} from "vitest";
+import * as pg from "pg";
+import {readFile} from "node:fs/promises";
+import {buildApp} from "../apps/api/src/app.js";
+import {FakeExternalAgentClient} from "./fake-external-agent.js";
+import type {RealtimeOptions} from "../apps/api/src/realtime/realtime-hub.js";
+
+const {Pool}=pg;
+const connectionString=process.env.DATABASE_URL;
+if(!connectionString)throw new Error("DATABASE_URL is required for agent gateway integration tests");
+const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+
+describe("Agent Gateway v1",()=>{
+ let pool:pg.Pool,app:ReturnType<typeof buildApp>,baseUrl:string;
+ const clients=new Set<FakeExternalAgentClient>();
+ async function start(options:RealtimeOptions={}){pool=new Pool({connectionString});app=buildApp(pool,{pollIntervalMs:20,...options});baseUrl=await app.listen({host:"127.0.0.1",port:0})}
+ async function request(method:string,url:string,payload?:unknown,headers:Record<string,string>={}){return await app.inject({method:method as any,url,payload:payload as any,headers})}
+ async function post(url:string,payload:unknown,headers:Record<string,string>={}){return request("POST",url,payload,headers)}
+ async function companyFixture(name="Gateway Co"){
+  const company=(await post("/v1/companies",{name})).json();
+  const owner=(await post(`/v1/companies/${company.id}/humans`,{email:`${crypto.randomUUID()}@example.com`,display_name:`${name} Owner`})).json();
+  const project=(await post(`/v1/companies/${company.id}/projects`,{name:"Project",objective:"Coordinate external agents"},{"x-principal-id":owner.principal_id})).json();
+  const room=(await post(`/v1/companies/${company.id}/projects/${project.id}/rooms`,{name:"Gateway Room",responsibilities:"Ship work"},{"x-principal-id":owner.principal_id})).json();
+  return {company,owner,project,room};
+ }
+ async function agent(f:any,name:string,key:string,join=true){
+  const value=(await post(`/v1/companies/${f.company.id}/agents`,{owner_user_id:f.owner.user_id,name})).json();
+  if(join)await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/members`,{principal_id:value.principal_id,role:"worker_agent",responsibilities:`${name} work`},{"x-principal-id":f.owner.principal_id,"idempotency-key":`join-${key}`});
+  const credential=(await post(`/v1/companies/${f.company.id}/agents/${value.principal_id}/gateway-credentials`,{label:`${name} runtime`},{"x-principal-id":f.owner.principal_id})).json();
+  return {...value,credential};
+ }
+ async function external(a:any,roomId:string){const c=new FakeExternalAgentClient(baseUrl);clients.add(c);c.credentialToken=a.credential.credential_token;c.roomId=roomId;expect((await c.open()).status).toBe(200);return c}
+ async function createTask(f:any,title:string,assignee:string,key:string){return (await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/tasks`,{title,description:"gateway task",assignee_principal_id:assignee},{"x-principal-id":f.owner.principal_id,"idempotency-key":key})).json()}
+
+ beforeEach(async()=>{const bootstrap=new Pool({connectionString});await bootstrap.query(await readFile("packages/db/schema.sql","utf8"));await bootstrap.query(`TRUNCATE external_agent_sessions,external_agent_credentials,decisions,agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);await bootstrap.end();await start()});
+ afterEach(async()=>{for(const c of clients)c.close();clients.clear();await app.close()});
+
+ it("authenticates scoped credentials and rejects revocation, impersonation by IDs, cross-agent/company access, and inactive membership",async()=>{
+  const aCo=await companyFixture("A"),bCo=await companyFixture("B");const a=await agent(aCo,"Agent A","a"),b=await agent(aCo,"Agent B","b",false);await agent(bCo,"Agent C","c");
+  const probe=new FakeExternalAgentClient(baseUrl);probe.credentialToken=a.credential.credential_token;
+  const discovered=await probe.discover();expect(discovered.status).toBe(200);expect(discovered.body.agent_principal_id).toBe(a.principal_id);expect(discovered.body.rooms.map((r:any)=>r.id)).toEqual([aCo.room.id]);
+  expect((await probe.open(a.credential.credential_token,bCo.room.id)).status).toBe(403);
+  expect((await probe.open(b.credential.credential_token,aCo.room.id)).status).toBe(403);
+  const live=await external(a,aCo.room.id);await live.connect(0);
+  await request("DELETE",`/v1/companies/${aCo.company.id}/rooms/${aCo.room.id}/members/${a.principal_id}`,undefined,{"x-principal-id":aCo.owner.principal_id,"idempotency-key":"remove-a"});
+  expect((await live.heartbeat("idle")).status).toBe(401);await live.waitFor(f=>f.type==="access_revoked");
+  const a2=await agent(aCo,"Agent A2","a2");const c2=await external(a2,aCo.room.id);await c2.connect(0);
+  const guessed=await fetch(`${baseUrl}/v1/agent-gateway/v1/sessions/${crypto.randomUUID()}/heartbeat`,{method:"POST",headers:{authorization:`Bearer ${c2.sessionToken}`,"content-type":"application/json"},body:JSON.stringify({runtime_status:"idle"})});expect(guessed.status).toBe(401);
+  const persisted=await pool.query(`SELECT c.token_hash,c.token_prefix,s.session_token_hash FROM external_agent_credentials c JOIN external_agent_sessions s ON s.credential_id=c.id WHERE c.id=$1 AND s.id=$2`,[a2.credential.id,c2.sessionId]);expect(persisted.rows[0].token_hash).not.toContain(a2.credential.credential_token);expect(persisted.rows[0].session_token_hash).not.toContain(c2.sessionToken);expect(persisted.rows[0].token_hash).toMatch(/^[0-9a-f]{64}$/);expect(persisted.rows[0].session_token_hash).toMatch(/^[0-9a-f]{64}$/);
+  expect((await post(`/v1/companies/${aCo.company.id}/rooms/${aCo.room.id}/agents/${a2.agent_id}/pause`,{}, {"x-principal-id":aCo.owner.principal_id,"idempotency-key":"pause-a2"})).statusCode).toBe(200);expect((await c2.heartbeat("idle")).status).toBe(401);await c2.waitFor(f=>f.type==="access_revoked");
+  const a3=await agent(aCo,"Agent A3","a3");const c3=await external(a3,aCo.room.id);expect((await request("DELETE",`/v1/companies/${aCo.company.id}/gateway-credentials/${a3.credential.id}`,undefined,{"x-principal-id":aCo.owner.principal_id})).statusCode).toBe(200);expect((await c3.heartbeat("idle")).status).toBe(401);expect((await c3.open(a3.credential.credential_token,aCo.room.id)).status).toBe(401);
+ });
+
+ it("executes the narrow command surface with agent attribution and hosted/external authorization parity",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Alex AI","alex"),b=await agent(f,"Blair AI","blair");const ca=await external(a,f.room.id),cb=await external(b,f.room.id);await ca.connect(0);await cb.connect(0);
+  const ta=await createTask(f,"A task",a.principal_id,"task-a"),tb=await createTask(f,"B task",b.principal_id,"task-b");
+  expect((await ca.tasks()).body.map((t:any)=>t.id)).toContain(ta.id);expect((await ca.task(ta.id)).status).toBe(200);
+  const own=await ca.updateTask(ta.id,"in_progress",1,"a-start");expect(own.status).toBe(200);
+  const unauthorized=await ca.updateTask(tb.id,"in_progress",1,"steal-b");expect(unauthorized.status).toBe(403);
+  const internal=await request("PATCH",`/v1/companies/${f.company.id}/rooms/${f.room.id}/tasks/${tb.id}/status`,{status:"in_progress",expected_version:1},{"x-principal-id":a.principal_id,"idempotency-key":"internal-steal"});expect(internal.statusCode).toBe(403);expect(internal.json().error.code).toBe(unauthorized.body.error.code);
+  const roomMessage=await ca.message("Working now","external-message");expect(roomMessage.status).toBe(200);const addressed=await ca.message("Blair, please review","external-address",b.principal_id);expect(addressed.status).toBe(200);await cb.waitFor(f=>f.type==="room.event"&&f.event.entity_id===addressed.body.id);
+  expect((await ca.completeTask(ta.id,2,"a-complete")).status).toBe(200);
+  const events=await pool.query(`SELECT event_type,actor_principal_id,actor_kind FROM room_events WHERE company_id=$1 AND room_id=$2 AND entity_id=ANY($3::uuid[]) ORDER BY room_seq`,[f.company.id,f.room.id,[roomMessage.body.id,addressed.body.id,ta.id]]);
+  expect(events.rows.filter(r=>r.event_type==="message.sent").every(r=>r.actor_principal_id===a.principal_id&&r.actor_kind==="agent")).toBe(true);
+  expect(events.rows.some(r=>r.event_type==="task.completed"&&r.actor_principal_id===a.principal_id)).toBe(true);
+ });
+
+ it("requests and reads an external decision, then receives the human resolution through the durable room stream",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Decision AI","decision");const c=await external(a,f.room.id);await c.connect(0);
+  const requested=await c.requestDecision({title:"Deploy?",question:"May I deploy?",rationale:"Checks passed",proposed_action:{operation:"deploy",environment:"staging"}},"decision-one");expect(requested.status).toBe(200);expect(requested.body.run_id).toBeNull();expect((await c.decision(requested.body.id)).body.status).toBe("pending");
+  const resolved=await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/decisions/${requested.body.id}/approve`,{proposed_action_digest:requested.body.proposed_action_digest,expected_version:1,note:"Approved externally"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"approve-external"});expect(resolved.statusCode).toBe(200);expect(resolved.json().run_status).toBeNull();
+  const frame=await c.waitFor(f=>f.type==="room.event"&&f.event.event_type==="decision.approved");expect(frame.event.actor_principal_id).toBe(f.owner.principal_id);expect((await c.decision(requested.body.id)).body.status).toBe("approved");
+  const requestedEvent=await pool.query(`SELECT actor_principal_id,actor_kind FROM room_events WHERE entity_id=$1 AND event_type='decision.requested'`,[requested.body.id]);expect(requestedEvent.rows[0]).toMatchObject({actor_principal_id:a.principal_id,actor_kind:"agent"});
+ });
+
+ it("replays a disconnect window without duplicates or gaps and keeps two external runtimes synchronized",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Agent A","sync-a"),b=await agent(f,"Agent B","sync-b");const ca=await external(a,f.room.id),cb=await external(b,f.room.id);await ca.connect(0);await cb.connect(0);
+  const ta=await createTask(f,"Separate A",a.principal_id,"separate-a"),tb=await createTask(f,"Separate B",b.principal_id,"separate-b");await ca.waitFor(f=>f.type==="room.event"&&f.event.entity_id===tb.id);await cb.waitFor(f=>f.type==="room.event"&&f.event.entity_id===ta.id);
+  const before=ca.tracker.contiguousSeq;ca.close();await sleep(75);
+  await cb.message("missed one","missed-one");await cb.updateTask(tb.id,"in_progress",1,"b-start");await sleep(75);
+  ca.frames.length=0;await ca.connect(before);await ca.waitFor(f=>f.type==="room.event"&&f.event.event_type==="task.in_progress");
+  expect(ca.gaps).toEqual([]);expect([...ca.applied.keys()].filter(seq=>seq>before)).toEqual([...new Set([...ca.applied.keys()].filter(seq=>seq>before))]);
+  const durable=await pool.query(`SELECT last_ack_room_seq FROM external_agent_sessions WHERE id=$1`,[ca.sessionId]);await sleep(50);expect(Number(durable.rows[0]?.last_ack_room_seq??0)).toBeLessThanOrEqual(ca.tracker.contiguousSeq);
+  expect((await ca.heartbeat("working")).body.runtime_status).toBe("working");
+ });
+
+ it("forces stale and slow clients to resynchronize instead of dropping or reordering events",async()=>{
+  await app.close();await start({maxReplayEvents:1,maxUnackedEvents:1,pollIntervalMs:15});const f=await companyFixture(),a=await agent(f,"Slow AI","slow");const c=await external(a,f.room.id);
+  await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"one"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-one"});await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"two"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-two"});
+  await c.connect(0);expect((await c.waitFor(f=>f.type==="resync_required")).reason).toBe("stale_cursor");
+  const fresh=await external(a,f.room.id);await fresh.connect(undefined,false,true);await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"three"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"slow-three"});await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"four"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"slow-four"});expect((await fresh.waitFor(f=>f.type==="resync_required")).reason).toBe("slow_client");
+ });
+});
