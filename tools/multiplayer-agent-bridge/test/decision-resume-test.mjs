@@ -25,7 +25,7 @@ async function waitFor(check,label,timeout=8000){
 function readJson(file){return fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null}
 function readLines(file){return fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[]}
 
-async function scenario(name,{event,exitPlan=[0],send='live',duplicate=false,expectWake=true,inspectFailure=false}){
+async function scenario(name,{event,exitPlan=[0],send='live',duplicate=false,expectWake=true,inspectFailure=false,spawnMissing=false,hangDecisionOnce=false,preloadedPending=false}){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),`mp-bridge-${name}-`));
   const identities=path.join(root,'identities');const runtime=path.join(root,'runtime');
   fs.mkdirSync(identities,{recursive:true});fs.mkdirSync(runtime,{recursive:true});
@@ -34,19 +34,25 @@ async function scenario(name,{event,exitPlan=[0],send='live',duplicate=false,exp
   const captureFile=path.join(root,'hermes-invocations.jsonl');
   const planFile=path.join(root,'hermes-exit-plan.json');
   const fakeHermes=path.join(root,'fake-hermes.mjs');
-  const acks=[];let connectionUrl='';let socketRef=null;
+  const acks=[];let connectionUrl='';let socketRef=null;let decisionRequests=0;
   let snapshot={snapshot_seq:10,briefing:{important_recent_activity:[]},tasks:[{id:taskId,assignee_principal_id:principal,status:'awaiting_decision',version:3}]};
+  if(preloadedPending)snapshot={snapshot_seq:event.room_seq,briefing:{important_recent_activity:[event]},tasks:snapshot.tasks};
   const decision={id:decisionId,requested_by_principal_id:principal,status:event.payload?.status??'approved',version:2,resolution_note:'Approved. Proceed with the recommendation.'};
 
   fs.writeFileSync(planFile,JSON.stringify(exitPlan));
-  fs.writeFileSync(fakeHermes,`#!/usr/bin/env node\nimport fs from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nconst capture=process.env.FAKE_HERMES_CAPTURE;\nconst prior=fs.existsSync(capture)?fs.readFileSync(capture,'utf8').trim().split('\\n').filter(Boolean).length:0;\nconst result=spawnSync(process.execPath,[process.env.TEST_BRIDGE,'snapshot','--env',process.env.TEST_ENV],{encoding:'utf8'});\nlet snapshot=null;try{snapshot=JSON.parse(result.stdout)}catch{}\nconst queryAt=process.argv.indexOf('-q');const prompt=queryAt>=0?process.argv[queryAt+1]:'';\nfs.appendFileSync(capture,JSON.stringify({invocation:prior+1,snapshot,prompt_has_event:prompt.includes(process.env.EXPECTED_EVENT_TYPE)})+'\\n');\nconst plan=JSON.parse(fs.readFileSync(process.env.FAKE_HERMES_EXIT_PLAN,'utf8'));\nprocess.exit(plan[Math.min(prior,plan.length-1)]??0);\n`,{mode:0o700});
+  const fakeHermesSource=`#!/usr/bin/env node\nimport fs from 'node:fs';\nimport {spawnSync} from 'node:child_process';\nconst capture=process.env.FAKE_HERMES_CAPTURE;\nconst prior=fs.existsSync(capture)?fs.readFileSync(capture,'utf8').trim().split('\\n').filter(Boolean).length:0;\nconst result=spawnSync(process.execPath,[process.env.TEST_BRIDGE,'snapshot','--env',process.env.TEST_ENV],{encoding:'utf8'});\nlet snapshot=null;try{snapshot=JSON.parse(result.stdout)}catch{}\nconst queryAt=process.argv.indexOf('-q');const prompt=queryAt>=0?process.argv[queryAt+1]:'';\nfs.appendFileSync(capture,JSON.stringify({invocation:prior+1,snapshot,prompt_has_event:prompt.includes(process.env.EXPECTED_EVENT_TYPE)})+'\\n');\nconst plan=JSON.parse(fs.readFileSync(process.env.FAKE_HERMES_EXIT_PLAN,'utf8'));\nprocess.exit(plan[Math.min(prior,plan.length-1)]??0);\n`;
+  if(!spawnMissing)fs.writeFileSync(fakeHermes,fakeHermesSource,{mode:0o700});
 
   const server=http.createServer(async(req,res)=>{
     for await(const _ of req){}
     res.setHeader('content-type','application/json');
     if(req.url?.endsWith('/heartbeat'))return res.end(JSON.stringify({status:'connected'}));
     if(req.url?.endsWith('/snapshot'))return res.end(JSON.stringify(snapshot));
-    if(req.url?.endsWith(`/decisions/${decisionId}`))return res.end(JSON.stringify(decision));
+    if(req.url?.endsWith(`/decisions/${decisionId}`)){
+      decisionRequests+=1;
+      if(hangDecisionOnce&&decisionRequests===1)return;
+      return res.end(JSON.stringify(decision));
+    }
     res.statusCode=404;res.end(JSON.stringify({error:{code:'not_found',url:req.url}}));
   });
   const wss=new WebSocketServer({noServer:true});
@@ -62,25 +68,29 @@ async function scenario(name,{event,exitPlan=[0],send='live',duplicate=false,exp
   });
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const port=server.address().port;
-  fs.writeFileSync(envFile,[`MULTIPLAYER_BASE_URL=http://127.0.0.1:${port}`,`MULTIPLAYER_ROOM_ID=${room}`,'MULTIPLAYER_PROFILE=mock',`MULTIPLAYER_AGENT_PRINCIPAL_ID=${principal}`,`MULTIPLAYER_PEER_PRINCIPAL_ID=${peer}`,'MULTIPLAYER_CREDENTIAL=magc_mock',`MULTIPLAYER_TASK_ID=${taskId}`,`HERMES_COMMAND=${fakeHermes}`].join('\n')+'\n',{mode:0o600});
-  fs.writeFileSync(stateFile,JSON.stringify({last_contiguous_seq:10,processed_event_ids:[],pending_actionable_events:[],session_id:session,session_token:'mags_mock',room_id:room,agent_principal_id:principal,connection:'offline'},null,2)+'\n',{mode:0o600});
+  fs.writeFileSync(envFile,[`MULTIPLAYER_BASE_URL=http://127.0.0.1:${port}`,`MULTIPLAYER_ROOM_ID=${room}`,'MULTIPLAYER_PROFILE=mock',`MULTIPLAYER_AGENT_PRINCIPAL_ID=${principal}`,`MULTIPLAYER_PEER_PRINCIPAL_ID=${peer}`,'MULTIPLAYER_CREDENTIAL=magc_mock',`MULTIPLAYER_TASK_ID=${taskId}`,`HERMES_COMMAND=${fakeHermes}`,'MULTIPLAYER_HTTP_TIMEOUT_MS=200'].join('\n')+'\n',{mode:0o600});
+  fs.writeFileSync(stateFile,JSON.stringify({last_contiguous_seq:preloadedPending?event.room_seq:10,processed_event_ids:preloadedPending?[event.id]:[],pending_actionable_events:preloadedPending?[{key:event.id,type:'room.event',event}]:[],session_id:session,session_token:'mags_mock',room_id:room,agent_principal_id:principal,connection:'offline'},null,2)+'\n',{mode:0o600});
 
   const child=spawn(process.execPath,[bridge,'run','--env',envFile],{stdio:'ignore',env:{...process.env,FAKE_HERMES_CAPTURE:captureFile,FAKE_HERMES_EXIT_PLAN:planFile,TEST_BRIDGE:bridge,TEST_ENV:envFile,EXPECTED_EVENT_TYPE:event.event_type}});
   try{
     await waitFor(()=>socketRef,'websocket connection');
-    if(send==='live'){
+    if(send==='live'&&!preloadedPending){
       await delay(100);
       snapshot={snapshot_seq:event.room_seq,briefing:{important_recent_activity:[event]},tasks:snapshot.tasks};
       socketRef.send(JSON.stringify({type:'room.event',room_id:room,event}));
     }
-    await waitFor(()=>readJson(stateFile)?.last_contiguous_seq===event.room_seq&&acks.includes(event.room_seq),'cursor persistence and ACK');
+    await waitFor(()=>readJson(stateFile)?.last_contiguous_seq===event.room_seq&&(preloadedPending||acks.includes(event.room_seq)),'cursor persistence and ACK');
     if(expectWake){
+      if(spawnMissing){
+        await waitFor(()=>readJson(stateFile)?.last_hermes_exit===1&&readJson(stateFile)?.pending_actionable_events?.length===1,'spawn failure with retained marker');
+        fs.writeFileSync(fakeHermes,fakeHermesSource,{mode:0o700});
+      }
       if(inspectFailure){
         await waitFor(()=>readLines(captureFile).length>=1,'failed Hermes invocation');
         const failedState=readJson(stateFile);
         if(failedState.pending_actionable_events.length!==1)throw new Error(`${name}: failed invocation lost durable marker`);
       }
-      const expected=exitPlan[0]===0?1:2;
+      const expected=spawnMissing?1:(exitPlan[0]===0?1:2);
       await waitFor(()=>readLines(captureFile).length>=expected,'Hermes invocation');
       await waitFor(()=>readJson(stateFile)?.pending_actionable_events?.length===0,'durable marker completion');
       const invocations=readLines(captureFile);
@@ -99,7 +109,7 @@ async function scenario(name,{event,exitPlan=[0],send='live',duplicate=false,exp
       if(readJson(stateFile).pending_actionable_events.length!==0)throw new Error(`${name}: irrelevant marker was not cleared`);
     }
     if(send==='replay'&&!connectionUrl.includes('after_seq=10'))throw new Error(`${name}: replay did not resume from cursor 10: ${connectionUrl}`);
-    return {name,wakes:readLines(captureFile).length,ack:acks.at(-1),cursor:readJson(stateFile).last_contiguous_seq,replay:send==='replay'};
+    return {name,wakes:readLines(captureFile).length,ack:acks.at(-1)??null,cursor:readJson(stateFile).last_contiguous_seq,replay:send==='replay',recovered:preloadedPending};
   }finally{
     child.kill('SIGTERM');await Promise.race([new Promise(resolve=>child.once('exit',resolve)),delay(1000)]);
     for(const client of wss.clients)client.terminate();wss.close();server.close();fs.rmSync(root,{recursive:true,force:true});
@@ -111,9 +121,12 @@ const decisionEvent=(type,seq=11)=>({id:`event-${type}-${seq}`,room_seq:seq,even
 const results=[];
 results.push(await scenario('live-approved',{event:decisionEvent('decision.approved'),send:'live'}));
 results.push(await scenario('offline-replay-approved',{event:decisionEvent('decision.approved'),send:'replay'}));
+results.push(await scenario('crash-after-ack-recovery',{event:decisionEvent('decision.approved'),send:'live',preloadedPending:true}));
 for(const type of ['decision.rejected','decision.cancelled','decision.expired'])results.push(await scenario(type.replace('.','-'),{event:decisionEvent(type),send:'live'}));
 results.push(await scenario('duplicate-approved',{event:decisionEvent('decision.approved'),send:'live',duplicate:true}));
 results.push(await scenario('hermes-failure-retry',{event:decisionEvent('decision.approved'),send:'live',exitPlan:[1,0],inspectFailure:true}));
+results.push(await scenario('hermes-spawn-failure-retry',{event:decisionEvent('decision.approved'),send:'live',spawnMissing:true}));
+results.push(await scenario('gateway-timeout-retry',{event:decisionEvent('decision.approved'),send:'live',hangDecisionOnce:true}));
 results.push(await scenario('addressed-message',{event:{id:'event-addressed-message-11',room_seq:11,event_type:'message.sent',actor_principal_id:peer,actor_kind:'agent',entity_type:'message',entity_id:'00000000-0000-4000-8000-000000000108',payload:{addressed_principal_id:principal,body_text:'directly for this agent'}},send:'live'}));
 results.push(await scenario('human-redirect-message',{event:{id:'event-human-message-11',room_seq:11,event_type:'message.sent',actor_principal_id:human,actor_kind:'human',entity_type:'message',entity_id:'00000000-0000-4000-8000-000000000109',payload:{body_text:'human redirect'}},send:'live'}));
 results.push(await scenario('task-assignment',{event:{id:'event-task-created-11',room_seq:11,event_type:'task.created',actor_principal_id:human,actor_kind:'human',entity_type:'task',entity_id:taskId,payload:{id:taskId,assignee_principal_id:principal,status:'open',version:1}},send:'live'}));

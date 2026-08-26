@@ -59,10 +59,11 @@ let activeHermesChild=null;
 const save=()=>secureWrite(stateFile,state);
 
 async function http(method,route,body,token,idempotencyKey){
-  const headers={authorization:`Bearer ${token}`};
+  const headers={authorization:'Bearer '+token};
   if(body!==undefined)headers['content-type']='application/json';
   if(idempotencyKey)headers['idempotency-key']=idempotencyKey;
-  const response=await fetch(`${config.MULTIPLAYER_BASE_URL}${route}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
+  const timeoutMs=Number(config.MULTIPLAYER_HTTP_TIMEOUT_MS??15000);
+  const response=await fetch(`${config.MULTIPLAYER_BASE_URL}${route}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(Number.isFinite(timeoutMs)&&timeoutMs>0?timeoutMs:15000)});
   const text=await response.text();
   let value;try{value=text?JSON.parse(text):{}}catch{value={raw:text}}
   if(!response.ok){const error=new Error(`Gateway HTTP ${response.status}: ${value?.error?.code??'request_failed'} ${value?.error?.message??''}`);error.status=response.status;error.body=value;throw error}
@@ -126,11 +127,18 @@ async function runHermes(trigger){
   await sessionHttp('POST','/heartbeat',{runtime_status:'working'}).catch(()=>{});
   const log=fs.openSync(logFile,'a',0o600);
   const hermes=config.HERMES_COMMAND??'hermes';
-  const child=spawn(hermes,['chat','-q',promptFor(trigger),'--toolsets','terminal,file,web','--source',`multiplayer-${config.MULTIPLAYER_PROFILE}`,'--quiet'],{stdio:['ignore',log,log],env:{...process.env}});
-  activeHermesChild=child;
-  const code=await new Promise(resolve=>child.once('exit',value=>resolve(value??1)));
-  activeHermesChild=null;
-  fs.closeSync(log);state.hermes_running=false;state.last_hermes_exit=code;save();
+  let code=1;
+  try{
+    const child=spawn(hermes,['chat','-q',promptFor(trigger),'--toolsets','terminal,file,web','--source',`multiplayer-${config.MULTIPLAYER_PROFILE}`,'--quiet'],{stdio:['ignore',log,log],env:{...process.env}});
+    activeHermesChild=child;
+    code=await new Promise(resolve=>{
+      let settled=false;
+      const finish=value=>{if(settled)return;settled=true;resolve(value??1)};
+      child.once('error',error=>{fs.writeSync(log,`[bridge] Hermes spawn failed: ${error.message}\n`);finish(1)});
+      child.once('exit',finish);
+    });
+  }catch(error){fs.writeSync(log,`[bridge] Hermes spawn failed: ${error.message}\n`)}
+  finally{activeHermesChild=null;fs.closeSync(log);state.hermes_running=false;state.last_hermes_exit=code;save()}
   await sessionHttp('POST','/heartbeat',{runtime_status:'idle'}).catch(()=>{});
   return code;
 }
