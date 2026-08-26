@@ -1,0 +1,16 @@
+{
+  "name": "multiplayer-hermes-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --check bridge.mjs && node test/mock-gateway-test.mjs && node test/decision-resume-test.mjs",
+    "test:decision-resume": "node --check bridge.mjs && node test/decision-resume-test.mjs"
+  },
+  "dependencies": {
+    "ws": "8.21.0"
+  }
+}
