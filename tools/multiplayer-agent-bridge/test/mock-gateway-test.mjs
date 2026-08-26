@@ -17,7 +17,7 @@ let ack=null;
 const server=http.createServer(async(req,res)=>{
  let body='';for await(const chunk of req)body+=chunk;
  res.setHeader('content-type','application/json');
- if(req.url==='/v1/agent-gateway/v1/rooms')return res.end(JSON.stringify({agent_principal_id:principal,rooms:[{id:room}]}));
+ if(req.url==='/v1/agent-gateway/v1/rooms')return res.end(JSON.stringify({agent_principal_id:principal,rooms:[{id:room,last_event_seq:6}]}));
  if(req.url==='/v1/agent-gateway/v1/sessions'&&req.method==='POST')return res.end(JSON.stringify({session_id:session,session_token:'mags_mock',room_id:room,agent_principal_id:principal}));
  if(req.url?.endsWith('/heartbeat'))return res.end(JSON.stringify({status:'connected'}));
  res.statusCode=404;res.end(JSON.stringify({error:{code:'not_found'}}));
@@ -42,7 +42,27 @@ for(let i=0;i<100;i++){
  if(fs.existsSync(file)){state=JSON.parse(fs.readFileSync(file,'utf8'));if(state.last_contiguous_seq===6&&ack===6)break}
 }
 child.kill('SIGTERM');await new Promise(resolve=>child.once('exit',resolve));
-wss.close();server.close();
+const wssClosed=()=>{wss.close();server.close()};
 if(state?.last_contiguous_seq!==6||ack!==6)throw new Error(`Expected cursor/ack 6, got state=${JSON.stringify(state)} ack=${ack}`);
-console.log(JSON.stringify({mock_gateway_passed:true,session_created:true,snapshot_seq:5,applied_event_seq:6,ack_seq:ack,hermes_replaced_with:'/usr/bin/true',real_room_touched:false}));
+
+// A daemon that was hard-killed, slept, or fell off the network leaves state.connection reading
+// 'live' and a stale pid file behind. status must report the process is gone rather than repeat
+// that stale local claim, and --verify must expose the durable room cursor.
+const stateFile=path.join(root,'runtime','mock.state.json');
+const pidFile=path.join(root,'runtime','mock.pid');
+const dead=spawn(process.execPath,['-e','']);
+await new Promise(resolve=>dead.once('exit',resolve));
+fs.writeFileSync(stateFile,JSON.stringify({...state,connection:'live'},null,2)+'\n',{mode:0o600});
+fs.writeFileSync(pidFile,String(dead.pid)+'\n',{mode:0o600});
+const runStatus=extra=>new Promise((resolve,reject)=>{
+ const proc=spawn(process.execPath,[bridge,'status','--env',env,...extra],{stdio:['ignore','pipe','inherit']});
+ let out='';proc.stdout.on('data',chunk=>{out+=chunk});
+ proc.once('exit',code=>code===0?resolve(JSON.parse(out)):reject(new Error(`status exited ${code}`)));
+});
+const stale=await runStatus([]);
+if(stale.process_running!==false||stale.connection!=='not_running')throw new Error(`Stale status reported ${JSON.stringify(stale)}`);
+const verified=await runStatus(['--verify']);
+if(verified.room_authorized!==true||verified.room_last_event_seq!==6||verified.behind_by!==0)throw new Error(`Verified status reported ${JSON.stringify(verified)}`);
+wssClosed();
+console.log(JSON.stringify({mock_gateway_passed:true,session_created:true,snapshot_seq:5,applied_event_seq:6,ack_seq:ack,hermes_replaced_with:'/usr/bin/true',stale_pid_reported_as:stale.connection,verified_behind_by:verified.behind_by,real_room_touched:false}));
 fs.rmSync(root,{recursive:true,force:true});

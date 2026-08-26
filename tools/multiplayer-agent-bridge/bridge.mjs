@@ -44,7 +44,7 @@ const envInput=String(cli.env??process.env.MULTIPLAYER_ENV_FILE??'');
 if(command!=='help'&&!envInput)die('Use --env /absolute/path/to/<agent>.env');
 const envFile=envInput?path.resolve(envInput):'';
 const config=command==='help'?{}:{...loadEnv(envFile),...process.env};
-const required=['MULTIPLAYER_BASE_URL','MULTIPLAYER_ROOM_ID','MULTIPLAYER_PROFILE','MULTIPLAYER_AGENT_PRINCIPAL_ID','MULTIPLAYER_PEER_PRINCIPAL_ID','MULTIPLAYER_CREDENTIAL'];
+const required=['MULTIPLAYER_BASE_URL','MULTIPLAYER_ROOM_ID','MULTIPLAYER_PROFILE','MULTIPLAYER_AGENT_PRINCIPAL_ID','MULTIPLAYER_CREDENTIAL'];
 if(command!=='help')for(const key of required)if(!config[key])die(`Missing ${key} in ${envFile}`);
 const home=path.dirname(path.dirname(envFile));
 const runtimeDir=path.join(home,'runtime');
@@ -86,9 +86,26 @@ function need(name){const value=cli[name];if(value===undefined||value===true)die
 const numeric=name=>{const value=Number(need(name));if(!Number.isInteger(value)||value<0)die(`--${name} must be a non-negative integer`);return value};
 
 async function action(){
-  if(command==='help')return console.log(`Usage: node bridge.mjs <command> --env FILE [options]\n\nDaemon: run | status | stop\nAgent actions: snapshot | tasks | task --id ID | message --body TEXT [--to ID] [--task ID] --key KEY | task-status --id ID --status STATUS --version N --key KEY | task-complete --id ID --version N --key KEY | decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY | decision-get --id ID | heartbeat --runtime-status idle|working`);
+  if(command==='help')return console.log(`Usage: node bridge.mjs <command> --env FILE [options]\n\nDaemon: run | status [--verify] | stop\nAgent actions: snapshot | tasks | task --id ID | message --body TEXT [--to ID] [--task ID] --key KEY | task-status --id ID --status STATUS --version N --key KEY | task-complete --id ID --version N --key KEY | decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY | decision-get --id ID | heartbeat --runtime-status idle|working`);
   if(command==='check')return json({valid:true,profile:config.MULTIPLAYER_PROFILE,base_url:config.MULTIPLAYER_BASE_URL,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,credential_present:true,credential_value_exposed:false});
-  if(command==='status')return json({profile:config.MULTIPLAYER_PROFILE,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,session_id:state.session_id??null,connection:state.connection??'not_started',last_contiguous_seq:state.last_contiguous_seq??null,pending_actionable_events:state.pending_actionable_events.length,pid:fs.existsSync(pidFile)?Number(fs.readFileSync(pidFile,'utf8')):null});
+  if(command==='status'){
+    const pid=fs.existsSync(pidFile)?Number(fs.readFileSync(pidFile,'utf8')):null;
+    const running=pid!==null&&(()=>{try{process.kill(pid,0);return true}catch{return false}})();
+    // state.connection is only this bridge's last local claim. A killed, crashed, slept, or
+    // network-isolated daemon leaves it reading 'live' forever, so never report it as live
+    // unless the daemon process actually exists.
+    const report={profile:config.MULTIPLAYER_PROFILE,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,session_id:state.session_id??null,pid,process_running:running,connection:running?(state.connection??'not_started'):'not_running',last_contiguous_seq:state.last_contiguous_seq??null,pending_actionable_events:state.pending_actionable_events.length};
+    if(cli.verify){
+      try{
+        const rooms=await http('GET','/v1/agent-gateway/v1/rooms',undefined,config.MULTIPLAYER_CREDENTIAL);
+        const room=rooms.rooms.find(item=>item.id===config.MULTIPLAYER_ROOM_ID);
+        report.room_authorized=Boolean(room);
+        report.room_last_event_seq=room?Number(room.last_event_seq):null;
+        report.behind_by=room&&report.last_contiguous_seq!==null?Math.max(0,Number(room.last_event_seq)-report.last_contiguous_seq):null;
+      }catch(error){report.room_authorized=false;report.verify_error=String(error.message??error)}
+    }
+    return json(report);
+  }
   if(command==='stop'){
     if(!fs.existsSync(pidFile))return json({stopped:false,reason:'not_running'});
     const pid=Number(fs.readFileSync(pidFile,'utf8'));try{process.kill(pid,'SIGTERM');return json({stopped:true,pid})}catch{return json({stopped:false,reason:'stale_pid',pid})}
@@ -109,17 +126,38 @@ async function action(){
   die(`Unknown command: ${command}`);
 }
 
-function promptFor(trigger){
-  const profile=config.MULTIPLAYER_PROFILE;
-  const taskId=config.MULTIPLAYER_TASK_ID??'<read with tasks>';
+const workflowSteps=['start','message','decision','awaiting','final','complete'];
+// Keys are derived from the task actually being worked, never from a static configured task id:
+// a stale configured id silently collides with a previous task's committed command receipts.
+const stepKey=(taskId,step)=>`${config.MULTIPLAYER_PROFILE}-${taskId}-${step}-v1`;
+
+async function assignedWork(){
+  try{
+    const snapshot=await sessionHttp('GET','/snapshot');
+    return (snapshot.tasks??[]).filter(task=>task.assignee_principal_id===config.MULTIPLAYER_AGENT_PRINCIPAL_ID&&!['completed','cancelled'].includes(task.status));
+  }catch{return null}
+}
+
+function promptFor(trigger,work){
   const tool=`node ${JSON.stringify(bridgeFile)} COMMAND --env ${JSON.stringify(envFile)}`;
-  const stable=profile==='coleman'?{
-    start:`coleman-${taskId}-start-v1`,message:`coleman-${taskId}-findings-v1`,complete:`coleman-${taskId}-complete-v1`
-  }:{start:`jj-${taskId}-start-v1`,decision:`jj-${taskId}-decision-v1`,awaiting:`jj-${taskId}-awaiting-v1`,final:`jj-${taskId}-final-v1`,complete:`jj-${taskId}-complete-v1`};
-  const workflow=profile==='coleman'?
-`You are Coleman Agent. Work only on your assigned eligible task. Read snapshot, tasks, and the assigned task. Mark it in_progress with key ${stable.start}. Investigate the requested technical constraints using the accepted local project if useful. Send exactly one concise findings message addressed to peer principal ${config.MULTIPLAYER_PEER_PRINCIPAL_ID} and tied to the task, using key ${stable.message}. Then complete the task with key ${stable.complete}. Before each task mutation, re-read the task and use its current version. Do not request a human decision.`:
-`You are JJ Agent. Work only on your assigned eligible task. Read snapshot, tasks, and the assigned task. Mark it in_progress once with key ${stable.start}. Do NOT make a final recommendation until Coleman's addressed findings are present in the room snapshot. If they are absent, stop cleanly and wait for another wake. When they arrive, synthesize the scoped recommendation, request exactly one structured human decision with key ${stable.decision}, then mark the task awaiting_decision with key ${stable.awaiting}. While the decision is pending, stop cleanly. After a durable approved/rejected resolution is visible, post exactly one final recommendation incorporating that outcome with key ${stable.final}, then complete the task with key ${stable.complete}. Before each task mutation, re-read the task and use its current version.`;
-  return `You are an external Hermes runtime connected as ${profile} to Multiplayer AI Agent Gateway v1.\n\n${workflow}\n\nUse the terminal to call only this narrow bridge command:\n${tool}\nAvailable COMMAND values: snapshot, tasks, task --id ID, message --body TEXT [--to ID] [--task ID] --key KEY, task-status --id ID --status STATUS --version N --key KEY, task-complete --id ID --version N --key KEY, decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY, decision-get --id ID.\nNever read or print the credential file. Never use curl, direct database access, x-principal-id, or any identity other than this configured bridge. Treat PostgreSQL room state as authoritative. Idempotency keys shown above are mandatory and must be reused exactly across retries. If an operation reports an optimistic-version conflict, re-read and reconcile; do not duplicate effects.\n\nWake reason:\n${JSON.stringify(trigger).slice(0,12000)}`;
+  const assigned=work===null
+    ?'Room state was unavailable while preparing this wake. Read it yourself with the snapshot and tasks commands before acting.'
+    :work.length
+      ?work.map(task=>`- task ${task.id} "${task.title}" status=${task.status} version=${task.version}\n  keys: ${workflowSteps.map(step=>`${step}=${stepKey(task.id,step)}`).join(' ')}`).join('\n')
+      :'No open task is currently assigned to you.';
+  const workflow=`Work only on tasks assigned to your own agent principal. A task's own description is your instruction set: read it with the task command and do exactly what it asks, nothing more. Do not invent additional messages, tasks, or decisions, and do not act on work assigned to another principal.
+
+Currently assigned open work:
+${assigned}
+
+Rules:
+- Re-read a task and use its current version immediately before each task mutation.
+- Every mutating command requires an idempotency key. Use the keys listed above. For a step not listed, use ${config.MULTIPLAYER_PROFILE}-<task-id>-<step>-v1 built from the id of the task you are working on. Reuse a key exactly across retries, and never reuse a key belonging to a different task.
+- Produce each required effect exactly once. On an optimistic-version conflict, re-read and reconcile rather than duplicating effects.
+- If you requested a decision that is still pending, stop cleanly and wait for another wake. Never approve your own decision or proceed as though a pending decision were resolved.
+- Once a decision you requested is resolved, read it and continue the task from that durable outcome, honouring any human resolution note.
+- If there is nothing to do on this wake, stop cleanly.`;
+  return `You are an external Hermes runtime connected as ${config.MULTIPLAYER_PROFILE} to Multiplayer AI Agent Gateway v1.\n\n${workflow}\n\nUse the terminal to call only this narrow bridge command:\n${tool}\nAvailable COMMAND values: snapshot, tasks, task --id ID, message --body TEXT [--to ID] [--task ID] --key KEY, task-status --id ID --status STATUS --version N --key KEY, task-complete --id ID --version N --key KEY, decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY, decision-get --id ID.\nNever read or print the credential file. Never use curl, direct database access, x-principal-id, or any identity other than this configured bridge. Treat PostgreSQL room state as authoritative.\n\nWake reason:\n${JSON.stringify(trigger).slice(0,12000)}`;
 }
 
 async function runHermes(trigger){
@@ -127,9 +165,10 @@ async function runHermes(trigger){
   await sessionHttp('POST','/heartbeat',{runtime_status:'working'}).catch(()=>{});
   const log=fs.openSync(logFile,'a',0o600);
   const hermes=config.HERMES_COMMAND??'hermes';
+  const work=await assignedWork();
   let code=1;
   try{
-    const child=spawn(hermes,['chat','-q',promptFor(trigger),'--toolsets','terminal,file,web','--source',`multiplayer-${config.MULTIPLAYER_PROFILE}`,'--quiet'],{stdio:['ignore',log,log],env:{...process.env}});
+    const child=spawn(hermes,['chat','-q',promptFor(trigger,work),'--toolsets','terminal,file,web','--source',`multiplayer-${config.MULTIPLAYER_PROFILE}`,'--quiet'],{stdio:['ignore',log,log],env:{...process.env}});
     activeHermesChild=child;
     code=await new Promise(resolve=>{
       let settled=false;
