@@ -93,6 +93,17 @@ export class AgentGatewayService {
     return identity;
   }
 
+  // Read-only session status. A runtime must be able to ask whether the Gateway still
+  // considers its session connected without a heartbeat pretending the runtime is alive,
+  // and an already-offline session must report as offline rather than 401.
+  async describeSession(sessionId:string,authorization:unknown) {
+    const identity=await this.authenticateSession(sessionId,authorization,false,true);
+    const result=await this.pool.query<any>(`SELECT id,status,runtime_status,last_ack_room_seq,connected_at,disconnected_at,last_seen_at FROM external_agent_sessions WHERE id=$1`,[sessionId]);
+    const row=result.rows[0]!;
+    const cursor=await this.pool.query<{last_event_seq:string}>(`SELECT last_event_seq FROM rooms WHERE company_id=$1 AND id=$2`,[identity.companyId,identity.roomId]);
+    return {protocol:"agent-gateway.v1",session_id:row.id,company_id:identity.companyId,room_id:identity.roomId,agent_principal_id:identity.principalId,status:row.status,runtime_status:row.runtime_status,last_ack_room_seq:Number(row.last_ack_room_seq),room_last_event_seq:Number(cursor.rows[0]!.last_event_seq),connected_at:row.connected_at,disconnected_at:row.disconnected_at,last_seen_at:row.last_seen_at};
+  }
+
   async heartbeat(sessionId:string,authorization:unknown,runtimeStatus:"idle"|"working") {
     const identity=await this.authenticateSession(sessionId,authorization,false);
     await this.pool.query(`UPDATE external_agent_sessions SET runtime_status=$2,last_seen_at=now() WHERE id=$1`,[sessionId,runtimeStatus]);

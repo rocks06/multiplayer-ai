@@ -72,8 +72,8 @@ async function http(method,route,body,token,idempotencyKey){
 
 async function openSession(){
   const rooms=await http('GET','/v1/agent-gateway/v1/rooms',undefined,config.MULTIPLAYER_CREDENTIAL);
-  if(rooms.agent_principal_id!==config.MULTIPLAYER_AGENT_PRINCIPAL_ID)throw new Error('Credential principal does not match local configuration');
-  if(!rooms.rooms.some(room=>room.id===config.MULTIPLAYER_ROOM_ID))throw new Error('Configured room is not authorized for this credential');
+  if(rooms.agent_principal_id!==config.MULTIPLAYER_AGENT_PRINCIPAL_ID)throw Object.assign(new Error('Credential principal does not match local configuration'),{terminal:true});
+  if(!rooms.rooms.some(room=>room.id===config.MULTIPLAYER_ROOM_ID))throw Object.assign(new Error('Configured room is not authorized for this credential'),{terminal:true});
   const opened=await http('POST','/v1/agent-gateway/v1/sessions',{room_id:config.MULTIPLAYER_ROOM_ID,runtime_status:'idle'},config.MULTIPLAYER_CREDENTIAL);
   state={...state,session_id:opened.session_id,session_token:opened.session_token,room_id:opened.room_id,agent_principal_id:opened.agent_principal_id,connection:'created'};
   save();return state;
@@ -101,8 +101,20 @@ async function action(){
         const room=rooms.rooms.find(item=>item.id===config.MULTIPLAYER_ROOM_ID);
         report.room_authorized=Boolean(room);
         report.room_last_event_seq=room?Number(room.last_event_seq):null;
-        report.behind_by=room&&report.last_contiguous_seq!==null?Math.max(0,Number(room.last_event_seq)-report.last_contiguous_seq):null;
       }catch(error){report.room_authorized=false;report.verify_error=String(error.message??error)}
+      // Whether this process is running is a local fact; whether the Gateway still holds a
+      // connected session is a durable one. They fail independently, so report both.
+      if(state.session_id&&state.session_token){
+        try{
+          const session=await http('GET',`/v1/agent-gateway/v1/sessions/${state.session_id}`,undefined,state.session_token);
+          report.gateway_session_status=session.status;
+          report.gateway_runtime_status=session.runtime_status;
+          report.gateway_last_ack_room_seq=Number(session.last_ack_room_seq);
+          report.gateway_last_seen_at=session.last_seen_at;
+          if(Number.isFinite(Number(session.room_last_event_seq)))report.room_last_event_seq=Number(session.room_last_event_seq);
+        }catch(error){report.gateway_session_status='unreachable';report.session_verify_error=String(error.message??error)}
+      }else report.gateway_session_status='none';
+      report.behind_by=report.room_last_event_seq!==null&&report.room_last_event_seq!==undefined&&report.last_contiguous_seq!==null?Math.max(0,report.room_last_event_seq-report.last_contiguous_seq):null;
     }
     return json(report);
   }
@@ -261,19 +273,41 @@ async function runDaemon(){
       if(state.pending_actionable_events.length)scheduleWake(retryDelay);
     }
   };
-  await ensureSession();
+  // Reconnect/replay recovery belongs to the bridge itself. Ordinary Wi-Fi loss, sleep, a
+  // Gateway restart, or a dropped socket must recover without a human rerunning `run` and
+  // without relying on an external supervisor.
+  const backoffCeiling=Number(config.MULTIPLAYER_RECONNECT_MAX_MS??30000);
+  const pingInterval=Number(config.MULTIPLAYER_WS_PING_MS??20000);
+  const baseDelay=Number(config.MULTIPLAYER_RECONNECT_BASE_MS??1000);
+  let connectDelay=baseDelay;
+  const message=error=>String(error?.message??error);
+  const isTerminal=error=>error?.terminal===true||message(error).includes('Gateway access revoked')||(error?.status===401&&error?.body?.error?.code==='gateway_unauthenticated');
+  const isSessionRejected=error=>error?.body?.error?.code==='gateway_session_invalid'||message(error).includes('gateway_session_invalid');
   while(!stopping){
+    let heartbeat=null,watchdog=null;
     try{
+      await ensureSession();
       const wsBase=config.MULTIPLAYER_BASE_URL.replace(/^http:/,'ws:').replace(/^https:/,'wss:');
       const cursor=state.last_contiguous_seq;
       const url=`${wsBase}${sessionRoute('/stream')}${cursor===null?'':`?after_seq=${cursor}`}`;
       socket=new WebSocket(url,{headers:{authorization:`Bearer ${state.session_token}`}});
       await new Promise((resolve,reject)=>{
-        socket.once('open',()=>{state.connection='live';save();resolve()});socket.once('error',reject);
+        socket.once('open',resolve);socket.once('error',reject);
       });
+      state.connection='live';save();
+      connectDelay=baseDelay;
       scheduleWake(0);
-      const heartbeat=setInterval(()=>sessionHttp('POST','/heartbeat',{runtime_status:hermesBusy?'working':'idle'}).catch(()=>{}),20000);
-      await new Promise((resolve,reject)=>{
+      heartbeat=setInterval(()=>sessionHttp('POST','/heartbeat',{runtime_status:hermesBusy?'working':'idle'}).catch(()=>{}),20000);
+      // A slept laptop or a silently dropped route leaves a half-open socket that never emits
+      // close, so the bridge would wait on a connection the Gateway can no longer reach.
+      // Unanswered pings are the only reliable signal; force the reconnect instead.
+      let pongAt=Date.now();
+      socket.on('pong',()=>{pongAt=Date.now()});
+      watchdog=setInterval(()=>{
+        if(Date.now()-pongAt>pingInterval*2.5){state.connection='stalled';save();socket.terminate();return}
+        try{socket.ping()}catch{}
+      },pingInterval);
+      const closure=await new Promise((resolve,reject)=>{
         socket.on('message',raw=>{
           try{
             const frame=JSON.parse(raw.toString());
@@ -300,14 +334,26 @@ async function runDaemon(){
             if(frame.type==='protocol_error'){reject(new Error(`Gateway protocol error: ${frame.code}`))}
           }catch(error){reject(error)}
         });
-        socket.once('close',resolve);socket.once('error',reject);
+        socket.once('close',code=>resolve({code}));socket.once('error',reject);
       });
-      clearInterval(heartbeat);
+      // A rejected subscription closes before, or instead of, delivering protocol_error.
+      // Treat the close code as authoritative so an unusable session is never retried forever.
+      if(closure&&(closure.code===4401||closure.code===4403)){
+        state.connection='session_rejected';delete state.session_id;delete state.session_token;save();
+        connectDelay=Math.min(connectDelay*2,backoffCeiling);
+      }
     }catch(error){
-      state.connection='reconnecting';state.last_error=String(error.message??error);save();
-      if(String(error.message??error).includes('revoked'))throw error;
+      state.connection='reconnecting';state.last_error=message(error);save();
+      if(isTerminal(error))throw error;
+      // A session id the Gateway no longer accepts can never recover by retrying it. Drop it
+      // and open a fresh session; the persisted contiguous cursor still drives normal replay.
+      if(isSessionRejected(error)){delete state.session_id;delete state.session_token;save()}
+      connectDelay=Math.min(connectDelay*2,backoffCeiling);
+    }finally{
+      if(heartbeat)clearInterval(heartbeat);
+      if(watchdog)clearInterval(watchdog);
     }
-    if(!stopping)await sleep(1500);
+    if(!stopping)await sleep(connectDelay+Math.floor(Math.random()*250));
   }
 }
 

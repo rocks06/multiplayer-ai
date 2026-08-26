@@ -32,6 +32,7 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
   });
 
   const session=async(req:any)=>{const p=parse(sessionParams,req.params);return gateway.authenticateSession(p.sessionId,authorization(req))};
+  app.get("/v1/agent-gateway/v1/sessions/:sessionId",async req=>{const p=parse(sessionParams,req.params);return gateway.describeSession(p.sessionId,authorization(req))});
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/snapshot",async req=>{const s=await session(req);return rooms.snapshot(s.companyId,s.roomId,s.principalId)});
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/tasks",async req=>{const s=await session(req);return rooms.listEligibleTasks({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId})});
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/tasks/:taskId",async req=>{const p=parse(sessionParams.extend({taskId:z.string().uuid()}),req.params);const s=await gateway.authenticateSession(p.sessionId,authorization(req));return rooms.getTask({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,taskId:p.taskId})});

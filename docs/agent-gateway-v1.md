@@ -71,6 +71,7 @@ Session token endpoints (`:sessionId` is also validated against the bearer token
 
 | Method | Path | Equivalent capability |
 |---|---|---|
+| `GET` | `/sessions/:sessionId` | Durable session status, cursors, and last-seen; read-only, reports an offline session as `offline` rather than `401`, and never refreshes liveness |
 | `GET` | `/sessions/:sessionId/snapshot` | Normalized project/room briefing and current room state |
 | `GET` | `/sessions/:sessionId/tasks` | `task.list_eligible` |
 | `GET` | `/sessions/:sessionId/tasks/:taskId` | `task.get` |
@@ -81,6 +82,19 @@ Session token endpoints (`:sessionId` is also validated against the bearer token
 | `GET` | `/sessions/:sessionId/decisions/:decisionId` | `decision.get` |
 | `POST` | `/sessions/:sessionId/heartbeat` | Report `idle` or `working` and update last-seen |
 | `POST` | `/sessions/:sessionId/disconnect` | Mark session offline |
+
+A runtime's own process being alive and the Gateway holding a connected session are
+independent facts that fail independently. `GET /sessions/:sessionId` is the read-only
+answer to the second; a heartbeat is not a liveness probe, because it makes the runtime look
+alive whether or not it is doing anything.
+
+Reconnection and replay belong to the runtime. After ordinary network loss, sleep, a dropped
+socket, or a Gateway restart, a runtime reconnects on its own with bounded exponential
+backoff using its persisted contiguous cursor. A session the Gateway no longer accepts
+(`gateway_session_invalid`, or a `4401`/`4403` subscription close) can never recover by
+retrying the same id: the runtime opens a fresh session and replays from the same cursor.
+Process supervision such as `launchd` is deployment convenience for a dead process only; it
+is not part of this protocol and is not how ordinary network reconnects are handled.
 
 The prefix for all abbreviated session paths above is `/v1/agent-gateway/v1`. Message, task, and decision mutations require `Idempotency-Key`. Task updates preserve normal optimistic `expected_version` checks. All mutations call existing `RoomService` or decision application methods under the authenticated agent principal.
 

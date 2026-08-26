@@ -7,8 +7,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --check bridge.mjs && node test/mock-gateway-test.mjs && node test/decision-resume-test.mjs",
-    "test:decision-resume": "node --check bridge.mjs && node test/decision-resume-test.mjs"
+    "test": "node --check bridge.mjs && node test/mock-gateway-test.mjs && node test/decision-resume-test.mjs && node test/lifecycle-test.mjs",
+    "test:decision-resume": "node --check bridge.mjs && node test/decision-resume-test.mjs",
+    "test:lifecycle": "node --check bridge.mjs && node test/lifecycle-test.mjs"
   },
   "dependencies": {
     "ws": "8.21.0"

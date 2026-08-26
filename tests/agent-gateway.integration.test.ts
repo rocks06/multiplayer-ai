@@ -84,6 +84,39 @@ describe("Agent Gateway v1",()=>{
   expect((await ca.heartbeat("working")).body.runtime_status).toBe("working");
  });
 
+ it("reports durable session status read-only, including after disconnect, without touching liveness",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Status AI","status"),b=await agent(f,"Other AI","other");
+  const c=await external(a,f.room.id);await c.connect(0);
+  await createTask(f,"Status task",a.principal_id,"status-task");
+  await c.waitFor(frame=>frame.type==="room.event");
+  const connected=await c.sessionStatus();
+  expect(connected.status).toBe(200);
+  expect(connected.body.status).toBe("connected");
+  expect(connected.body.agent_principal_id).toBe(a.principal_id);
+  expect(connected.body.room_id).toBe(f.room.id);
+  expect(connected.body.room_last_event_seq).toBeGreaterThan(0);
+  expect(Number.isInteger(connected.body.last_ack_room_seq)).toBe(true);
+
+  // An offline session must report as offline rather than 401, so a restarted runtime can tell
+  // "the Gateway forgot me" apart from "I am simply not connected".
+  c.close();await sleep(150);
+  const offline=await c.sessionStatus();
+  expect(offline.status).toBe(200);
+  expect(offline.body.status).toBe("offline");
+
+  // A status probe must not refresh liveness. An absent runtime has to keep looking absent,
+  // otherwise the check that would have caught the room sequence 21 outage lies too.
+  const before=(await pool.query(`SELECT last_seen_at FROM external_agent_sessions WHERE id=$1`,[c.sessionId])).rows[0].last_seen_at;
+  await sleep(40);
+  expect((await c.sessionStatus()).body.status).toBe("offline");
+  const after=(await pool.query(`SELECT last_seen_at FROM external_agent_sessions WHERE id=$1`,[c.sessionId])).rows[0].last_seen_at;
+  expect(new Date(after).getTime()).toBe(new Date(before).getTime());
+
+  const other=await external(b,f.room.id);
+  const stolen=await fetch(`${baseUrl}/v1/agent-gateway/v1/sessions/${c.sessionId}`,{headers:{authorization:`Bearer ${other.sessionToken}`}});
+  expect(stolen.status).toBe(401);
+ });
+
  it("forces stale and slow clients to resynchronize instead of dropping or reordering events",async()=>{
   await app.close();await start({maxReplayEvents:1,maxUnackedEvents:1,pollIntervalMs:15});const f=await companyFixture(),a=await agent(f,"Slow AI","slow");const c=await external(a,f.room.id);
   await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"one"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-one"});await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"two"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-two"});

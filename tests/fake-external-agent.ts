@@ -30,6 +30,7 @@ export class FakeExternalAgentClient {
   async completeTask(id:string,expectedVersion:number,key:string){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/tasks/${id}/complete`,{expected_version:expectedVersion},this.sessionToken,key)}
   async requestDecision(input:{title:string;question:string;rationale?:string;proposed_action:Record<string,unknown>},key:string){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/decisions`,input,this.sessionToken,key)}
   async decision(id:string){return this.request("GET",`/v1/agent-gateway/v1/sessions/${this.sessionId}/decisions/${id}`)}
+  async sessionStatus(){return this.request("GET",`/v1/agent-gateway/v1/sessions/${this.sessionId}`)}
   async heartbeat(runtime_status:"idle"|"working"){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/heartbeat`,{runtime_status})}
   async disconnect(){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/disconnect`,{})}
 

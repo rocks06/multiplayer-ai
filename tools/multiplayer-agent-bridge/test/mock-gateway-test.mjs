@@ -20,6 +20,7 @@ const server=http.createServer(async(req,res)=>{
  if(req.url==='/v1/agent-gateway/v1/rooms')return res.end(JSON.stringify({agent_principal_id:principal,rooms:[{id:room,last_event_seq:6}]}));
  if(req.url==='/v1/agent-gateway/v1/sessions'&&req.method==='POST')return res.end(JSON.stringify({session_id:session,session_token:'mags_mock',room_id:room,agent_principal_id:principal}));
  if(req.url?.endsWith('/heartbeat'))return res.end(JSON.stringify({status:'connected'}));
+ if(req.url===`/v1/agent-gateway/v1/sessions/${session}`)return res.end(JSON.stringify({session_id:session,status:'offline',runtime_status:'idle',last_ack_room_seq:6,room_last_event_seq:6,last_seen_at:new Date().toISOString()}));
  res.statusCode=404;res.end(JSON.stringify({error:{code:'not_found'}}));
 });
 const wss=new WebSocketServer({noServer:true});
@@ -63,6 +64,10 @@ const stale=await runStatus([]);
 if(stale.process_running!==false||stale.connection!=='not_running')throw new Error(`Stale status reported ${JSON.stringify(stale)}`);
 const verified=await runStatus(['--verify']);
 if(verified.room_authorized!==true||verified.room_last_event_seq!==6||verified.behind_by!==0)throw new Error(`Verified status reported ${JSON.stringify(verified)}`);
+// Local process liveness and Gateway-side session status are independent facts. Here the
+// process is gone while the Gateway still holds an offline session row; both must be visible.
+if(verified.gateway_session_status!=='offline')throw new Error(`Expected Gateway session status offline, got ${JSON.stringify(verified)}`);
+if(verified.process_running!==false)throw new Error(`Expected dead process, got ${JSON.stringify(verified)}`);
 wssClosed();
-console.log(JSON.stringify({mock_gateway_passed:true,session_created:true,snapshot_seq:5,applied_event_seq:6,ack_seq:ack,hermes_replaced_with:'/usr/bin/true',stale_pid_reported_as:stale.connection,verified_behind_by:verified.behind_by,real_room_touched:false}));
+console.log(JSON.stringify({mock_gateway_passed:true,session_created:true,snapshot_seq:5,applied_event_seq:6,ack_seq:ack,hermes_replaced_with:'/usr/bin/true',stale_pid_reported_as:stale.connection,gateway_session_status:verified.gateway_session_status,verified_behind_by:verified.behind_by,real_room_touched:false}));
 fs.rmSync(root,{recursive:true,force:true});
