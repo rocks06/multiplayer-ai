@@ -72,6 +72,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   // Authenticated workspace creation. The unauthenticated POST /v1/companies below remains a
   // developer bootstrap and a documented staging blocker; this path does not depend on it.
   app.post('/v1/workspaces',async req=>{const x=body(z.object({name:z.string().min(1).max(100)}),req.body);const session=await auth.resolveSession(readSessionCookie(req));return service.createWorkspaceForUser(session.userId,x.name)});
+  app.get('/v1/companies/:companyId/rooms',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);return service.listRoomsForPrincipal(p.companyId,await principal(req,p.companyId))});
   app.get('/v1/companies/:companyId/agents',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);return service.listCompanyAgents(p.companyId,await principal(req,p.companyId))});
   app.post('/v1/companies',async req=>{const x=body(z.object({name:z.string().min(1)}),req.body);return service.createCompany(x.name)});
   app.post('/v1/companies/:companyId/humans',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({email:z.string().email(),display_name:z.string().min(1)}),req.body);return service.createHuman(p.companyId,x.email,x.display_name)});

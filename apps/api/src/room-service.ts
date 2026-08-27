@@ -135,6 +135,27 @@ export class RoomService {
   async createHuman(companyId:string,email:string,displayName:string) { const userId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO users(id,email,display_name) VALUES($1,$2,$3)`,[userId,email,displayName]); await c.query(`INSERT INTO company_users(company_id,user_id) VALUES($1,$2)`,[companyId,userId]); await c.query(`INSERT INTO principals(id,company_id,kind,user_id,display_name) VALUES($1,$2,'human',$3,$4)`,[principalId,companyId,userId,displayName]); await c.query('COMMIT'); return {user_id:userId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
   async createAgent(companyId:string,ownerUserId:string,name:string) { const agentId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO agents(id,company_id,owner_user_id,name) VALUES($1,$2,$3,$4)`,[agentId,companyId,ownerUserId,name]); await c.query(`INSERT INTO principals(id,company_id,kind,agent_id,display_name) VALUES($1,$2,'agent',$3,$4)`,[principalId,companyId,agentId,name]); await c.query('COMMIT'); return {agent_id:agentId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
   /**
+   * The rooms this person can open in a company, for resuming after sign-in and for finding the
+   * way back into work. Scoped to their own active membership, so every room listed is one they
+   * can actually enter — and a room with no agents in it lists like any other. The project is
+   * carried only because a room is named within one and would otherwise be ambiguous.
+   */
+  async listRoomsForPrincipal(companyId:string,actorId:string) {
+    const c=await this.pool.connect();
+    try {
+      await this.actor(c,companyId,actorId);
+      const result=await c.query<{room_id:string;name:string;project_id:string;project_name:string}>(
+        `SELECT r.id room_id,r.name,p.id project_id,p.name project_name
+         FROM room_members rm
+         JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id
+         JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id
+         WHERE rm.company_id=$1 AND rm.principal_id=$2 AND rm.status='active'
+         ORDER BY r.created_at`,[companyId,actorId]);
+      return {rooms:result.rows};
+    } finally { c.release(); }
+  }
+
+  /**
    * Create an agent on behalf of an authenticated human principal. Ownership is derived from
    * who is acting, never from the request: a caller cannot name another user as the owner, and
    * a principal that is not active in the addressed company cannot create one at all.

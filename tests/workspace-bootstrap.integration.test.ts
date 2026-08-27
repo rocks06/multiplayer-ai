@@ -95,6 +95,39 @@ describe("Workspace bootstrap and agent listing", () => {
     });
   });
 
+  describe("room listing", () => {
+    /* Someone returning after sign-in, or interrupted part-way through setting up, has to be
+       able to find their way back from workspace state rather than from what agents happen to
+       have joined. */
+    it("lists the rooms a person can open, including one with no agents in it", async () => {
+      const me = await signedInUser();
+      const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
+      const project = (await call("POST", `/v1/companies/${workspace.company_id}/projects`, { name: "Developer API", objective: "Launch it" }, { cookie: me.cookie })).json();
+      const room = (await call("POST", `/v1/companies/${workspace.company_id}/projects/${project.id}/rooms`, { name: "API Launch", responsibilities: "Own it" }, { cookie: me.cookie })).json();
+
+      const listed = await call("GET", `/v1/companies/${workspace.company_id}/rooms`, undefined, { cookie: me.cookie });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json()).toEqual({ rooms: [{ room_id: room.id, name: "API Launch", project_id: project.id, project_name: "Developer API" }] });
+    });
+
+    it("is empty for a new workspace rather than absent", async () => {
+      const me = await signedInUser();
+      const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
+      expect((await call("GET", `/v1/companies/${workspace.company_id}/rooms`, undefined, { cookie: me.cookie })).json()).toEqual({ rooms: [] });
+    });
+
+    it("refuses an anonymous caller and a stranger to the company", async () => {
+      const me = await signedInUser();
+      const stranger = await signedInUser("Dana");
+      const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
+      const project = (await call("POST", `/v1/companies/${workspace.company_id}/projects`, { name: "P", objective: "O" }, { cookie: me.cookie })).json();
+      await call("POST", `/v1/companies/${workspace.company_id}/projects/${project.id}/rooms`, { name: "Launch", responsibilities: "Own it" }, { cookie: me.cookie });
+
+      expect((await call("GET", `/v1/companies/${workspace.company_id}/rooms`)).statusCode).toBe(401);
+      expect((await call("GET", `/v1/companies/${workspace.company_id}/rooms`, undefined, { cookie: stranger.cookie })).statusCode).toBe(403);
+    });
+  });
+
   describe("adding an agent", () => {
     /* Creating an agent mints a principal inside a company. It was once possible to do that
        with no session at all, naming any user as the owner; these hold that door shut. */
