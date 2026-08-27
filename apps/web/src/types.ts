@@ -16,4 +16,6 @@ export interface RoomSnapshot {
 }
 export type ConnectionState='connecting'|'live'|'reconnecting'|'resyncing'|'offline'|'revoked';
 export interface RoomIdentity {companyId:string;roomId:string;principalId:string}
+/** An agent as the company knows it: the record actions address, and whether it is paused. */
+export interface CompanyAgent {agent_id:string;principal_id:string;display_name:string;status:'active'|'paused'|'archived';connector_enrolled?:boolean}
 export interface ApiErrorShape {error?:{code?:string;message?:string;details?:Record<string,unknown>}}

@@ -1,4 +1,4 @@
-import type {ApiErrorShape,Decision,RoomIdentity,RoomSnapshot,TaskStatus} from './types';
+import type {ApiErrorShape,CompanyAgent,Decision,RoomIdentity,RoomSnapshot,TaskStatus} from './types';
 
 const commandKey=()=>{
  const webCrypto=globalThis.crypto;
@@ -12,7 +12,7 @@ const commandKey=()=>{
 
 /** Carries the server's own error code, so callers can say something better than a status number. */
 export class ApiError extends Error{
-  constructor(message:string,readonly code:string,readonly status:number){super(message)}
+  constructor(message:string,readonly code:string,readonly status:number,readonly details?:Record<string,unknown>){super(message)}
 }
 
 export class RoomApi {
@@ -24,7 +24,7 @@ export class RoomApi {
     const response=await fetch(`${this.base}${path}`,{...init,headers,credentials:'same-origin'});
     if(!response.ok){
       const body=await response.json().catch(()=>({})) as ApiErrorShape;
-      throw new ApiError(body.error?.message??`Request failed (${response.status})`,body.error?.code??'unknown',response.status);
+      throw new ApiError(body.error?.message??`Request failed (${response.status})`,body.error?.code??'unknown',response.status,body.error?.details);
     }
     return response.json() as Promise<T>;
   }
@@ -32,9 +32,40 @@ export class RoomApi {
   decisions(){return this.request<{decisions:Decision[]}>('/decisions?status=pending')}
   sendMessage(body:string,addressedPrincipalId?:string){return this.request('/messages',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined})})}
   createTask(input:{title:string;description:string;assigneePrincipalId?:string}){return this.request('/tasks',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({title:input.title,description:input.description,assignee_principal_id:input.assigneePrincipalId||undefined})})}
-  updateTask(taskId:string,status:TaskStatus,expectedVersion:number){return this.request(`/tasks/${taskId}/status`,{method:'PATCH',headers:{'idempotency-key':commandKey()},body:JSON.stringify({status,expected_version:expectedVersion})})}
+  updateTask(taskId:string,status:TaskStatus,expectedVersion:number){return this.request(`/tasks/${taskId}/status`,{method:'PATCH',headers:{'idempotency-key':`task-${taskId}-${status}-v${expectedVersion}`},body:JSON.stringify({status,expected_version:expectedVersion})})}
   /** The key is stable per decision and outcome, so a double submission returns the original
    *  result instead of colliding on the version it already advanced. */
+  /* Reassigning, cancelling, and starting all carry the version they were decided from, so a
+     repeated submission returns the original result instead of acting twice. */
+  reassignTask(taskId:string,assigneePrincipalId:string|null,expectedVersion:number){
+    return this.request(`/tasks/${taskId}/assignee`,{method:'PATCH',
+      headers:{'idempotency-key':`task-${taskId}-assignee-v${expectedVersion}`},
+      body:JSON.stringify({assignee_principal_id:assigneePrincipalId,expected_version:expectedVersion})})}
+  addDependency(taskId:string,dependsOnTaskId:string){
+    return this.request(`/tasks/${taskId}/dependencies`,{method:'POST',
+      headers:{'idempotency-key':`task-${taskId}-dep-add-${dependsOnTaskId}`},
+      body:JSON.stringify({depends_on_task_id:dependsOnTaskId})})}
+  removeDependency(taskId:string,dependsOnTaskId:string){
+    return this.request(`/tasks/${taskId}/dependencies/${dependsOnTaskId}`,{method:'DELETE',
+      headers:{'idempotency-key':`task-${taskId}-dep-remove-${dependsOnTaskId}`}})}
+  /** Recorded in the room under the manager's name, with the reason they gave. */
+  overrideDependencies(taskId:string,reason:string){
+    return this.request(`/tasks/${taskId}/dependency-override`,{method:'POST',
+      headers:{'idempotency-key':commandKey()},body:JSON.stringify({reason})})}
+  /* Pause and resume address the agent record rather than its room principal, and whether an
+     agent is paused is a company-level fact, so both come from the company agent list. */
+  async companyAgents():Promise<CompanyAgent[]>{
+    const response=await fetch(`/v1/companies/${this.identity.companyId}/agents`,{credentials:'same-origin'});
+    if(!response.ok){
+      const problem=await response.json().catch(()=>({})) as ApiErrorShape;
+      throw new ApiError(problem.error?.message??`Request failed (${response.status})`,problem.error?.code??'unknown',response.status,problem.error?.details);
+    }
+    const payload=await response.json() as {agents?:CompanyAgent[]};
+    return payload.agents??[];
+  }
+  pauseAgent(agentId:string){return this.request(`/agents/${agentId}/pause`,{method:'POST',headers:{'idempotency-key':commandKey()}})}
+  resumeAgent(agentId:string){return this.request(`/agents/${agentId}/resume`,{method:'POST',headers:{'idempotency-key':commandKey()}})}
+
   resolveDecision(decision:Decision,resolution:'approve'|'reject',note:string){return this.request(`/decisions/${decision.id}/${resolution}`,{method:'POST',headers:{'idempotency-key':`decision-${decision.id}-${resolution}-v${decision.version}`},body:JSON.stringify({proposed_action_digest:decision.proposed_action_digest,expected_version:decision.version,note:note||undefined})})}
   streamUrl(afterSeq?:number){
     const scheme=location.protocol==='https:'?'wss':'ws';

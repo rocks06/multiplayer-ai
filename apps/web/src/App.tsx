@@ -4,14 +4,13 @@ import {ApiError,currentIdentity,roomFromLocation} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
+import {AgentControls,SharedWork,type WorkActions} from './Work';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
-import type {ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
+import type {CompanyAgent,ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
 import './styles.css';
 
 const formatTime=(value:string)=>new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));
-const labels:Record<TaskStatus,string>={open:'Open',in_progress:'In progress',blocked:'Blocked',awaiting_decision:'Waiting for human',completed:'Completed',cancelled:'Cancelled'};
-const transitions:Record<TaskStatus,TaskStatus[]>={open:['in_progress','cancelled'],in_progress:['blocked','awaiting_decision','completed','cancelled'],blocked:['in_progress','cancelled'],awaiting_decision:['in_progress','cancelled'],completed:[],cancelled:[]};
 
 function Mark({member}:{member:Member}){return <span className={`identity-mark ${member.kind}`} aria-hidden="true">{member.display_name.slice(0,1).toUpperCase()}</span>}
 /** One shared clock for the whole rail, coarse enough that labels do not rewrite themselves. */
@@ -27,19 +26,21 @@ function useCoarseNow(active:boolean){
 
 /* Primitive props so the memo actually holds: a row re-renders only when something it shows
    has changed, not every time the rail's clock ticks. */
-const PresenceRow=memo(function PresenceRow({name,initial,label,tone,detail,elapsed,lastSeenAt}:{name:string;initial:string;label:string;tone:string;detail?:string;elapsed:string|null;lastSeenAt?:string}){
-  return <li className="person-row">
+const PresenceRow=memo(function PresenceRow({name,initial,label,tone,detail,elapsed,lastSeenAt,paused}:{name:string;initial:string;label:string;tone:string;detail?:string;elapsed:string|null;lastSeenAt?:string;paused?:boolean}){
+  return <>
     <span className="identity-mark agent" aria-hidden="true">{initial}</span>
     <span className="person-copy">
       <strong>{name}</strong>
       <small className="person-state">
         <span className={`state-dot ${tone}`} aria-hidden="true"/>
         <span className="state-label">{label}</span>
+        {/* Paused is a supervisory state, shown beside reachability rather than hiding it. */}
+        {paused&&<span className="paused-chip">Paused</span>}
         {elapsed&&<span className="state-since" title={lastSeenAt}>{elapsed}</span>}
       </small>
       {detail&&<small className="person-detail">{detail}</small>}
     </span>
-  </li>;
+  </>;
 });
 
 function HumanRow({member,current}:{member:Member;current:boolean}){
@@ -52,7 +53,9 @@ function HumanRow({member,current}:{member:Member;current:boolean}){
   </li>;
 }
 
-export function Participants({members,currentId,tasks,decisions}:{members:Member[];currentId:string;tasks:Task[];decisions:Decision[]}){
+export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage}:{
+  members:Member[];currentId:string;tasks:Task[];decisions:Decision[];
+  companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void}){
   const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
   // Only agents that are not currently reachable carry an elapsed reading, so the clock runs
   // only when something on screen actually depends on it.
@@ -61,10 +64,16 @@ export function Participants({members,currentId,tasks,decisions}:{members:Member
   return <aside className="participants" aria-label="Room participants">
     <div className="rail-heading"><Users size={15}/><span>In this room</span><b>{members.length}</b></div>
     <section><h2>People</h2><ul>{humans.map(m=><HumanRow key={m.principal_id} member={m} current={m.principal_id===currentId}/>)}</ul></section>
-    <section><h2>Agents</h2><ul>{presences.map(({agent,presence})=>
-      <PresenceRow key={agent.principal_id} name={agent.display_name} initial={agent.display_name.slice(0,1).toUpperCase()}
-        label={presence.label} tone={presence.tone} detail={presence.detail}
-        elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>)}</ul></section>
+    <section><h2>Agents</h2><ul>{presences.map(({agent,presence})=>{
+      const record=companyAgents?.find(a=>a.principal_id===agent.principal_id);
+      return <li className="person-row" key={agent.principal_id}>
+        <PresenceRow name={agent.display_name} initial={agent.display_name.slice(0,1).toUpperCase()}
+          label={presence.label} tone={presence.tone} detail={presence.detail} paused={record?.status==='paused'}
+          elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>
+        {actions&&onMessage&&
+          <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage}/>}
+      </li>;
+    })}</ul></section>
     <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state, never inferred.</div>
   </aside>;
 }
@@ -214,12 +223,15 @@ function Transcript({messages,members,events,lastEvent}:{messages:Message[];memb
   </div>
 }
 
-function Composer({members,onSend}:{members:Member[];onSend:(body:string,to?:string)=>Promise<void>}){
-  const [body,setBody]=useState(''),[to,setTo]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+function Composer({members,onSend,to,onAddressee,focusToken}:{members:Member[];onSend:(body:string,to?:string)=>Promise<void>;to:string;onAddressee:(id:string)=>void;focusToken:number}){
+  const [body,setBody]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const field=useRef<HTMLTextAreaElement>(null);
+  // Choosing to message an agent should land the person in the box, ready to write.
+  useEffect(()=>{if(focusToken)field.current?.focus()},[focusToken]);
   const submit=async(e?:FormEvent)=>{e?.preventDefault();if(!body.trim()||busy)return;setBusy(true);setError('');try{await onSend(body.trim(),to||undefined);setBody('')}catch(x){setError((x as Error).message)}finally{setBusy(false)}};
   return <form className="composer" onSubmit={submit} aria-label="Send a room message">
-    <div className="composer-meta"><label>Send to <select value={to} onChange={e=>setTo(e.target.value)}><option value="">Everyone</option>{members.map(m=><option value={m.principal_id} key={m.principal_id}>{m.display_name}</option>)}</select></label><span>Enter to send · Shift Enter for a new line</span></div>
-    <div className="composer-input"><textarea aria-label="Message" placeholder="Add direction, context, or a question…" value={body} rows={2} onChange={e=>setBody(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void submit()}}}/><button disabled={!body.trim()||busy} aria-label="Send message"><ArrowUp size={18}/></button></div>
+    <div className="composer-meta"><label>Send to <select value={to} onChange={e=>onAddressee(e.target.value)}><option value="">Everyone</option>{members.map(m=><option value={m.principal_id} key={m.principal_id}>{m.display_name}</option>)}</select></label><span>Enter to send · Shift Enter for a new line</span></div>
+    <div className="composer-input"><textarea ref={field} aria-label="Message" placeholder="Add direction, context, or a question…" value={body} rows={2} onChange={e=>setBody(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void submit()}}}/><button disabled={!body.trim()||busy} aria-label="Send message"><ArrowUp size={18}/></button></div>
     {error&&<p className="form-error" role="alert">{error}</p>}
   </form>
 }
@@ -310,16 +322,6 @@ function BlockedItem({task,owner}:{task:Task;owner?:Member}){
   </article>
 }
 
-function TaskRow({task,owner,canManage,onUpdate}:{task:Task;owner?:Member;canManage:boolean;onUpdate:(status:TaskStatus)=>Promise<void>}){
-  const [busy,setBusy]=useState(false);
-  const update=async(status:TaskStatus)=>{setBusy(true);try{await onUpdate(status)}finally{setBusy(false)}};
-  return <li className={`task-row ${task.status}`} data-testid="task-row">
-    <button className="task-state" aria-label={`${task.title}: ${labels[task.status]}`} disabled={!canManage||!transitions[task.status].length||busy} onClick={()=>{const next=transitions[task.status][0];if(next)void update(next)}}><span>{task.status==='completed'?<Check size={13}/>:task.status==='blocked'?<X size={12}/>:task.status==='awaiting_decision'?<Clock3 size={12}/>:null}</span></button>
-    <div><strong>{task.title}</strong><small>{owner?.display_name??'Unassigned'} · {labels[task.status]}</small></div>
-    {canManage&&transitions[task.status].length>1&&<select aria-label={`Change status for ${task.title}`} disabled={busy} value="" onChange={e=>void update(e.target.value as TaskStatus)}><option value="">•••</option>{transitions[task.status].map(s=><option value={s} key={s}>{labels[s]}</option>)}</select>}
-  </li>
-}
-
 function TaskCreator({agents,onCreate}:{agents:Member[];onCreate:(x:{title:string;description:string;assigneePrincipalId?:string})=>Promise<void>}){
   const [open,setOpen]=useState(false),[title,setTitle]=useState(''),[description,setDescription]=useState(''),[owner,setOwner]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const submit=async(e:FormEvent)=>{e.preventDefault();if(!title.trim())return;setBusy(true);setError('');try{await onCreate({title:title.trim(),description:description.trim(),assigneePrincipalId:owner||undefined});setTitle('');setDescription('');setOpen(false)}catch(x){setError((x as Error).message)}finally{setBusy(false)}};
@@ -385,6 +387,17 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   const oversightTrigger=useRef<HTMLButtonElement>(null);
   const oversightClose=useRef<HTMLButtonElement>(null);
 
+  const [addressee,setAddressee]=useState('');
+  const [composerFocus,setComposerFocus]=useState(0);
+  /* Which agent record an action addresses, and whether it is paused, are company-level facts
+     the room snapshot does not carry. They are refetched whenever the room reports an agent
+     changing, so a pause made here or elsewhere is reflected without polling. */
+  const [companyAgents,setCompanyAgents]=useState<CompanyAgent[]>([]);
+  const loadAgents=useCallback(()=>{void api.companyAgents().then(setCompanyAgents).catch(()=>{})},[api]);
+  useEffect(loadAgents,[loadAgents]);
+  const agentEventSeq=lastEvent&&lastEvent.event_type.startsWith('agent.')?lastEvent.room_seq:0;
+  useEffect(()=>{if(agentEventSeq)loadAgents()},[agentEventSeq,loadAgents]);
+
   const closeOversight=useCallback(()=>{setOversightOpen(false);oversightTrigger.current?.focus()},[]);
   useEffect(()=>{
     if(!oversightOpen)return;
@@ -403,6 +416,18 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   const managers=current?.role==='manager';const agents=snapshot.members.filter(m=>m.kind==='agent');const pending=snapshot.briefing.unresolved_decisions;
   const recent=snapshot.briefing.important_recent_activity;
   const mutate=async(action:()=>Promise<unknown>)=>{await action();await refresh()};
+  /* Every consequential change is an explicit, named command against a real primitive. There is
+     no intent parsing: what the person pressed is what is sent. */
+  const actions:WorkActions={
+    setStatus:(task,status)=>mutate(()=>api.updateTask(task.id,status,task.version)),
+    reassign:(task,to)=>mutate(()=>api.reassignTask(task.id,to,task.version)),
+    addDependency:(task,dependsOn)=>mutate(()=>api.addDependency(task.id,dependsOn)),
+    removeDependency:(task,dependsOn)=>mutate(()=>api.removeDependency(task.id,dependsOn)),
+    override:(task,reason)=>mutate(()=>api.overrideDependencies(task.id,reason)),
+    pause:agent=>mutate(()=>api.pauseAgent(agent.agent_id)).then(loadAgents),
+    resume:agent=>mutate(()=>api.resumeAgent(agent.agent_id)).then(loadAgents),
+  };
+  const messageAgent=(principalId:string)=>{setAddressee(principalId);setComposerFocus(n=>n+1);setOversightOpen(false)};
   // Every number in the mobile trigger is counted from state already known to be true.
   const openWork=snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status));
   const blocked=openWork.filter(t=>t.status==='blocked');
@@ -423,7 +448,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
       <RoomContext workspace={workspace} snapshot={snapshot}/>
-      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div><span className="sequence">SEQ {snapshot.snapshot_seq}</span></div><Transcript messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))}/></section>
+      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div><span className="sequence">SEQ {snapshot.snapshot_seq}</span></div><Transcript messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
       <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
         <div className="sheet-bar">
           <span>Team &amp; work</span>
@@ -435,8 +460,11 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
           {needsYou.decisions.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} onResolve={(result,note)=>mutate(()=>api.resolveDecision(d,result,note))}/>)}
           {needsYou.blocked.map(t=><BlockedItem key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)}/>)}
         </section>}
-          <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}/>
-          <section className="tasks"><div className="section-label"><span>Shared work</span><b>{snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status)).length}</b></div><ul>{snapshot.tasks.map(t=><TaskRow key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)} canManage={managers||t.assignee_principal_id===identity.principalId} onUpdate={s=>mutate(()=>api.updateTask(t.id,s,t.version))}/>)}</ul>{!snapshot.tasks.length&&<p className="small-empty">No tasks yet. Add the first concrete piece of work.</p>}<TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/></section>
+          <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}
+            companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent}/>
+          <SharedWork tasks={snapshot.tasks} members={snapshot.members} agents={agents} canManage={managers} currentId={identity.principalId} actions={actions}>
+            <TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/>
+          </SharedWork>
           <details className="activity"><summary className="section-label"><span>Room activity</span></summary><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></details>
         </div>
       </aside>
