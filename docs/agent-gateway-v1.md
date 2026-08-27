@@ -66,6 +66,7 @@ Credential token endpoints:
 |---|---|---|
 | `GET` | `/v1/agent-gateway/v1/rooms` | Discover active authorized rooms and normalized project metadata |
 | `POST` | `/v1/agent-gateway/v1/sessions` | Open a durable room session (`room_id`, optional `runtime_status`) |
+| `POST` | `/v1/agent-gateway/v1/enroll` | Exchange a single-use enrollment code for a machine credential. Unauthenticated by design — the code is the authentication |
 
 Session token endpoints (`:sessionId` is also validated against the bearer token):
 
@@ -82,6 +83,18 @@ Session token endpoints (`:sessionId` is also validated against the bearer token
 | `GET` | `/sessions/:sessionId/decisions/:decisionId` | `decision.get` |
 | `POST` | `/sessions/:sessionId/heartbeat` | Report `idle` or `working` and update last-seen |
 | `POST` | `/sessions/:sessionId/disconnect` | Mark session offline |
+
+## Enrollment
+
+A machine credential is never typed or pasted by a person. An active company human issues a
+short, single-use code from `POST /v1/companies/:companyId/agents/:agentPrincipalId/enrollments`;
+the code is returned exactly once and only its SHA-256 digest is stored. A connecting runtime
+exchanges it at `POST /v1/agent-gateway/v1/enroll` for a credential.
+
+The agent principal is carried by the token, never chosen by the caller, so an enrolling
+device cannot select an identity. Redemption consumes the token in the same statement that
+validates it, which is what makes a code single-use under concurrent attempts. Expiry is
+short and bounded server-side.
 
 A runtime's own process being alive and the Gateway holding a connected session are
 independent facts that fail independently. `GET /sessions/:sessionId` is the read-only

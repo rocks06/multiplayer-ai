@@ -315,3 +315,24 @@ CREATE TABLE IF NOT EXISTS external_agent_sessions (
   UNIQUE (company_id,id)
 );
 CREATE INDEX IF NOT EXISTS external_agent_sessions_active_idx ON external_agent_sessions(company_id,agent_principal_id,room_id,status,last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_enrollment_tokens (
+  id uuid PRIMARY KEY,
+  company_id uuid NOT NULL,
+  agent_principal_id uuid NOT NULL,
+  code_hash text NOT NULL UNIQUE CHECK (code_hash ~ '^[0-9a-f]{64}$'),
+  code_prefix text NOT NULL,
+  label text NOT NULL,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','consumed','revoked')),
+  created_by_principal_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  consumed_at timestamptz,
+  device_label text,
+  credential_id uuid REFERENCES external_agent_credentials(id),
+  FOREIGN KEY (company_id,agent_principal_id) REFERENCES principals(company_id,id),
+  FOREIGN KEY (company_id,created_by_principal_id) REFERENCES principals(company_id,id),
+  CHECK ((status = 'consumed') = (consumed_at IS NOT NULL)),
+  UNIQUE (company_id,id)
+);
+CREATE INDEX IF NOT EXISTS agent_enrollment_tokens_agent_idx ON agent_enrollment_tokens(company_id,agent_principal_id,status,expires_at DESC);

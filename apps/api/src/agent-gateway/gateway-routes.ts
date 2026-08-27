@@ -25,6 +25,19 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
     return gateway.revokeCredential({companyId:p.companyId,actorId:actor,credentialId:p.credentialId});
   });
 
+  app.post("/v1/companies/:companyId/agents/:agentPrincipalId/enrollments",async req=>{
+    const p=parse(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);
+    const x=parse(z.object({label:z.string().min(1).max(100),ttl_minutes:z.number().int().min(1).max(60).optional()}),req.body);
+    const actor=req.headers["x-principal-id"];if(typeof actor!=="string")throw new DomainError("unauthenticated","x-principal-id is required",401);
+    return gateway.createEnrollment({companyId:p.companyId,actorId:actor,agentPrincipalId:p.agentPrincipalId,label:x.label,ttlMinutes:x.ttl_minutes});
+  });
+  // Unauthenticated by design: the single-use code is the authentication, and it names the
+  // principal so a connecting device can never choose one.
+  app.post("/v1/agent-gateway/v1/enroll",async req=>{
+    const x=parse(z.object({code:z.string().min(8).max(64),device_label:z.string().min(1).max(100).optional()}),req.body);
+    return gateway.redeemEnrollment({code:x.code.trim().toUpperCase(),deviceLabel:x.device_label});
+  });
+
   app.get("/v1/agent-gateway/v1/rooms",req=>gateway.listRooms(authorization(req)));
   app.post("/v1/agent-gateway/v1/sessions",async req=>{
     const x=parse(z.object({room_id:z.string().uuid(),runtime_status:z.enum(["idle","working"]).default("idle")}),req.body);

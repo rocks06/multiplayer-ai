@@ -6,6 +6,17 @@ import { DomainError } from "../../../../packages/domain/src/index.js";
 const hash = (secret:string) => createHash("sha256").update(secret).digest("hex");
 const secret = (prefix:string) => `${prefix}_${randomBytes(32).toString("base64url")}`;
 
+// Enrollment codes are typed by a person, so the alphabet excludes characters that are easy
+// to confuse. Twelve characters over 32 symbols is ~1.2e18 combinations, and a code is
+// additionally single-use and short-lived.
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const enrollmentCode = () => {
+  const bytes = randomBytes(12);
+  const body = Array.from(bytes, byte => CODE_ALPHABET[byte % CODE_ALPHABET.length]).join("");
+  return `MPAI-${body.slice(0,4)}-${body.slice(4,8)}-${body.slice(8,12)}`;
+};
+const DEFAULT_ENROLLMENT_TTL_MINUTES = 15;
+
 export interface GatewayIdentity {
   sessionId:string;
   credentialId:string;
@@ -38,6 +49,53 @@ export class AgentGatewayService {
       await c.query(`INSERT INTO external_agent_credentials(id,company_id,agent_principal_id,token_hash,token_prefix,label,created_by_principal_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,[id,input.companyId,input.agentPrincipalId,hash(token),token.slice(0,12),input.label,input.actorId]);
       await c.query("COMMIT");
       return {id,company_id:input.companyId,agent_principal_id:input.agentPrincipalId,label:input.label,credential_token:token};
+    } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
+  }
+
+  /**
+   * Issue a single-use enrollment code for one agent principal. The raw code is returned
+   * exactly once and only its digest is stored, so it cannot be recovered from the database.
+   */
+  async createEnrollment(input:{companyId:string;actorId:string;agentPrincipalId:string;label:string;ttlMinutes?:number}) {
+    const c=await this.pool.connect();
+    try {
+      await c.query("BEGIN");
+      const actor=await c.query(`SELECT 1 FROM principals WHERE company_id=$1 AND id=$2 AND kind='human' AND status='active'`,[input.companyId,input.actorId]);
+      if(!actor.rowCount) throw new DomainError("permission_denied","An active company human must issue enrollment codes",403);
+      const agent=await c.query(`SELECT 1 FROM principals p JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id WHERE p.company_id=$1 AND p.id=$2 AND p.kind='agent' AND p.status='active' AND a.status='active'`,[input.companyId,input.agentPrincipalId]);
+      if(!agent.rowCount) throw new DomainError("agent_not_found","Active company agent principal not found",404);
+      const ttl=Math.min(Math.max(Number(input.ttlMinutes ?? DEFAULT_ENROLLMENT_TTL_MINUTES),1),60);
+      const id=uuidv7(),code=enrollmentCode();
+      const inserted=await c.query<{expires_at:string}>(`INSERT INTO agent_enrollment_tokens(id,company_id,agent_principal_id,code_hash,code_prefix,label,created_by_principal_id,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()+($8||' minutes')::interval) RETURNING expires_at`,[id,input.companyId,input.agentPrincipalId,hash(code),code.slice(0,9),input.label,input.actorId,String(ttl)]);
+      await c.query("COMMIT");
+      return {id,company_id:input.companyId,agent_principal_id:input.agentPrincipalId,label:input.label,enrollment_code:code,expires_at:inserted.rows[0]!.expires_at};
+    } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
+  }
+
+  /**
+   * Exchange an enrollment code for a machine credential. Unauthenticated by design: the code
+   * is the authentication. The agent principal comes from the token, never from the caller,
+   * so an enrolling device cannot choose an identity.
+   */
+  async redeemEnrollment(input:{code:string;deviceLabel?:string}) {
+    const c=await this.pool.connect();
+    try {
+      await c.query("BEGIN");
+      // Consuming and validating in one statement is what makes a code single-use under
+      // concurrent redemption attempts.
+      const claimed=await c.query<{id:string;company_id:string;agent_principal_id:string;label:string}>(`UPDATE agent_enrollment_tokens SET status='consumed',consumed_at=now(),device_label=$2 WHERE code_hash=$1 AND status='pending' AND expires_at>now() RETURNING id,company_id,agent_principal_id,label`,[hash(input.code),input.deviceLabel??null]);
+      if(!claimed.rowCount) throw new DomainError("enrollment_invalid","Enrollment code is invalid, already used, or expired",401);
+      const token=claimed.rows[0]!;
+      const agent=await c.query(`SELECT 1 FROM principals p JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id WHERE p.company_id=$1 AND p.id=$2 AND p.kind='agent' AND p.status='active' AND a.status='active'`,[token.company_id,token.agent_principal_id]);
+      if(!agent.rowCount) throw new DomainError("agent_not_found","Agent principal is no longer active",404);
+      const credentialId=uuidv7(),credential=secret("magc");
+      const label=input.deviceLabel?`${token.label} (${input.deviceLabel})`:token.label;
+      await c.query(`INSERT INTO external_agent_credentials(id,company_id,agent_principal_id,token_hash,token_prefix,label,created_by_principal_id) SELECT $1,$2,$3,$4,$5,$6,created_by_principal_id FROM agent_enrollment_tokens WHERE id=$7`,[credentialId,token.company_id,token.agent_principal_id,hash(credential),credential.slice(0,12),label,token.id]);
+      await c.query(`UPDATE agent_enrollment_tokens SET credential_id=$2 WHERE id=$1`,[token.id,credentialId]);
+      const rooms=await c.query(`SELECT r.id,r.name,p.name project_name FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id WHERE rm.company_id=$1 AND rm.principal_id=$2 AND rm.status='active' AND rm.role='worker_agent' ORDER BY rm.joined_at`,[token.company_id,token.agent_principal_id]);
+      const name=await c.query<{display_name:string}>(`SELECT display_name FROM principals WHERE company_id=$1 AND id=$2`,[token.company_id,token.agent_principal_id]);
+      await c.query("COMMIT");
+      return {protocol:"agent-gateway.v1",credential_id:credentialId,credential_token:credential,company_id:token.company_id,agent_principal_id:token.agent_principal_id,agent_display_name:name.rows[0]?.display_name??null,rooms:rooms.rows};
     } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
   }
 

@@ -32,7 +32,7 @@ describe("Agent Gateway v1",()=>{
  async function external(a:any,roomId:string){const c=new FakeExternalAgentClient(baseUrl);clients.add(c);c.credentialToken=a.credential.credential_token;c.roomId=roomId;expect((await c.open()).status).toBe(200);return c}
  async function createTask(f:any,title:string,assignee:string,key:string){return (await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/tasks`,{title,description:"gateway task",assignee_principal_id:assignee},{"x-principal-id":f.owner.principal_id,"idempotency-key":key})).json()}
 
- beforeEach(async()=>{const bootstrap=new Pool({connectionString});await bootstrap.query(await readFile("packages/db/schema.sql","utf8"));await bootstrap.query(`TRUNCATE external_agent_sessions,external_agent_credentials,decisions,agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);await bootstrap.end();await start()});
+ beforeEach(async()=>{const bootstrap=new Pool({connectionString});await bootstrap.query(await readFile("packages/db/schema.sql","utf8"));await bootstrap.query(`TRUNCATE agent_enrollment_tokens,external_agent_sessions,external_agent_credentials,decisions,agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);await bootstrap.end();await start()});
  afterEach(async()=>{for(const c of clients)c.close();clients.clear();await app.close()});
 
  it("authenticates scoped credentials and rejects revocation, impersonation by IDs, cross-agent/company access, and inactive membership",async()=>{
@@ -82,6 +82,61 @@ describe("Agent Gateway v1",()=>{
   expect(ca.gaps).toEqual([]);expect([...ca.applied.keys()].filter(seq=>seq>before)).toEqual([...new Set([...ca.applied.keys()].filter(seq=>seq>before))]);
   const durable=await pool.query(`SELECT last_ack_room_seq FROM external_agent_sessions WHERE id=$1`,[ca.sessionId]);await sleep(50);expect(Number(durable.rows[0]?.last_ack_room_seq??0)).toBeLessThanOrEqual(ca.tracker.contiguousSeq);
   expect((await ca.heartbeat("working")).body.runtime_status).toBe("working");
+ });
+
+ it("enrolls a connector from a single-use code without exposing a raw credential to the human path",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Enroll AI","enroll");
+  const issued=await post(`/v1/companies/${f.company.id}/agents/${a.principal_id}/enrollments`,{label:"Rocco MacBook"},{"x-principal-id":f.owner.principal_id});
+  expect(issued.statusCode).toBe(200);
+  const code=issued.json().enrollment_code as string;
+  expect(code).toMatch(/^MPAI-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  expect(new Date(issued.json().expires_at).getTime()).toBeGreaterThan(Date.now());
+
+  // Only a digest is retained; the typed code cannot be recovered from the row.
+  const stored=await pool.query(`SELECT code_hash,code_prefix,status,credential_id FROM agent_enrollment_tokens WHERE company_id=$1`,[f.company.id]);
+  expect(stored.rows[0].code_hash).toMatch(/^[0-9a-f]{64}$/);
+  expect(stored.rows[0].code_hash).not.toContain(code);
+  expect(stored.rows[0].status).toBe("pending");
+
+  const redeemed=await post("/v1/agent-gateway/v1/enroll",{code,device_label:"MacBook Air"});
+  expect(redeemed.statusCode).toBe(200);
+  // The principal comes from the token, never from the caller.
+  expect(redeemed.json().agent_principal_id).toBe(a.principal_id);
+  expect(redeemed.json().company_id).toBe(f.company.id);
+  expect(redeemed.json().rooms.map((r:any)=>r.id)).toEqual([f.room.id]);
+  const credential=redeemed.json().credential_token as string;
+
+  const client=new FakeExternalAgentClient(baseUrl);clients.add(client);
+  expect((await client.open(credential,f.room.id)).status).toBe(200);
+  await client.connect(0);
+  expect((await client.snapshot()).status).toBe(200);
+
+  const consumed=await pool.query(`SELECT status,consumed_at,device_label,credential_id FROM agent_enrollment_tokens WHERE company_id=$1`,[f.company.id]);
+  expect(consumed.rows[0].status).toBe("consumed");
+  expect(consumed.rows[0].consumed_at).not.toBeNull();
+  expect(consumed.rows[0].device_label).toBe("MacBook Air");
+  expect(consumed.rows[0].credential_id).not.toBeNull();
+  const persisted=await pool.query(`SELECT token_hash FROM external_agent_credentials WHERE id=$1`,[consumed.rows[0].credential_id]);
+  expect(persisted.rows[0].token_hash).not.toContain(credential);
+ });
+
+ it("refuses replayed, unknown, expired, and unauthorized enrollment",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Enroll AI","enroll2");
+  const issue=()=>post(`/v1/companies/${f.company.id}/agents/${a.principal_id}/enrollments`,{label:"Device"},{"x-principal-id":f.owner.principal_id});
+
+  const first=(await issue()).json().enrollment_code as string;
+  expect((await post("/v1/agent-gateway/v1/enroll",{code:first})).statusCode).toBe(200);
+  // A consumed code can never be redeemed twice, however fast the second attempt arrives.
+  expect((await post("/v1/agent-gateway/v1/enroll",{code:first})).statusCode).toBe(401);
+
+  expect((await post("/v1/agent-gateway/v1/enroll",{code:"MPAI-AAAA-BBBB-CCCC"})).statusCode).toBe(401);
+
+  const stale=(await issue()).json().enrollment_code as string;
+  await pool.query(`UPDATE agent_enrollment_tokens SET expires_at=now()-interval '1 minute' WHERE code_prefix=$1 AND status='pending'`,[stale.slice(0,9)]);
+  expect((await post("/v1/agent-gateway/v1/enroll",{code:stale})).statusCode).toBe(401);
+
+  // An agent principal cannot mint enrollment for itself or anyone else.
+  expect((await post(`/v1/companies/${f.company.id}/agents/${a.principal_id}/enrollments`,{label:"Self"},{"x-principal-id":a.principal_id})).statusCode).toBe(403);
  });
 
  it("reports durable session status read-only, including after disconnect, without touching liveness",async()=>{
