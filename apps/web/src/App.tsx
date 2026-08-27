@@ -4,6 +4,7 @@ import {ApiError,currentIdentity,roomFromLocation} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
+import Welcome from './Welcome';
 import {AgentControls,SharedWork,type WorkActions} from './Work';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
@@ -362,6 +363,7 @@ function RoomApp(){
   },[]);
   const navigate=useCallback((to:string)=>{history.pushState({},'',to);setPath(new URL(to,location.origin).pathname)},[]);
   if(path==='/signin')return <SignIn/>;
+  if(path==='/welcome')return <Welcome navigate={navigate}/>;
   if(path==='/fixtures/presence')return <PresenceFixture/>;
   if(path==='/fixtures/decisions')return <DecisionFixture/>;
   return <RoomRoute navigate={navigate}/>;

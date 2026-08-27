@@ -26,7 +26,6 @@ type Phase=
  |{step:'email'}
  |{step:'issued';email:string}
  |{step:'redeeming'}
- |{step:'signed_in';identity:SignedInIdentity}
  |{step:'link_failed'};
 
 /** A real navigation by default: authenticating changes what every request can see, so the
@@ -47,8 +46,9 @@ export default function SignIn({onAuthenticated=hardNavigate}:{onAuthenticated?:
     const settle=(identity:SignedInIdentity)=>{
       if(!alive)return;
       const intent=takeIntent();
-      if(intent){onAuthenticated(intent);return}
-      setPhase({step:'signed_in',identity});
+      // Somewhere specific if that is where they were headed; otherwise the workspace, which
+      // works out for itself whether there is anything still to set up.
+      onAuthenticated(intent??'/welcome');
     };
     if(redemption){
       setPhase({step:'redeeming'});
@@ -116,15 +116,6 @@ export default function SignIn({onAuthenticated=hardNavigate}:{onAuthenticated?:
         <button onClick={()=>{setPhase({step:'email'});setEmail('')}}>Request a new link</button>
       </>}
 
-      {phase.step==='signed_in'&&<>
-        <h1>You're signed in</h1>
-        <p className="auth-lead">Signed in as <strong>{phase.identity.user.display_name}</strong>.</p>
-        {phase.identity.companies.length
-          ? <ul className="auth-list">{phase.identity.companies.map(company=>
-              <li key={company.company_id}><span>{company.company_name}</span></li>)}</ul>
-          : <p className="auth-note">You are not a member of a workspace yet.</p>}
-        <p className="auth-note">Open a room link to join the conversation.</p>
-      </>}
     </div>
   </main>;
 }

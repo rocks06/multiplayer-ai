@@ -57,12 +57,11 @@ describe('Sign in',()=>{
     expect(sessionStorage.getItem('mpai:after-sign-in')).toBeNull();
   });
 
-  it('confirms sign-in when there was no intended destination',async()=>{
+  it('sends you to your workspace when there was no intended destination',async()=>{
     stubFetch(url=>url.includes('/auth/sessions')?json(identity):json({error:{}},401));
-    await mount('/signin?token=mpsi_good');
-    expect(await screen.findByRole('heading',{name:"You're signed in"})).toBeVisible();
-    expect(screen.getByText('Acme')).toBeVisible();
-    expect(replaced).toEqual([]);
+    await mount('/signin?token=mpsi_good',to=>replaced.push(to));
+    // Signing in is never the destination; the workspace works out what is left to set up.
+    await waitFor(()=>expect(replaced).toEqual(['/welcome']));
   });
 
   it('explains a spent or expired link instead of failing silently',async()=>{
@@ -74,8 +73,8 @@ describe('Sign in',()=>{
 
   it('honours an existing session rather than asking twice',async()=>{
     stubFetch(url=>url.includes('/auth/me')?json(identity):json({error:{}},401));
-    await mount('/signin');
-    expect(await screen.findByRole('heading',{name:"You're signed in"})).toBeVisible();
+    await mount('/signin',to=>replaced.push(to));
+    await waitFor(()=>expect(replaced).toEqual(['/welcome']));
     expect(screen.queryByLabelText('Email')).toBeNull();
   });
 });

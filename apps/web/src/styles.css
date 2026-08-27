@@ -404,3 +404,82 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 @layer components{
 .task-blockers li.blocker-overridden{display:flex;align-items:center;gap:4px;margin-top:3px;color:var(--amber)}
 }
+
+/* Stage 7 — setting a workspace up.
+   The same quiet single-column panel as signing in, widened just enough for a list of agents.
+   Each step asks for one thing; anything that is only sometimes needed — what the Connector is,
+   a code that has lapsed — stays folded away until it applies. */
+@layer components{
+.welcome{display:grid;place-items:center;min-height:100%;padding:var(--s5);background:var(--paper)}
+.welcome-panel{width:100%;max-width:460px;display:flex;flex-direction:column;align-items:flex-start;gap:var(--s3)}
+.welcome-panel h1{font:500 28px/1.15 var(--serif);letter-spacing:-.015em;margin:0;color:var(--ink);text-wrap:balance}
+.welcome-lead{margin:0;font-size:var(--t-body);line-height:1.55;color:var(--muted);text-wrap:pretty}
+.welcome-note{margin:0;font-size:var(--t-small);line-height:1.5;color:var(--faint);text-wrap:pretty}
+.welcome-who{margin:var(--s3) 0 0;font-size:var(--t-caption);color:var(--faint)}
+.welcome-back{align-self:flex-start;padding:0;background:none;color:var(--muted);font-size:var(--t-small);text-decoration:underline;text-underline-offset:3px}
+
+.welcome-steps{display:flex;flex-wrap:wrap;gap:var(--s3);width:100%;margin:0 0 var(--s2);padding-bottom:var(--s3);border-bottom:1px solid var(--line)}
+.welcome-steps li{display:flex;align-items:center;gap:6px;font-size:var(--t-caption);letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
+.welcome-steps li span{display:grid;place-items:center;width:17px;height:17px;border:1px solid var(--line-strong);border-radius:50%;font-size:9px;font-weight:700}
+.welcome-steps li[data-state="now"]{color:var(--ink)}
+.welcome-steps li[data-state="now"] span{border-color:var(--ink);background:var(--ink);color:var(--on-ink)}
+.welcome-steps li[data-state="done"]{color:var(--moss)}
+.welcome-steps li[data-state="done"] span{border-color:var(--moss);color:var(--moss)}
+
+.welcome form{display:flex;flex-direction:column;gap:var(--s2);width:100%;margin-top:var(--s2)}
+.welcome label{font-size:var(--t-caption);letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.welcome input,.welcome textarea{width:100%;padding:11px 12px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--surface);color:var(--ink);font-size:var(--t-body);resize:vertical;transition:border-color var(--m-state) var(--ease)}
+.welcome input:focus-visible,.welcome textarea:focus-visible{border-color:var(--ink)}
+.welcome form>button{display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 14px;border-radius:var(--r-control);background:var(--ink);color:var(--on-ink);font-size:var(--t-body);font-weight:550}
+.welcome form>button:disabled{opacity:.45;cursor:default}
+.welcome-forward{display:flex;flex-direction:column;gap:var(--s2);width:100%;margin-top:var(--s2);padding-top:var(--s3);border-top:1px solid var(--line)}
+.welcome-forward .primary{display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 14px;border-radius:var(--r-control);background:var(--ink);color:var(--on-ink);font-size:var(--t-body);font-weight:550}
+
+.agent-list{display:flex;flex-direction:column;gap:var(--s2);width:100%;margin:var(--s2) 0 0}
+.agent-list>li{padding:var(--s3);border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface)}
+.agent-head{display:flex;align-items:center;gap:9px}
+.agent-head strong{font-size:var(--t-body);font-weight:600}
+.add-agent{display:flex;align-items:center;gap:6px;margin-top:var(--s2);padding:7px 0;color:var(--moss);font-size:var(--t-small);font-weight:650}
+.agent-form{display:flex;flex-direction:column;gap:var(--s2);width:100%;margin-top:var(--s2);padding:var(--s3);border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface)}
+.agent-form-actions{display:flex;gap:7px;justify-content:flex-end}
+.agent-form-actions button{padding:8px 12px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--paper);font-size:var(--t-small);font-weight:650}
+.agent-form-actions button:last-child{border-color:var(--ink);background:var(--ink);color:var(--on-ink)}
+.agent-form-actions button:disabled{opacity:.45;cursor:default}
+
+.connect{display:flex;flex-direction:column;gap:var(--s2);margin-top:var(--s2)}
+.connect-state{display:flex;align-items:center;gap:7px;margin:0;font-size:var(--t-small);color:var(--muted)}
+.connect-state .state-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--faint)}
+.connect-state.live{color:var(--moss)}
+.connect-state.live .state-dot{background:var(--moss);box-shadow:0 0 0 3px var(--moss-soft)}
+.connect-state.wait{color:var(--amber)}
+.connect-state.wait .state-dot{background:var(--wait);box-shadow:0 0 0 3px var(--amber-soft);animation:breathe 1.7s ease infinite}
+.connect-state.gone .state-dot{background:transparent;border:1px solid var(--faint)}
+@media (prefers-reduced-motion:reduce){.connect-state.wait .state-dot{animation:none}}
+.connect-start{align-self:flex-start;display:flex;align-items:center;gap:6px;padding:8px 12px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--paper);font-size:var(--t-small);font-weight:650}
+.connect-start:hover:not(:disabled){border-color:var(--ink)}
+.connect-start:disabled{opacity:.5;cursor:default}
+.code-block{display:flex;flex-direction:column;gap:var(--s2);padding:var(--s3);border:1px solid var(--line);border-radius:var(--r-control);background:var(--sunken)}
+.code-note{margin:0;font-size:var(--t-small);line-height:1.5;color:var(--ink-2);text-wrap:pretty}
+.code-note.quiet{color:var(--faint)}
+.code-value{display:flex;align-items:center;gap:var(--s2)}
+.code-value code{flex:1 1 auto;min-width:0;padding:10px 12px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--surface);font:600 15px/1.3 var(--mono);letter-spacing:.06em;color:var(--ink);overflow-wrap:anywhere}
+.code-value button{flex:0 0 auto;display:grid;place-items:center;width:34px;height:34px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--surface);color:var(--muted)}
+.code-value button:hover{border-color:var(--line-strong);color:var(--ink)}
+.connect-help summary{padding:5px 0;color:var(--muted);font-size:var(--t-small);cursor:pointer}
+.connect-help summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px;border-radius:3px}
+.connect-help p{margin:var(--s1) 0 0;font-size:var(--t-small);line-height:1.55;color:var(--faint);text-wrap:pretty}
+
+.room-list{display:flex;flex-direction:column;gap:var(--s2);width:100%;margin:var(--s2) 0 0}
+.room-list button{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);text-align:left;color:var(--ink)}
+.room-list button:hover{border-color:var(--line-strong);background:var(--soft)}
+.room-list button span{display:flex;flex-direction:column;gap:2px;min-width:0}
+.room-list strong{font-size:var(--t-body);font-weight:600}
+.room-list small{font-size:var(--t-caption);color:var(--muted)}
+}
+
+@layer responsive{
+@media (max-width:600px){
+  .welcome{place-items:start center;padding-top:var(--s6)}
+  .welcome-steps{gap:var(--s2)}
+}
+}

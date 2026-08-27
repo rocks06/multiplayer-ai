@@ -106,3 +106,52 @@ export async function currentIdentity():Promise<SignedInIdentity|null>{
   if(!response.ok)throw new Error('Could not load your account');
   return response.json() as Promise<SignedInIdentity>;
 }
+
+/* Setting a workspace up is company-scoped rather than room-scoped, so these stand outside
+   RoomApi. Every one of them is the same authenticated route the rest of the product uses. */
+async function send<T>(path:string,init:RequestInit={}):Promise<T>{
+  const headers=new Headers(init.headers);
+  if(init.body)headers.set('content-type','application/json');
+  const response=await fetch(path,{...init,headers,credentials:'same-origin'});
+  if(!response.ok){
+    const body=await response.json().catch(()=>({})) as ApiErrorShape;
+    throw new ApiError(body.error?.message??`Request failed (${response.status})`,body.error?.code??'unknown',response.status,body.error?.details);
+  }
+  return response.json() as Promise<T>;
+}
+
+export interface WorkspaceAgent {
+  agent_id:string;principal_id:string;display_name:string;status:'active'|'paused'|'archived';
+  owner_display_name:string|null;
+  connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'never';runtime_status:string|null;last_seen_at:string|null};
+  rooms:Array<{room_id:string;name:string}>|null;
+}
+export interface WorkspaceRoom {room_id:string;name:string;project_id:string;project_name:string}
+
+export const createWorkspace=(name:string)=>
+  send<{company_id:string;name:string;principal_id:string}>('/v1/workspaces',{method:'POST',body:JSON.stringify({name})});
+
+export const listWorkspaceAgents=(companyId:string)=>
+  send<{agents:WorkspaceAgent[]}>(`/v1/companies/${companyId}/agents`).then(r=>r.agents);
+
+export const listWorkspaceRooms=(companyId:string)=>
+  send<{rooms:WorkspaceRoom[]}>(`/v1/companies/${companyId}/rooms`).then(r=>r.rooms);
+
+/** The owner is the signed-in person; the server resolves it and the client cannot choose. */
+export const addWorkspaceAgent=(companyId:string,name:string)=>
+  send<{agent_id:string;principal_id:string}>(`/v1/companies/${companyId}/agents`,{method:'POST',body:JSON.stringify({name})});
+
+export const createEnrollmentCode=(companyId:string,agentPrincipalId:string,label:string)=>
+  send<{enrollment_code:string;expires_at:string}>(`/v1/companies/${companyId}/agents/${agentPrincipalId}/enrollments`,
+    {method:'POST',body:JSON.stringify({label})});
+
+export const createProject=(companyId:string,name:string,objective:string)=>
+  send<{id:string;name:string;objective:string}>(`/v1/companies/${companyId}/projects`,{method:'POST',body:JSON.stringify({name,objective})});
+
+export const createRoom=(companyId:string,projectId:string,name:string)=>
+  send<{id:string;name:string}>(`/v1/companies/${companyId}/projects/${projectId}/rooms`,{method:'POST',body:JSON.stringify({name})});
+
+export const addRoomMember=(companyId:string,roomId:string,principalId:string,responsibilities:string)=>
+  send<unknown>(`/v1/companies/${companyId}/rooms/${roomId}/members`,{method:'POST',
+    headers:{'idempotency-key':`member-${roomId}-${principalId}`},
+    body:JSON.stringify({principal_id:principalId,role:'worker_agent',responsibilities})});
