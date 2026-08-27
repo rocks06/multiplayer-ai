@@ -134,6 +134,26 @@ export class RoomService {
 
   async createHuman(companyId:string,email:string,displayName:string) { const userId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO users(id,email,display_name) VALUES($1,$2,$3)`,[userId,email,displayName]); await c.query(`INSERT INTO company_users(company_id,user_id) VALUES($1,$2)`,[companyId,userId]); await c.query(`INSERT INTO principals(id,company_id,kind,user_id,display_name) VALUES($1,$2,'human',$3,$4)`,[principalId,companyId,userId,displayName]); await c.query('COMMIT'); return {user_id:userId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
   async createAgent(companyId:string,ownerUserId:string,name:string) { const agentId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO agents(id,company_id,owner_user_id,name) VALUES($1,$2,$3,$4)`,[agentId,companyId,ownerUserId,name]); await c.query(`INSERT INTO principals(id,company_id,kind,agent_id,display_name) VALUES($1,$2,'agent',$3,$4)`,[principalId,companyId,agentId,name]); await c.query('COMMIT'); return {agent_id:agentId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
+  /**
+   * Create an agent on behalf of an authenticated human principal. Ownership is derived from
+   * who is acting, never from the request: a caller cannot name another user as the owner, and
+   * a principal that is not active in the addressed company cannot create one at all.
+   *
+   * `createAgent` remains for direct service-level use (seeding, migrations), where there is no
+   * request to derive an actor from.
+   */
+  async createAgentForPrincipal(companyId:string,actorId:string,name:string) {
+    const c=await this.pool.connect();
+    try {
+      const actor=await this.actor(c,companyId,actorId);
+      if(actor.kind!=='human') throw new DomainError('forbidden','Only a person can add an agent',403);
+      const owner=await c.query<{user_id:string}>(`SELECT user_id FROM principals WHERE id=$1 AND company_id=$2 AND kind='human' AND status='active'`,[actorId,companyId]);
+      const ownerUserId=owner.rows[0]?.user_id;
+      if(!ownerUserId) throw new DomainError('forbidden','Principal is not active in this company',403);
+      return this.createAgent(companyId,ownerUserId,name);
+    } finally { c.release(); }
+  }
+
   async createProject(companyId:string,actorId:string,name:string,objective:string) { await this.pool.query(`SELECT 1 FROM principals WHERE id=$1 AND company_id=$2`,[actorId,companyId]).then(r=>{if(!r.rowCount)throw new DomainError('forbidden','Invalid company principal',403)}); const id=uuidv7(); await this.pool.query(`INSERT INTO projects(id,company_id,name,objective,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[id,companyId,name,objective,actorId]); return {id,name,objective}; }
   async createRoom(companyId:string,projectId:string,actorId:string,name:string,responsibilities:string) { const c=await this.pool.connect(); try { await c.query('BEGIN'); const actor=await this.actor(c,companyId,actorId); const roomId=uuidv7(), memberId=uuidv7(), commandId=uuidv7(); await c.query(`INSERT INTO rooms(id,company_id,project_id,name,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[roomId,companyId,projectId,name,actorId]); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,'manager',$5)`,[memberId,companyId,roomId,actorId,responsibilities]); await this.appendEvent(c,{companyId,roomId,actor,eventType:'room.created',entityType:'room',entityId:roomId,payload:{name},commandId,correlationId:commandId}); await this.appendEvent(c,{companyId,roomId,actor,eventType:'member.joined',entityType:'room_member',entityId:memberId,payload:{principal_id:actorId,role:'manager'},commandId,correlationId:commandId}); await c.query('COMMIT'); return {id:roomId,name,room_seq:2}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
 

@@ -12,7 +12,7 @@ async function setup(){
  const company=(await post('/v1/companies',{name:'Acme'})).json();
  const alex=(await post(`/v1/companies/${company.id}/humans`,{email:`alex-${crypto.randomUUID()}@example.com`,display_name:'Alex'})).json();
  const sarah=(await post(`/v1/companies/${company.id}/humans`,{email:`sarah-${crypto.randomUUID()}@example.com`,display_name:'Sarah'})).json();
- const alexAgent=(await post(`/v1/companies/${company.id}/agents`,{owner_user_id:alex.user_id,name:"Alex's Agent"})).json();
+ const alexAgent=(await post(`/v1/companies/${company.id}/agents`,{name:"Alex's Agent"},{'x-principal-id':alex.principal_id})).json();
  const project=(await post(`/v1/companies/${company.id}/projects`,{name:'Launch',objective:'Ship the multiplayer room'},{'x-principal-id':alex.principal_id})).json();
  const room=(await post(`/v1/companies/${company.id}/projects/${project.id}/rooms`,{name:'Launch Room',responsibilities:'Manage delivery'},{'x-principal-id':alex.principal_id})).json();
  await post(`/v1/companies/${company.id}/rooms/${room.id}/members`,{principal_id:sarah.principal_id,role:'contributor',responsibilities:'Product research'},{'x-principal-id':alex.principal_id,'idempotency-key':'member-sarah'});

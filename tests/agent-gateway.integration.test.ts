@@ -25,7 +25,7 @@ describe("Agent Gateway v1",()=>{
   return {company,owner,project,room};
  }
  async function agent(f:any,name:string,key:string,join=true){
-  const value=(await post(`/v1/companies/${f.company.id}/agents`,{owner_user_id:f.owner.user_id,name})).json();
+  const value=(await post(`/v1/companies/${f.company.id}/agents`,{name},{'x-principal-id':f.owner.principal_id})).json();
   if(join)await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/members`,{principal_id:value.principal_id,role:"worker_agent",responsibilities:`${name} work`},{"x-principal-id":f.owner.principal_id,"idempotency-key":`join-${key}`});
   const credential=(await post(`/v1/companies/${f.company.id}/agents/${value.principal_id}/gateway-credentials`,{label:`${name} runtime`},{"x-principal-id":f.owner.principal_id})).json();
   return {...value,credential};

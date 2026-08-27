@@ -95,13 +95,53 @@ describe("Workspace bootstrap and agent listing", () => {
     });
   });
 
+  describe("adding an agent", () => {
+    /* Creating an agent mints a principal inside a company. It was once possible to do that
+       with no session at all, naming any user as the owner; these hold that door shut. */
+    it("refuses an anonymous caller", async () => {
+      const me = await signedInUser();
+      const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
+
+      const anonymous = await call("POST", `/v1/companies/${workspace.company_id}/agents`, { name: "Intruder" });
+      expect(anonymous.statusCode).toBe(401);
+
+      // And nothing was created on the way to being refused.
+      const listed = (await call("GET", `/v1/companies/${workspace.company_id}/agents`, undefined, { cookie: me.cookie })).json();
+      expect(listed.agents).toHaveLength(0);
+    });
+
+    it("will not let a caller choose someone else as the owner", async () => {
+      const me = await signedInUser("Rocco");
+      const other = await signedInUser("Dana");
+      const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
+
+      // The old escape route: naming another user in the body. It is no longer read at all.
+      const created = await call("POST", `/v1/companies/${workspace.company_id}/agents`,
+        { name: "Coleman", owner_user_id: other.user_id }, { cookie: me.cookie });
+      expect(created.statusCode).toBe(200);
+
+      const [entry] = (await call("GET", `/v1/companies/${workspace.company_id}/agents`, undefined, { cookie: me.cookie })).json().agents;
+      expect(entry.owner_display_name).toBe("Rocco");
+    });
+
+    it("refuses a signed-in user acting on a company that is not theirs", async () => {
+      const me = await signedInUser();
+      const stranger = await signedInUser("Dana");
+      const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
+
+      const crossCompany = await call("POST", `/v1/companies/${workspace.company_id}/agents`, { name: "Intruder" }, { cookie: stranger.cookie });
+      expect(crossCompany.statusCode).toBe(403);
+      expect((await call("GET", `/v1/companies/${workspace.company_id}/agents`, undefined, { cookie: me.cookie })).json().agents).toHaveLength(0);
+    });
+  });
+
   describe("agent listing", () => {
     it("returns what the onboarding UI needs and nothing about credentials", async () => {
       const me = await signedInUser();
       const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
       const project = (await call("POST", `/v1/companies/${workspace.company_id}/projects`, { name: "P", objective: "O" }, { cookie: me.cookie })).json();
       const room = (await call("POST", `/v1/companies/${workspace.company_id}/projects/${project.id}/rooms`, { name: "Launch", responsibilities: "Own it" }, { cookie: me.cookie })).json();
-      const agent = (await call("POST", `/v1/companies/${workspace.company_id}/agents`, { owner_user_id: me.user_id, name: "Coleman" })).json();
+      const agent = (await call("POST", `/v1/companies/${workspace.company_id}/agents`, { name: "Coleman" }, { cookie: me.cookie })).json();
       await call("POST", `/v1/companies/${workspace.company_id}/rooms/${room.id}/members`, { principal_id: agent.principal_id, role: "worker_agent", responsibilities: "Research" }, { cookie: me.cookie, "idempotency-key": crypto.randomUUID() });
 
       const listed = await call("GET", `/v1/companies/${workspace.company_id}/agents`, undefined, { cookie: me.cookie });
@@ -127,7 +167,7 @@ describe("Workspace bootstrap and agent listing", () => {
       const workspace = (await call("POST", "/v1/workspaces", { name: "Acme" }, { cookie: me.cookie })).json();
       const project = (await call("POST", `/v1/companies/${workspace.company_id}/projects`, { name: "P", objective: "O" }, { cookie: me.cookie })).json();
       const room = (await call("POST", `/v1/companies/${workspace.company_id}/projects/${project.id}/rooms`, { name: "Launch", responsibilities: "Own it" }, { cookie: me.cookie })).json();
-      const agent = (await call("POST", `/v1/companies/${workspace.company_id}/agents`, { owner_user_id: me.user_id, name: "Coleman" })).json();
+      const agent = (await call("POST", `/v1/companies/${workspace.company_id}/agents`, { name: "Coleman" }, { cookie: me.cookie })).json();
       await call("POST", `/v1/companies/${workspace.company_id}/rooms/${room.id}/members`, { principal_id: agent.principal_id, role: "worker_agent", responsibilities: "Research" }, { cookie: me.cookie, "idempotency-key": crypto.randomUUID() });
 
       const issued = (await call("POST", `/v1/companies/${workspace.company_id}/agents/${agent.principal_id}/enrollments`, { label: "Rocco MacBook" }, { cookie: me.cookie })).json();

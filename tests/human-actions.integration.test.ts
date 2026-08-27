@@ -28,7 +28,7 @@ describe("Explicit human actions", () => {
     await call("POST", `/v1/companies/${company.id}/rooms/${room.id}/members`, { principal_id: worker.principal_id, role: "contributor", responsibilities: "Do it" }, asActor(owner.principal_id));
     const base = `/v1/companies/${company.id}/rooms/${room.id}`;
     const makeAgent = async (name: string) => {
-      const agent = (await call("POST", `/v1/companies/${company.id}/agents`, { owner_user_id: owner.user_id, name })).json();
+      const agent = (await call("POST", `/v1/companies/${company.id}/agents`, { name }, { "x-principal-id": owner.principal_id })).json();
       await call("POST", `${base}/members`, { principal_id: agent.principal_id, role: "worker_agent", responsibilities: `${name} work` }, asActor(owner.principal_id));
       const credential = (await call("POST", `/v1/companies/${company.id}/agents/${agent.principal_id}/gateway-credentials`, { label: `${name} runtime` }, { "x-principal-id": owner.principal_id })).json();
       return { ...agent, credential };
