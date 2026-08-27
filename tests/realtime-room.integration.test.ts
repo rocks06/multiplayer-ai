@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as pg from "pg";
 import WebSocket from "ws";
-import { readFile } from "node:fs/promises";
 import { buildApp } from "../apps/api/src/app.js";
 import { SequenceTracker } from "../apps/api/src/realtime/protocol.js";
 import type { RealtimeOptions } from "../apps/api/src/realtime/realtime-hub.js";
+import { truncateAll } from "./support/database.js";
 
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL??"postgres://postgres:postgres@127.0.0.1:55432/multiplayer_ai";
@@ -96,8 +96,7 @@ describe("Phase 1A realtime room synchronization",()=>{
 
   beforeEach(async()=>{
     const bootstrap=new Pool({connectionString});
-    await bootstrap.query(await readFile("packages/db/schema.sql","utf8"));
-    await bootstrap.query(`TRUNCATE command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);
+    await truncateAll(bootstrap);
     await bootstrap.end();
     await start();
   });

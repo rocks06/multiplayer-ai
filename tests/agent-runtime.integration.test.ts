@@ -1,11 +1,11 @@
 import {afterAll,beforeAll,beforeEach,describe,expect,it} from 'vitest';
 import * as pg from 'pg';
-import {readFile} from 'node:fs/promises';
 import {RoomService} from '../apps/api/src/room-service.js';
 import {buildApp} from '../apps/api/src/app.js';
 import {AgentRuntimeService} from '../apps/api/src/agent-runtime/runtime-service.js';
 import {AgentWorker,SimulatedWorkerCrash} from '../apps/worker/src/agent-worker.js';
 import {DeterministicFakeProvider,FakeBarrierController,type FakeScript} from '../packages/provider-fake/src/index.js';
+import { truncateAll } from "./support/database.js";
 
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL??'postgres://postgres:***@127.0.0.1:55432/multiplayer_ai';
@@ -13,7 +13,7 @@ const pool=new Pool({connectionString});
 const roomService=new RoomService(pool);
 const runtime=new AgentRuntimeService(pool,roomService);
 
-async function reset(){await pool.query(`TRUNCATE agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`)}
+async function reset(){await truncateAll(pool)}
 async function fixture(){
  const company=await roomService.createCompany(`Runtime-${crypto.randomUUID()}`);
  const alex=await roomService.createHuman(company.id,`alex-${crypto.randomUUID()}@example.com`,'Alex');
@@ -35,7 +35,7 @@ const start=(taskId:string):FakeScript[number]=>({kind:'tool',id:'start',name:'t
 const complete=(taskId:string):FakeScript[number]=>({kind:'tool',id:'complete',name:'task.complete',arguments:{task_id:taskId,expected_version:2}});
 const message=(id:string,body:string,addressed?:string):FakeScript[number]=>({kind:'tool',id,name:'room.send_message',arguments:{body,addressed_principal_id:addressed}});
 
-beforeAll(async()=>{await pool.query(await readFile('packages/db/schema.sql','utf8'))});
+beforeAll(async()=>{await reset()});
 beforeEach(reset);
 afterAll(async()=>pool.end());
 

@@ -1,12 +1,12 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import * as pg from "pg";
-import { readFile } from "node:fs/promises";
 import { buildApp } from "../apps/api/src/app.js";
+import { truncateAll } from "./support/database.js";
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL??'postgres://postgres:postgres@127.0.0.1:55432/multiplayer_ai';
 const pool=new Pool({connectionString});
 const app=buildApp(pool,{},{allowHeaderPrincipal:true});
-async function reset(){await pool.query(`TRUNCATE command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`)}
+async function reset(){await truncateAll(pool)}
 async function post(url:string,payload:unknown,headers:Record<string,string>={}): Promise<any> {return await app.inject({method:'POST',url,payload:payload as any,headers})}
 async function setup(){
  const company=(await post('/v1/companies',{name:'Acme'})).json();
@@ -19,7 +19,7 @@ async function setup(){
  await post(`/v1/companies/${company.id}/rooms/${room.id}/members`,{principal_id:alexAgent.principal_id,role:'worker_agent',responsibilities:'Backend implementation'},{'x-principal-id':alex.principal_id,'idempotency-key':'member-agent'});
  return {company,alex,sarah,alexAgent,project,room};
 }
-beforeAll(async()=>{await pool.query(await readFile('packages/db/schema.sql','utf8'));await app.ready()});
+beforeAll(async()=>{await reset();await app.ready()});
 beforeEach(reset);
 afterAll(async()=>{await app.close()});
 

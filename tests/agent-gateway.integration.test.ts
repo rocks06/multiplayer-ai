@@ -4,6 +4,7 @@ import {readFile} from "node:fs/promises";
 import {buildApp} from "../apps/api/src/app.js";
 import {FakeExternalAgentClient} from "./fake-external-agent.js";
 import type {RealtimeOptions} from "../apps/api/src/realtime/realtime-hub.js";
+import { truncateAll } from "./support/database.js";
 
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL;
@@ -32,7 +33,7 @@ describe("Agent Gateway v1",()=>{
  async function external(a:any,roomId:string){const c=new FakeExternalAgentClient(baseUrl);clients.add(c);c.credentialToken=a.credential.credential_token;c.roomId=roomId;expect((await c.open()).status).toBe(200);return c}
  async function createTask(f:any,title:string,assignee:string,key:string){return (await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/tasks`,{title,description:"gateway task",assignee_principal_id:assignee},{"x-principal-id":f.owner.principal_id,"idempotency-key":key})).json()}
 
- beforeEach(async()=>{const bootstrap=new Pool({connectionString});await bootstrap.query(await readFile("packages/db/schema.sql","utf8"));await bootstrap.query(`TRUNCATE agent_enrollment_tokens,external_agent_sessions,external_agent_credentials,decisions,agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);await bootstrap.end();await start()});
+ beforeEach(async()=>{const bootstrap=new Pool({connectionString});await truncateAll(bootstrap);await bootstrap.end();await start()});
  afterEach(async()=>{for(const c of clients)c.close();clients.clear();await app.close()});
 
  it("authenticates scoped credentials and rejects revocation, impersonation by IDs, cross-agent/company access, and inactive membership",async()=>{

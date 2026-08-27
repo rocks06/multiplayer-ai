@@ -3,6 +3,7 @@ import * as pg from "pg";
 import { readFile } from "node:fs/promises";
 import { buildApp } from "../apps/api/src/app.js";
 import { SilentSignInLinkDelivery, type SignInLink, type SignInLinkDelivery } from "../apps/api/src/auth/auth-service.js";
+import { truncateAll } from "./support/database.js";
 
 const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
@@ -43,8 +44,7 @@ describe("Human authentication", () => {
 
   beforeEach(async () => {
     const bootstrap = new Pool({ connectionString });
-    await bootstrap.query(await readFile("packages/db/schema.sql", "utf8"));
-    await bootstrap.query(`TRUNCATE user_sessions,user_auth_tokens,agent_enrollment_tokens,external_agent_sessions,external_agent_credentials,decisions,agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);
+    await truncateAll(bootstrap);
     await bootstrap.end();
     pool = new Pool({ connectionString });
     start();

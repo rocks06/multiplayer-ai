@@ -1,18 +1,18 @@
 import {afterAll,beforeAll,beforeEach,describe,expect,it} from 'vitest';
 import * as pg from 'pg';
-import {readFile} from 'node:fs/promises';
 import {RoomService} from '../apps/api/src/room-service.js';
 import {buildApp} from '../apps/api/src/app.js';
 import {AgentRuntimeService,type Decision} from '../apps/api/src/agent-runtime/runtime-service.js';
 import {AgentWorker} from '../apps/worker/src/agent-worker.js';
 import {DeterministicFakeProvider,type FakeScript} from '../packages/provider-fake/src/index.js';
+import { truncateAll } from "./support/database.js";
 
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL??'postgres://postgres:***@127.0.0.1:55432/multiplayer_ai';
 const pool=new Pool({connectionString});
 const rooms=new RoomService(pool);
 const runtime=new AgentRuntimeService(pool,rooms);
-const reset=()=>pool.query(`TRUNCATE decisions,agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);
+const reset=()=>truncateAll(pool);
 
 async function fixture(){
  const company=await rooms.createCompany(`Decision-${crypto.randomUUID()}`);
@@ -37,7 +37,7 @@ const worker=(id:string)=>new AgentWorker(runtime,new DeterministicFakeProvider(
 const decisionFor=async(runId:string)=>(await pool.query<Decision>(`SELECT * FROM decisions WHERE run_id=$1`,[runId])).rows[0]!;
 const resolve=(s:any,d:Decision,status:'approved'|'rejected',key:string,note:string,actor=s.manager.principal_id)=>runtime.resolveDecision({companyId:s.company.id,roomId:s.room.id,actorId:actor,decisionId:d.id,resolution:status,proposedActionDigest:d.proposed_action_digest,expectedVersion:d.version,note,idempotencyKey:key});
 
-beforeAll(async()=>{await pool.query(await readFile('packages/db/schema.sql','utf8'))});
+beforeAll(async()=>{await reset()});
 beforeEach(reset);
 afterAll(()=>pool.end());
 
