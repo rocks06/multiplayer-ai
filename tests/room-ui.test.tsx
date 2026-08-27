@@ -13,6 +13,7 @@ const snapshot:RoomSnapshot={
  messages:[{id:'message',sender_principal_id:agent,addressed_principal_id:alex,body_text:'The source review is complete.',task_id:'task',created_at:new Date().toISOString(),sender_name:"Alex's Agent",sender_kind:'agent'}],
  briefing:{briefing_seq:8,project_objective:'Prepare a precise product launch',participants:[],joining_principal:{principal_id:alex,role:'manager',responsibilities:'Own the launch'},active_tasks:[],relevant_completed_work:[],blockers:[],relevant_artifacts:[],important_recent_activity:[],unresolved_decisions:[{id:'decision',run_id:'run',requested_by_principal_id:agent,title:'Approve release',question:'May I publish the verified launch note?',rationale:'Publishing requires human authority',proposed_action:{type:'publish',target:'launch-note'},proposed_action_digest:'a'.repeat(64),status:'pending',version:1,resolved_by_principal_id:null,resolution_note:null,requested_at:new Date().toISOString(),resolved_at:null,expires_at:null}]}
 };
+const identity={user:{id:'00000000-0000-4000-8000-00000000000f',email:'alex@example.com',display_name:'Alex'},companies:[{company_id:company,company_name:'Acme',principal_id:alex,display_name:'Alex'}]};
 class FakeSocket{
  static OPEN=1;static instances:FakeSocket[]=[];readyState=1;onmessage:((e:{data:string})=>void)|null=null;onclose:(()=>void)|null=null;onerror:(()=>void)|null=null;
  constructor(){FakeSocket.instances.push(this);queueMicrotask(()=>this.emit({type:'resumed',after_seq:8,latest_seq:8}))}
@@ -22,10 +23,11 @@ class FakeSocket{
 
 describe('Slice 6 room interface',()=>{
  beforeEach(()=>{
-  history.replaceState({},'',`/rooms/${company}/${room}?principal=${alex}`);
+  history.replaceState({},'',`/rooms/${company}/${room}`);
   FakeSocket.instances=[];
   vi.stubGlobal('WebSocket',FakeSocket);
-  vi.stubGlobal('fetch',vi.fn(async(_url:string,init?:RequestInit)=>{
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+   if(String(url).includes('/v1/auth/me'))return new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}});
    if(init?.method==='POST')return new Response(JSON.stringify({ok:true}),{status:200,headers:{'content-type':'application/json'}});
    return new Response(JSON.stringify(snapshot),{status:200,headers:{'content-type':'application/json'}});
   }));
@@ -56,7 +58,9 @@ describe('Slice 6 room interface',()=>{
   for(const [presence,expected] of cases){
    cleanup();
    const variant={...snapshot,members:[snapshot.members[0]!,{...snapshot.members[1]!,agent_runtime_status:null,...presence}]};
-   vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify(variant),{status:200,headers:{'content-type':'application/json'}})));
+   vi.stubGlobal('fetch',vi.fn(async(url:string)=>String(url).includes('/v1/auth/me')
+    ?new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}})
+    :new Response(JSON.stringify(variant),{status:200,headers:{'content-type':'application/json'}})));
    render(<RoomApp/>);
    await screen.findByRole('heading',{name:'Launch room'});
    expect(screen.getByText(expected,{selector:'small'})).toBeVisible();
@@ -83,7 +87,9 @@ describe('Slice 6 room interface',()=>{
  });
  it('prevents contributors from resolving decisions',async()=>{
   const contributor={...snapshot,members:snapshot.members.map(member=>member.principal_id===alex?{...member,role:'contributor' as const}:member),briefing:{...snapshot.briefing,joining_principal:{...snapshot.briefing.joining_principal,role:'contributor' as const}}};
-  vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(contributor),{status:200,headers:{'content-type':'application/json'}}));
+  vi.mocked(fetch).mockImplementation(async(url:any)=>String(url).includes('/v1/auth/me')
+   ?new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}})
+   :new Response(JSON.stringify(contributor),{status:200,headers:{'content-type':'application/json'}}));
   render(<RoomApp/>);
   expect(await screen.findByText('A room manager can resolve this decision.')).toBeVisible();
   expect(screen.queryByRole('button',{name:'Approve'})).not.toBeInTheDocument();

@@ -15,9 +15,8 @@ export class RoomApi {
   private get base(){return `/v1/companies/${this.identity.companyId}/rooms/${this.identity.roomId}`}
   private async request<T>(path:string,init:RequestInit={}):Promise<T>{
     const headers=new Headers(init.headers);
-    headers.set('x-principal-id',this.identity.principalId);
     if(init.body)headers.set('content-type','application/json');
-    const response=await fetch(`${this.base}${path}`,{...init,headers});
+    const response=await fetch(`${this.base}${path}`,{...init,headers,credentials:'same-origin'});
     if(!response.ok){
       const body=await response.json().catch(()=>({})) as ApiErrorShape;
       throw new Error(body.error?.message??`Request failed (${response.status})`);
@@ -32,16 +31,24 @@ export class RoomApi {
   resolveDecision(decision:Decision,resolution:'approve'|'reject',note:string){return this.request(`/decisions/${decision.id}/${resolution}`,{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({proposed_action_digest:decision.proposed_action_digest,expected_version:decision.version,note:note||undefined})})}
   streamUrl(afterSeq?:number){
     const scheme=location.protocol==='https:'?'wss':'ws';
-    const params=new URLSearchParams({principal_id:this.identity.principalId});
+    const params=new URLSearchParams();
     if(afterSeq!==undefined)params.set('after_seq',String(afterSeq));
     return `${scheme}://${location.host}${this.base}/stream?${params}`;
   }
 }
 
-export function identityFromLocation():RoomIdentity|null{
+export function roomFromLocation():{companyId:string;roomId:string}|null{
   const match=location.pathname.match(/^\/rooms\/([0-9a-f-]+)\/([0-9a-f-]+)\/?$/i);
-  const principalId=new URLSearchParams(location.search).get('principal')??sessionStorage.getItem('multiplayer-principal');
-  if(!match?.[1]||!match[2]||!principalId)return null;
-  sessionStorage.setItem('multiplayer-principal',principalId);
-  return {companyId:match[1],roomId:match[2],principalId};
+  if(!match?.[1]||!match[2])return null;
+  return {companyId:match[1],roomId:match[2]};
+}
+
+export interface SignedInIdentity {user:{id:string;email:string;display_name:string};companies:Array<{company_id:string;company_name:string;principal_id:string;display_name:string}>}
+
+/** Identity comes from the session cookie. The client never names a principal. */
+export async function currentIdentity():Promise<SignedInIdentity|null>{
+  const response=await fetch('/v1/auth/me',{credentials:'same-origin'});
+  if(response.status===401)return null;
+  if(!response.ok)throw new Error('Could not load your account');
+  return response.json() as Promise<SignedInIdentity>;
 }

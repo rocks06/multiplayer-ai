@@ -165,7 +165,7 @@ describe('Vertical Slice 3 durable agent runtime',()=>{
  });
 
  it('secures and idempotently controls runs through HTTP',async()=>{
-  const s=await fixture();const apiPool=new pg.Pool({connectionString});const app=buildApp(apiPool,{pollIntervalMs:50});await app.ready();
+  const s=await fixture();const apiPool=new pg.Pool({connectionString});const app=buildApp(apiPool,{pollIntervalMs:50},{allowHeaderPrincipal:true});await app.ready();
   try{
    const path=`/v1/companies/${s.company.id}/rooms/${s.room.id}/agent-runs`;const payload={agent_principal_id:s.agentA.principal_id,task_id:s.taskA.id,script:[{kind:'complete',id:'done'}],max_attempts:3};
    expect((await app.inject({method:'POST',url:path,headers:{'idempotency-key':'http-run'},payload})).statusCode).toBe(401);

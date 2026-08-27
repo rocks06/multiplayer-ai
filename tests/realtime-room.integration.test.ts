@@ -56,7 +56,7 @@ describe("Phase 1A realtime room synchronization",()=>{
 
   async function start(options:RealtimeOptions={}) {
     pool=new Pool({connectionString});
-    app=buildApp(pool,{pollIntervalMs:25,...options});
+    app=buildApp(pool,{pollIntervalMs:25,...options},{allowHeaderPrincipal:true});
     const address=await app.listen({host:"127.0.0.1",port:0});
     baseUrl=address;
   }

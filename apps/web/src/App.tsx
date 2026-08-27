@@ -1,8 +1,8 @@
 import {useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert,Users,X} from 'lucide-react';
-import {identityFromLocation} from './api';
+import {currentIdentity,roomFromLocation} from './api';
 import {useRoomSession} from './use-room';
-import type {ConnectionState,Decision,Member,RoomEvent,Task,TaskStatus} from './types';
+import type {ConnectionState,Decision,Member,RoomEvent,RoomIdentity,Task,TaskStatus} from './types';
 import './styles.css';
 
 const formatTime=(value:string)=>new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));
@@ -114,12 +114,30 @@ function TaskCreator({agents,onCreate}:{agents:Member[];onCreate:(x:{title:strin
 }
 
 function RoomApp(){
-  const identity=useMemo(identityFromLocation,[]);
-  if(!identity)return <main className="route-error"><div className="brand-mark">M</div><h1>Room link incomplete</h1><p>Open a room link that includes the company, room, and your local Phase 1A principal.</p><code>/rooms/company-id/room-id?principal=principal-id</code></main>;
-  return <Room identity={identity}/>;
+  const room=useMemo(roomFromLocation,[]);
+  const [state,setState]=useState<{status:'loading'}|{status:'signed_out'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity}>({status:'loading'});
+  useEffect(()=>{
+    if(!room)return;
+    let alive=true;
+    void currentIdentity().then(me=>{
+      if(!alive)return;
+      if(!me)return setState({status:'signed_out'});
+      const membership=me.companies.find(c=>c.company_id===room.companyId);
+      if(!membership)return setState({status:'no_access'});
+      setState({status:'ready',identity:{...room,principalId:membership.principal_id}});
+    }).catch(error=>{if(alive)setState({status:'error',message:(error as Error).message})});
+    return()=>{alive=false};
+  },[room?.companyId,room?.roomId]);
+
+  if(!room)return <main className="route-error"><div className="brand-mark">M</div><h1>Room link incomplete</h1><p>Open a link that includes the company and the room.</p><code>/rooms/company-id/room-id</code></main>;
+  if(state.status==='loading')return <main className="route-error"><div className="brand-mark">M</div><h1>Loading</h1></main>;
+  if(state.status==='signed_out')return <main className="route-error"><div className="brand-mark">M</div><h1>Sign in to continue</h1><p>Open your sign-in link to join this room.</p></main>;
+  if(state.status==='no_access')return <main className="route-error"><div className="brand-mark">M</div><h1>No access to this workspace</h1><p>Your account is not a member of this company.</p></main>;
+  if(state.status==='error')return <main className="route-error"><div className="brand-mark">M</div><h1>Something went wrong</h1><p>{state.message}</p></main>;
+  return <Room identity={state.identity}/>;
 }
 
-function Room({identity}:{identity:NonNullable<ReturnType<typeof identityFromLocation>>}){
+function Room({identity}:{identity:RoomIdentity}){
   const {api,snapshot,connection,lastEvent,error,refresh}=useRoomSession(identity);
   const [briefingOpen,setBriefingOpen]=useState(false);
   if(!snapshot)return <main className="loading-room"><div className="brand-mark">M</div><div className="loading-line"/><p>{error??'Entering the room…'}</p>{error&&<button onClick={()=>void refresh()}><RefreshCw size={15}/>Try again</button>}</main>;

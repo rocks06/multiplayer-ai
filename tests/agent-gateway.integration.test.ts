@@ -13,7 +13,7 @@ const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 describe("Agent Gateway v1",()=>{
  let pool:pg.Pool,app:ReturnType<typeof buildApp>,baseUrl:string;
  const clients=new Set<FakeExternalAgentClient>();
- async function start(options:RealtimeOptions={}){pool=new Pool({connectionString});app=buildApp(pool,{pollIntervalMs:20,...options});baseUrl=await app.listen({host:"127.0.0.1",port:0})}
+ async function start(options:RealtimeOptions={}){pool=new Pool({connectionString});app=buildApp(pool,{pollIntervalMs:20,...options},{allowHeaderPrincipal:true});baseUrl=await app.listen({host:"127.0.0.1",port:0})}
  async function request(method:string,url:string,payload?:unknown,headers:Record<string,string>={}){return await app.inject({method:method as any,url,payload:payload as any,headers})}
  async function post(url:string,payload:unknown,headers:Record<string,string>={}){return request("POST",url,payload,headers)}
  async function companyFixture(name="Gateway Co"){

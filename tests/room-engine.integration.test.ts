@@ -5,7 +5,7 @@ import { buildApp } from "../apps/api/src/app.js";
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL??'postgres://postgres:postgres@127.0.0.1:55432/multiplayer_ai';
 const pool=new Pool({connectionString});
-const app=buildApp(pool);
+const app=buildApp(pool,{},{allowHeaderPrincipal:true});
 async function reset(){await pool.query(`TRUNCATE command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`)}
 async function post(url:string,payload:unknown,headers:Record<string,string>={}): Promise<any> {return await app.inject({method:'POST',url,payload:payload as any,headers})}
 async function setup(){

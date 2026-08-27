@@ -336,3 +336,29 @@ CREATE TABLE IF NOT EXISTS agent_enrollment_tokens (
   UNIQUE (company_id,id)
 );
 CREATE INDEX IF NOT EXISTS agent_enrollment_tokens_agent_idx ON agent_enrollment_tokens(company_id,agent_principal_id,status,expires_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_auth_tokens (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id),
+  token_hash text NOT NULL UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  purpose text NOT NULL DEFAULT 'sign_in' CHECK (purpose IN ('sign_in')),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','consumed','revoked')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  consumed_at timestamptz,
+  CHECK ((status = 'consumed') = (consumed_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS user_auth_tokens_user_idx ON user_auth_tokens(user_id,status,expires_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id uuid PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id),
+  token_hash text NOT NULL UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS user_sessions_user_idx ON user_sessions(user_id,status,expires_at DESC);
