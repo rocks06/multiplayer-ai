@@ -1,0 +1,149 @@
+import Foundation
+
+/// What the sidecar reports about itself. Four separate truths, kept separate: whether the
+/// local process is alive, what the workspace connection is doing, whether the agent runtime
+/// can be driven, and how far the room has been read. None is inferred from another.
+public struct SidecarState: Decodable, Equatable, Sendable {
+    public struct Runtime: Decodable, Equatable, Sendable {
+        public var available: Bool
+        public var name: String
+        public var version: String?
+        public var path: String?
+        public var reason: String?
+        public init(available: Bool, name: String, version: String? = nil, path: String? = nil, reason: String? = nil) {
+            self.available = available; self.name = name; self.version = version
+            self.path = path; self.reason = reason
+        }
+    }
+    public struct Sync: Decodable, Equatable, Sendable {
+        public var lastContiguousSeq: Int?
+        public var pending: Int
+        public init(lastContiguousSeq: Int? = nil, pending: Int = 0) {
+            self.lastContiguousSeq = lastContiguousSeq; self.pending = pending
+        }
+    }
+    public struct Identity: Decodable, Equatable, Sendable {
+        public var agentDisplayName: String?
+        public var roomName: String?
+        public var projectName: String?
+        public init(agentDisplayName: String? = nil, roomName: String? = nil, projectName: String? = nil) {
+            self.agentDisplayName = agentDisplayName; self.roomName = roomName; self.projectName = projectName
+        }
+    }
+
+    public var enrolled: Bool
+    public var running: Bool
+    public var startedAt: String?
+    public var gateway: String
+    public var runtime: Runtime
+    public var sync: Sync
+    public var identity: Identity?
+    public var lastError: String?
+
+    public init(enrolled: Bool, running: Bool, startedAt: String?, gateway: String,
+                runtime: Runtime, sync: Sync, identity: Identity?, lastError: String?) {
+        self.enrolled = enrolled; self.running = running; self.startedAt = startedAt
+        self.gateway = gateway; self.runtime = runtime; self.sync = sync
+        self.identity = identity; self.lastError = lastError
+    }
+
+    public static let unknown = SidecarState(
+        enrolled: false, running: false, startedAt: nil, gateway: "not_started",
+        runtime: .init(available: false, name: "Hermes Agent", version: nil, path: nil, reason: nil),
+        sync: .init(lastContiguousSeq: nil, pending: 0), identity: nil, lastError: nil)
+}
+
+/// The single word the menu bar shows. It never claims more than the parts below it support.
+public enum Health: Equatable, Sendable {
+    case notConnected          // nothing set up on this Mac yet
+    case connected
+    case reconnecting
+    case offline
+    case runtimeUnavailable
+    case authRequired
+
+    public var title: String {
+        switch self {
+        case .notConnected: return "Not set up"
+        case .connected: return "Connected"
+        case .reconnecting: return "Reconnecting"
+        case .offline: return "Offline"
+        case .runtimeUnavailable: return "Runtime unavailable"
+        case .authRequired: return "Sign-in needed"
+        }
+    }
+
+    /// Semantic only: green for working, amber for working on it, red for stopped.
+    public var tone: Tone {
+        switch self {
+        case .connected: return .good
+        case .reconnecting: return .working
+        case .notConnected, .offline: return .idle
+        case .runtimeUnavailable, .authRequired: return .stopped
+        }
+    }
+
+    public enum Tone: Sendable { case good, working, idle, stopped }
+}
+
+public enum Diagnosis {
+    /// A connection that has been refused is not the same problem as one that has dropped, and
+    /// neither is the same as a runtime that was never installed. Whichever most stops the agent
+    /// from working is the one named, and the rows underneath still state all four.
+    public static func health(of state: SidecarState) -> Health {
+        guard state.enrolled else { return .notConnected }
+        if state.gateway == "auth_required" { return .authRequired }
+        if !state.running { return .offline }
+        switch state.gateway {
+        case "live":
+            return state.runtime.available ? .connected : .runtimeUnavailable
+        case "reconnecting", "created", "resyncing":
+            return .reconnecting
+        case "stalled":
+            return .reconnecting
+        default:
+            return .offline
+        }
+    }
+
+    /// The workspace row on its own, which stays true even when the headline is about Hermes.
+    public static func workspaceDetail(_ state: SidecarState) -> String {
+        if !state.enrolled { return "Not set up" }
+        if state.gateway == "auth_required" { return "Sign-in needed" }
+        if !state.running { return "Not running" }
+        switch state.gateway {
+        case "live": return "Connected"
+        case "created": return "Connecting"
+        case "reconnecting": return "Reconnecting"
+        case "stalled": return "Reconnecting"
+        default: return "Offline"
+        }
+    }
+
+    /// The row is labelled with the runtime's name, so the value says only what is new: which
+    /// version is installed, or that there is none.
+    public static func runtimeDetail(_ state: SidecarState) -> String {
+        let runtime = state.runtime
+        guard runtime.available else { return "Not found" }
+        return runtime.version ?? "Installed"
+    }
+
+    /// How far the room has been read. Distinct from being connected: a live connection with
+    /// work still queued is a real and different situation.
+    public static func syncDetail(_ state: SidecarState) -> String {
+        guard state.running, state.enrolled else { return "—" }
+        if state.sync.pending > 0 {
+            return state.sync.pending == 1 ? "1 item waiting" : "\(state.sync.pending) items waiting"
+        }
+        guard state.sync.lastContiguousSeq != nil else { return "Nothing read yet" }
+        return "Up to date"
+    }
+
+    public static func processDetail(_ state: SidecarState, since: Date?) -> String {
+        guard state.running else { return "Not running" }
+        guard let since else { return "Running" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return "Running since \(formatter.string(from: since))"
+    }
+}

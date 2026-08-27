@@ -15,3 +15,7 @@ pgdata/
 !.env.example
 
 .DS_Store
+
+# macOS Connector build output
+apps/connector-macos/build/
+apps/connector-macos/.build/
