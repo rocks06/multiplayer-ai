@@ -220,3 +220,45 @@ details.activity>summary:focus-visible{outline:2px solid var(--focus);outline-of
   .supervision .participants .rail-heading,.supervision .participants .rail-note{grid-column:auto}
 }
 }
+
+@layer components{
+/* Conversation relationships. Every cue below is a property of one message — who sent it, whom
+   it addresses, which message it answers — so nothing here can imply a link the data lacks. */
+
+/* A message between two agents carries a tinted gutter rule. A run of them reads as a column
+   of coordination without any connector being drawn between separate messages. */
+.message.between-agents{box-shadow:inset 2px 0 0 -1px color-mix(in srgb,var(--live) 45%,transparent)}
+.message.to-human{box-shadow:inset 2px 0 0 -1px color-mix(in srgb,var(--ink) 22%,transparent)}
+.message.to-agent{box-shadow:inset 2px 0 0 -1px color-mix(in srgb,var(--focus) 35%,transparent)}
+
+.kind-mark{font-size:var(--t-micro);letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+.message.agent .kind-mark{color:var(--live)}
+
+/* Direction reads as one short line, never a badge. */
+.address{display:block;margin-bottom:3px;font-size:var(--t-caption);font-weight:600;color:var(--muted)}
+.address.agent{color:var(--live)}
+.address.human{color:var(--ink-2)}
+
+/* The reply cue quotes what is being answered, so a thread stays legible when human messages
+   are interleaved. Following it moves through chronology rather than opening a side channel. */
+.reply-cue{display:flex;flex-direction:column;gap:1px;width:100%;margin-bottom:5px;padding:3px 0 3px 9px;border-left:2px solid var(--line-strong);background:none;text-align:left;border-radius:0}
+button.reply-cue{cursor:pointer;transition:border-color var(--m-state) var(--ease)}
+button.reply-cue:hover{border-left-color:var(--live)}
+button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.reply-who{font-size:var(--t-caption);font-weight:600;color:var(--muted)}
+.reply-excerpt{font-size:var(--t-caption);line-height:1.4;color:var(--faint);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
+.reply-cue.static .reply-who{color:var(--faint);font-weight:400}
+
+/* Arriving at the answered message marks it briefly; nothing else moves. */
+.message.reply-target{background:var(--live-soft);border-radius:var(--r-control)}
+.message{transition:background-color 400ms var(--ease)}
+@media (prefers-reduced-motion:reduce){.message,button.reply-cue{transition:none}}
+}
+
+@layer components{
+/* The worktable's single row must be bounded by the worktable, not by its contents. Without
+   this the row grows to fit the conversation, the column is clipped instead of scrolling, and
+   a reader can never move back through a long exchange. */
+.worktable{grid-template-rows:minmax(0,1fr)}
+.conversation,.supervision,.room-context{min-height:0}
+}

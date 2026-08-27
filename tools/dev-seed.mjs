@@ -53,8 +53,17 @@ try {
   await rooms.updateTaskStatus({ companyId: company, roomId: room.id, actorId: agents.Coleman.principal_id, taskId: investigate.id, status: 'in_progress', expectedVersion: 1, idempotencyKey: key() });
 
   const opening = await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: agents.Coleman.principal_id, addressedPrincipalId: agents.JJ.principal_id, body: 'Starting on the rate-limit investigation. Early signal: the gateway drops the connection rather than returning 429, so the published contract cannot promise a retry header yet.', idempotencyKey: key() });
-  await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: agents.JJ.principal_id, addressedPrincipalId: agents.Coleman.principal_id, inReplyToMessageId: opening.id, body: 'Understood. I will hold the contract draft until you confirm whether that is the gateway or the upstream proxy — it changes what we can commit to.', idempotencyKey: key() });
+  const jjHold = await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: agents.JJ.principal_id, addressedPrincipalId: agents.Coleman.principal_id, inReplyToMessageId: opening.id, body: 'Understood. I will hold the contract draft until you confirm whether that is the gateway or the upstream proxy — it changes what we can commit to.', idempotencyKey: key() });
   await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: me, body: 'Agreed. Please establish which layer is dropping before we promise anything publicly.', idempotencyKey: key() });
+
+  // A longer exchange so every relationship the transcript can show actually exists here:
+  // agent answering agent, a human interrupting, an agent answering the human, an unaddressed
+  // room message, and a reply reaching back to the first message of the conversation.
+  const colemanReply = await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: agents.Coleman.principal_id, addressedPrincipalId: agents.JJ.principal_id, inReplyToMessageId: jjHold.id, body: 'Confirmed it is the upstream proxy, not our gateway. It closes the socket at the connection limit before any of our middleware runs, so nothing we do at the gateway can turn that into a 429 today.', idempotencyKey: key() });
+  const interruption = await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: me, body: 'Good. Before either of you commits to wording: does the proxy limit apply per client or per region? That changes what we can promise.', idempotencyKey: key() });
+  await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: agents.JJ.principal_id, addressedPrincipalId: me, inReplyToMessageId: interruption.id, body: 'Per region, from the configuration Coleman pulled. A single client can be throttled by traffic it did not generate, which we should say plainly in the docs rather than bury.', idempotencyKey: key() });
+  await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: agents.Coleman.principal_id, body: 'Noting for the room: the proxy configuration is owned by the platform team, so any fix there needs their sign-off and will not land inside this launch window.', idempotencyKey: key() });
+  await rooms.sendMessage({ companyId: company, roomId: room.id, actorId: agents.JJ.principal_id, addressedPrincipalId: agents.Coleman.principal_id, inReplyToMessageId: opening.id, body: 'Coming back to your first point about the retry header — given the per-region limit, a Retry-After we compute at the gateway would be wrong often enough to be worse than omitting it.', idempotencyKey: key() });
 
   const decision = await runtime.requestExternalDecision({
     companyId: company, roomId: room.id, actorId: agents.Coleman.principal_id,

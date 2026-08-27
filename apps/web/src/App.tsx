@@ -5,7 +5,7 @@ import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
-import type {ConnectionState,Decision,Member,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
+import type {ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
 import './styles.css';
 
 const formatTime=(value:string)=>new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));
@@ -84,22 +84,100 @@ function activityText(event:RoomEvent){
 }
 
 type AgentStatus={label:string;tone:'ok'|'busy'|'warn'|'off'|'bad';title:string};
-function Transcript({messages,members,lastEvent}:{messages:import('./types').Message[];members:Member[];lastEvent:RoomEvent|null}){
-  const names=new Map(members.map(m=>[m.principal_id,m.display_name]));
-  // A reply is a stated relationship, never inferred from which message happens to sit above.
-  const senders=new Map(messages.map(m=>[m.id,m.sender_name]));
-  const listRef=useRef<HTMLDivElement>(null);const [unseen,setUnseen]=useState(0);const count=messages.length;
-  useEffect(()=>{const el=listRef.current;if(!el)return;const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;if(near){if(typeof el.scrollTo==='function')el.scrollTo({top:el.scrollHeight,behavior:'smooth'});else el.scrollTop=el.scrollHeight}else setUnseen(n=>n+1)},[count]);
-  const jump=()=>{const el=listRef.current;if(el){if(typeof el.scrollTo==='function')el.scrollTo({top:el.scrollHeight,behavior:'smooth'});else el.scrollTop=el.scrollHeight}setUnseen(0)};
+/**
+ * Describe one message from relationships the engine stores: who sent it, whom it addresses,
+ * and which message it answers. Nothing is inferred from what happens to sit above it.
+ */
+/**
+ * Scroll a container, and make sure it actually scrolled. Some environments accept a smooth
+ * scroll request and silently ignore the behaviour, which would otherwise leave the transcript
+ * never moving to new messages and reply links doing nothing at all.
+ */
+const prefersReducedMotion=()=>typeof matchMedia==='function'&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function scrollTranscript(list:HTMLElement,top:number){
+  const target=Math.max(0,top);
+  const from=list.scrollTop;
+  if(prefersReducedMotion()||typeof list.scrollTo!=='function'){
+    list.scrollTop=target;
+    return;
+  }
+  list.scrollTo({top:target,behavior:'smooth'});
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    if(list.scrollTop===from&&Math.abs(target-from)>2)list.scrollTop=target;
+  }));
+}
+
+function relationshipOf(message:Message,byId:Map<string,Message>,members:Member[]){
+  const parent=message.in_reply_to_message_id?byId.get(message.in_reply_to_message_id):undefined;
+  const addressee=message.addressed_principal_id?members.find(m=>m.principal_id===message.addressed_principal_id):undefined;
+  // A reply that answers the person it is addressed to says so once, not twice.
+  const addressRedundant=Boolean(parent&&addressee&&parent.sender_principal_id===addressee.principal_id);
+  const between=message.sender_kind==='agent'&&(addressee?.kind==='agent'||parent?.sender_kind==='agent');
+  return {
+    parent,
+    addressee,
+    showAddress:Boolean(addressee)&&!addressRedundant,
+    // Only claim a reply exists; claim who it answers only when that message is loaded.
+    reply:message.in_reply_to_message_id?{sender:parent?.sender_name,excerpt:parent?.body_text,id:message.in_reply_to_message_id}:undefined,
+    direction:message.sender_kind==='agent'?(addressee?.kind==='human'?'to-human':between?'between-agents':'broadcast'):(addressee?'to-agent':'broadcast'),
+  };
+}
+
+function Transcript({messages,members,lastEvent}:{messages:Message[];members:Member[];lastEvent:RoomEvent|null}){
+  const byId=useMemo(()=>new Map(messages.map(m=>[m.id,m])),[messages]);
+  const listRef=useRef<HTMLDivElement>(null);
+  const [unseen,setUnseen]=useState(0);
+  const [focusedReply,setFocusedReply]=useState<string|null>(null);
+  const count=messages.length;
+
+  useEffect(()=>{const el=listRef.current;if(!el)return;const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;if(near)scrollTranscript(el,el.scrollHeight);else setUnseen(n=>n+1)},[count]);
+  const jump=()=>{const el=listRef.current;if(el)scrollTranscript(el,el.scrollHeight);setUnseen(0)};
+
+  // Following a reply moves to the message it answers and marks it briefly, so a thread can be
+  // read without it being pulled out of chronology into a side channel.
+  const followReply=(id:string,from:HTMLElement)=>{
+    // Derived from the element that was clicked, so it is always the live scroll container.
+    const list=from.closest<HTMLElement>('.transcript');
+    const target=list?.querySelector<HTMLElement>(`[data-message-id="${id}"]`);
+    if(!list||!target)return;
+    // Scroll the transcript itself by a measured amount rather than asking the browser to
+    // choose a scroll container, so the answered message reliably lands in view.
+    const delta=target.getBoundingClientRect().top-list.getBoundingClientRect().top;
+    // Following a reply lands immediately, like following a footnote: arriving reliably at the
+    // answered message matters more than animating the way there.
+    list.scrollTop=Math.max(0,list.scrollTop+delta-Math.max(0,(list.clientHeight-target.offsetHeight)/2));
+    setFocusedReply(id);
+    setTimeout(()=>setFocusedReply(current=>current===id?null:current),1600);
+  };
+
   return <div className="transcript-wrap">
     <div className="pulse-rail" aria-hidden="true"><span className={lastEvent?'pulse active':'pulse'}/></div>
     <div className="transcript" ref={listRef} data-testid="transcript">
       {!messages.length&&<div className="empty"><strong>The room is ready.</strong><p>Start with a clear direction or assign the first piece of work.</p></div>}
       {messages.map((message,index)=>{
+        // Grouping only hides a repeated name; it never implies a relationship.
         const same=index>0&&messages[index-1]?.sender_principal_id===message.sender_principal_id;
-        return <article className={`message ${message.sender_kind} ${same?'continued':''}`} key={message.id} data-message-id={message.id}>
-          {!same&&<header><span className={`sender-glyph ${message.sender_kind}`}>{message.sender_name.slice(0,1)}</span><strong>{message.sender_name}</strong><span>{message.sender_kind==='agent'?'AI':'Human'}</span><time dateTime={message.created_at}>{formatTime(message.created_at)}</time></header>}
-          <div className="message-body">{message.in_reply_to_message_id&&senders.has(message.in_reply_to_message_id)&&<span className="reply-to">Replying to {senders.get(message.in_reply_to_message_id)}</span>}{message.addressed_principal_id&&<span className="address">To {names.get(message.addressed_principal_id)??'room member'}</span>}<p>{message.body_text}</p></div>
+        const rel=relationshipOf(message,byId,members);
+        return <article
+          className={`message ${message.sender_kind} ${rel.direction} ${same?'continued':''} ${focusedReply===message.id?'reply-target':''}`}
+          key={message.id} data-message-id={message.id}>
+          {!same&&<header>
+            <span className={`sender-glyph ${message.sender_kind}`}>{message.sender_name.slice(0,1)}</span>
+            <strong>{message.sender_name}</strong>
+            <span className="kind-mark">{message.sender_kind==='agent'?'AI':'Human'}</span>
+            <time dateTime={message.created_at}>{formatTime(message.created_at)}</time>
+          </header>}
+          <div className="message-body">
+            {rel.reply&&(rel.reply.excerpt
+              ? <button type="button" className="reply-cue" onClick={event=>followReply(rel.reply!.id,event.currentTarget)}>
+                  <span className="reply-who">Replying to {rel.reply.sender}</span>
+                  <span className="reply-excerpt">{rel.reply.excerpt}</span>
+                </button>
+              : <span className="reply-cue static"><span className="reply-who">Replying to an earlier message</span></span>)}
+            {rel.showAddress&&<span className={`address ${rel.addressee?.kind}`}>To {rel.addressee?.display_name}</span>}
+            <p>{message.body_text}</p>
+          </div>
         </article>})}
     </div>
     {unseen>0&&<button className="new-items" onClick={jump}>{unseen} new {unseen===1?'update':'updates'} <ArrowUp size={13}/></button>}
