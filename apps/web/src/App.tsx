@@ -3,7 +3,7 @@ import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert
 import {currentIdentity,roomFromLocation} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import {useRoomSession} from './use-room';
-import type {ConnectionState,Decision,Member,RoomEvent,RoomIdentity,Task,TaskStatus} from './types';
+import type {ConnectionState,Decision,Member,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
 import './styles.css';
 
 const formatTime=(value:string)=>new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));
@@ -55,7 +55,7 @@ function Participants({members,currentId,tasks}:{members:Member[];currentId:stri
     <div className="rail-heading"><Users size={15}/><span>In this room</span><b>{members.length}</b></div>
     <section><h2>People</h2><ul>{humans.map(m=><Person key={m.principal_id} member={m} current={m.principal_id===currentId}/>)}</ul></section>
     <section><h2>Agents</h2><ul>{agents.map(m=><Person key={m.principal_id} member={m} current={false} status={statusFor(m)}/>)}</ul></section>
-    <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state. Human presence is not inferred; “you” marks this browser session.</div>
+    <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state, never inferred.</div>
   </aside>
 }
 
@@ -124,7 +124,7 @@ function TaskCreator({agents,onCreate}:{agents:Member[];onCreate:(x:{title:strin
 
 function RoomRoute({navigate}:{navigate:(to:string)=>void}){
   const room=useMemo(roomFromLocation,[]);
-  const [state,setState]=useState<{status:'loading'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity}>({status:'loading'});
+  const [state,setState]=useState<{status:'loading'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity;workspace:string}>({status:'loading'});
   useEffect(()=>{
     if(!room)return;
     let alive=true;
@@ -134,7 +134,7 @@ function RoomRoute({navigate}:{navigate:(to:string)=>void}){
       if(!me){rememberIntent(location.pathname);return navigate('/signin')}
       const membership=me.companies.find(c=>c.company_id===room.companyId);
       if(!membership)return setState({status:'no_access'});
-      setState({status:'ready',identity:{...room,principalId:membership.principal_id}});
+      setState({status:'ready',identity:{...room,principalId:membership.principal_id},workspace:membership.company_name});
     }).catch(error=>{if(alive)setState({status:'error',message:(error as Error).message})});
     return()=>{alive=false};
   },[room?.companyId,room?.roomId,navigate]);
@@ -143,7 +143,7 @@ function RoomRoute({navigate}:{navigate:(to:string)=>void}){
   if(state.status==='loading')return <main className="route-error"><div className="brand-mark">M</div><p className="auth-quiet">Opening the room…</p></main>;
   if(state.status==='no_access')return <main className="route-error"><div className="brand-mark">M</div><h1>No access to this workspace</h1><p>Your account is not a member of this company.</p></main>;
   if(state.status==='error')return <main className="route-error"><div className="brand-mark">M</div><h1>Something went wrong</h1><p>{state.message}</p></main>;
-  return <Room identity={state.identity}/>;
+  return <Room identity={state.identity} workspace={state.workspace}/>;
 }
 
 function RoomApp(){
@@ -159,27 +159,74 @@ function RoomApp(){
 }
 
 
-function Room({identity}:{identity:RoomIdentity}){
+function RoomContext({workspace,snapshot}:{workspace:string;snapshot:RoomSnapshot}){
+  return <nav className="room-context" aria-label="Workspace context">
+    <div className="context-block"><span className="context-label">Workspace</span><p className="context-value">{workspace}</p></div>
+    <div className="context-block"><span className="context-label">Project</span><p className="context-value">{snapshot.room.project_name}</p></div>
+    <div className="context-block">
+      <span className="context-label">Room</span>
+      <p className="context-value context-room">{snapshot.room.name}</p>
+      <p className="context-objective">{snapshot.briefing.project_objective}</p>
+    </div>
+  </nav>;
+}
+
+function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   const {api,snapshot,connection,lastEvent,error,refresh}=useRoomSession(identity);
   const [briefingOpen,setBriefingOpen]=useState(false);
+  const [oversightOpen,setOversightOpen]=useState(false);
+  const oversightTrigger=useRef<HTMLButtonElement>(null);
+  const oversightClose=useRef<HTMLButtonElement>(null);
+
+  const closeOversight=useCallback(()=>{setOversightOpen(false);oversightTrigger.current?.focus()},[]);
+  useEffect(()=>{
+    if(!oversightOpen)return;
+    // Focus moves into the panel as it opens; the retry covers the frame in which the panel
+    // is still being made visible.
+    const focus=()=>oversightClose.current?.focus();
+    focus();
+    const frame=requestAnimationFrame(focus);
+    const onKey=(event:KeyboardEvent)=>{if(event.key==='Escape')closeOversight()};
+    addEventListener('keydown',onKey);
+    return()=>{cancelAnimationFrame(frame);removeEventListener('keydown',onKey)};
+  },[oversightOpen,closeOversight]);
+
   if(!snapshot)return <main className="loading-room"><div className="brand-mark">M</div><div className="loading-line"/><p>{error??'Entering the room…'}</p>{error&&<button onClick={()=>void refresh()}><RefreshCw size={15}/>Try again</button>}</main>;
   const current=snapshot.members.find(m=>m.principal_id===identity.principalId);
   const managers=current?.role==='manager';const agents=snapshot.members.filter(m=>m.kind==='agent');const pending=snapshot.briefing.unresolved_decisions;
   const recent=snapshot.briefing.important_recent_activity;
   const mutate=async(action:()=>Promise<unknown>)=>{await action();await refresh()};
+  // Every number in the mobile trigger is counted from state already known to be true.
+  const openWork=snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status));
+  const blocked=openWork.filter(t=>t.status==='blocked');
+  const working=agents.filter(a=>a.agent_presence==='connected'&&a.agent_runtime_status==='working');
+  const attention=pending.length+blocked.length;
+
   return <main className="room-app">
     <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div><button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
     {briefingOpen&&<section className="briefing"><div><span>Normalized room briefing</span><h2>{snapshot.briefing.project_objective}</h2></div><dl><div><dt>Your role</dt><dd>{snapshot.briefing.joining_principal.role}</dd></div><div><dt>Your responsibility</dt><dd>{snapshot.briefing.joining_principal.responsibilities||'Contribute to the room objective'}</dd></div><div><dt>Active work</dt><dd>{snapshot.briefing.active_tasks.length} tasks · {snapshot.briefing.blockers.length} blocked</dd></div></dl></section>}
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
-      <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks}/>
+      <RoomContext workspace={workspace} snapshot={snapshot}/>
       <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div><span className="sequence">SEQ {snapshot.snapshot_seq}</span></div><Transcript messages={snapshot.messages} members={snapshot.members} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))}/></section>
-      <aside className="supervision" aria-label="Tasks and decisions">
-        {pending.length>0&&<section className="decisions"><div className="section-label"><span>Needs attention</span><b>{pending.length}</b></div>{pending.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} canResolve={managers} onResolve={(r,n)=>mutate(()=>api.resolveDecision(d,r,n))}/>)}</section>}
-        <section className="tasks"><div className="section-label"><span>Shared work</span><b>{snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status)).length}</b></div><ul>{snapshot.tasks.map(t=><TaskRow key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)} canManage={managers||t.assignee_principal_id===identity.principalId} onUpdate={s=>mutate(()=>api.updateTask(t.id,s,t.version))}/>)}</ul>{!snapshot.tasks.length&&<p className="small-empty">No tasks yet. Add the first concrete piece of work.</p>}<TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/></section>
-        <section className="activity"><div className="section-label"><span>Room activity</span></div><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></section>
+      <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
+        <div className="sheet-bar">
+          <span>Team &amp; work</span>
+          <button ref={oversightClose} onClick={closeOversight} aria-label="Close team and work"><X size={16}/></button>
+        </div>
+        <div className="supervision-scroll">
+          {pending.length>0&&<section className="decisions"><div className="section-label"><span>Needs attention</span><b>{pending.length}</b></div>{pending.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} canResolve={managers} onResolve={(r,n)=>mutate(()=>api.resolveDecision(d,r,n))}/>)}</section>}
+          <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks}/>
+          <section className="tasks"><div className="section-label"><span>Shared work</span><b>{snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status)).length}</b></div><ul>{snapshot.tasks.map(t=><TaskRow key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)} canManage={managers||t.assignee_principal_id===identity.principalId} onUpdate={s=>mutate(()=>api.updateTask(t.id,s,t.version))}/>)}</ul>{!snapshot.tasks.length&&<p className="small-empty">No tasks yet. Add the first concrete piece of work.</p>}<TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/></section>
+          <details className="activity"><summary className="section-label"><span>Room activity</span></summary><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></details>
+        </div>
       </aside>
+      {oversightOpen&&<button className="sheet-scrim" aria-label="Close team and work" onClick={closeOversight}/>}
     </div>
+    <button ref={oversightTrigger} className="oversight-trigger" onClick={()=>setOversightOpen(true)} aria-expanded={oversightOpen}>
+      <span className="trigger-team">{agents.length} {agents.length===1?'agent':'agents'}{working.length?` · ${working.length} working`:''}</span>
+      {attention>0&&<span className="trigger-attention">{attention} needs you</span>}
+    </button>
     <div className="sr-live" aria-live="polite">{lastEvent&&`${lastEvent.actor_display_name} ${activityText(lastEvent)}`}</div>
   </main>;
 }

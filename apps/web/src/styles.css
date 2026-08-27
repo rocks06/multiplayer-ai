@@ -115,3 +115,70 @@ time,.sequence,.pct,[data-numeric]{font-variant-numeric:tabular-nums}
 .auth-list li{padding:9px 12px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--surface);font-size:var(--t-body);color:var(--ink)}
 @media (max-width:600px){.auth{place-items:start center;padding-top:var(--s7)}}
 }
+
+@layer components{
+/* Stage 2 shell. The centre is the hero: the rails are sized so the conversation always
+   holds the largest share of the width, and the reading measure is capped so a wide screen
+   makes the room calmer rather than the lines longer. */
+.room-context{min-width:0;display:flex;flex-direction:column;gap:var(--s5);padding:var(--s5) var(--s4);border-right:1px solid var(--line);background:var(--sunken);overflow:auto}
+.context-block{display:flex;flex-direction:column;gap:3px;min-width:0}
+.context-label{font-size:var(--t-micro);letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+.context-value{margin:0;font-size:var(--t-small);color:var(--ink-2);overflow-wrap:anywhere}
+.context-room{font:500 17px/1.2 var(--serif);letter-spacing:-.01em;color:var(--ink)}
+.context-objective{margin:5px 0 0;font-size:var(--t-caption);line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+
+/* A readable column inside a wide centre, with the composer on the same measure. */
+.transcript>*{max-width:68ch;margin-inline:auto;width:100%}
+.conversation>.composer{max-width:calc(68ch + 76px);margin-inline:auto;width:100%}
+
+.supervision-scroll{display:flex;flex-direction:column;gap:var(--s5);min-width:0}
+.sheet-bar,.sheet-scrim,.oversight-trigger{display:none}
+
+/* Long names must wrap rather than push a rail wider than its column. */
+.person-copy strong,.task-row strong,.activity p{overflow-wrap:anywhere}
+.person-copy small{white-space:normal}
+}
+
+@layer responsive{
+/* Two columns: the workspace context folds away before the conversation gives up width. */
+@media (max-width:1179px){
+  .worktable{grid-template-columns:minmax(420px,1fr) 320px}
+  .room-context{display:none}
+}
+/* One column. Oversight becomes a deliberate surface over the conversation, not under it. */
+@media (max-width:899px){
+  .room-app{height:100%;display:grid;grid-template-rows:auto minmax(0,1fr) auto;padding:0}
+  .worktable{height:auto;min-height:0;grid-template-columns:1fr;overflow:hidden}
+  .conversation{height:auto;min-height:0}
+  .oversight-trigger{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);width:100%;padding:11px var(--s4);border-top:1px solid var(--line);background:var(--surface);color:var(--muted);font-size:var(--t-small)}
+  .trigger-team{font-variant-numeric:tabular-nums}
+  .trigger-attention{padding:3px 9px;border-radius:var(--r-pill);background:var(--wait-soft);color:var(--wait);font-size:var(--t-caption);font-weight:600}
+  .supervision{position:fixed;inset:auto 0 0 0;z-index:40;max-height:86vh;padding:0;border:0;border-top:1px solid var(--line);border-radius:var(--r-surface) var(--r-surface) 0 0;background:var(--surface);box-shadow:var(--shadow-float);transform:translateY(102%);visibility:hidden;transition:transform var(--m-enter) var(--ease),visibility 0s linear var(--m-enter)}
+  .supervision[data-open="true"]{transform:none;visibility:visible;transition:transform var(--m-enter) var(--ease),visibility 0s}
+  .sheet-bar{display:flex;align-items:center;justify-content:space-between;padding:var(--s3) var(--s4);border-bottom:1px solid var(--line);font-size:var(--t-small);font-weight:600;color:var(--ink)}
+  .sheet-bar button{display:grid;place-items:center;width:30px;height:30px;border-radius:var(--r-control);color:var(--muted)}
+  .sheet-bar button:hover{background:var(--soft);color:var(--ink)}
+  .supervision-scroll{padding:var(--s4);overflow:auto;max-height:calc(86vh - 50px)}
+  .sheet-scrim{display:block;position:fixed;inset:0;z-index:39;background:color-mix(in srgb,var(--ink) 28%,transparent);border:0}
+  .transcript{padding:var(--s4) var(--s4) var(--s5)}
+}
+@media (prefers-reduced-motion:reduce){.supervision{transition:none}}
+}
+
+@layer components{
+/* The audit trail stays reachable without competing with the story the room is telling. */
+details.activity>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:6px}
+details.activity>summary::-webkit-details-marker{display:none}
+details.activity>summary::after{content:"";width:5px;height:5px;border-right:1.5px solid var(--faint);border-bottom:1.5px solid var(--faint);transform:rotate(-45deg);margin-left:auto;transition:transform var(--m-state) var(--ease)}
+details.activity[open]>summary::after{transform:rotate(45deg)}
+details.activity>summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px;border-radius:3px}
+}
+
+@layer components{
+/* Participants moved from being their own rail into the oversight column, so they stop
+   carrying a rail's background, border and private scrollbar — the column scrolls as one. */
+.supervision .participants{padding:0;background:none;border-right:0;overflow:visible;min-width:0}
+.supervision .participants section{margin-top:var(--s4)}
+.supervision .rail-heading{padding:0 0 var(--s3)}
+.supervision .rail-note{margin:var(--s4) 0 0}
+}
