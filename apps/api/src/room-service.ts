@@ -83,6 +83,55 @@ export class RoomService {
   }
 
   async createCompany(name:string) { const id=uuidv7(); await this.pool.query(`INSERT INTO companies(id,name) VALUES($1,$2)`,[id,name]); return {id,name}; }
+  /**
+   * Create a workspace on behalf of a signed-in user, in one transaction: the company, the
+   * user's membership of it, and their human principal. A company without its creator as a
+   * member would be unreachable, so these are never separate steps.
+   */
+  async createWorkspaceForUser(userId:string,name:string) {
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      const user=await c.query<{display_name:string}>(`SELECT display_name FROM users WHERE id=$1`,[userId]);
+      if(!user.rowCount) throw new DomainError('unauthenticated','Sign in to create a workspace',401);
+      const companyId=uuidv7(),principalId=uuidv7();
+      await c.query(`INSERT INTO companies(id,name) VALUES($1,$2)`,[companyId,name]);
+      await c.query(`INSERT INTO company_users(company_id,user_id) VALUES($1,$2)`,[companyId,userId]);
+      await c.query(`INSERT INTO principals(id,company_id,kind,user_id,display_name) VALUES($1,$2,'human',$3,$4)`,[principalId,companyId,userId,user.rows[0]!.display_name]);
+      await c.query('COMMIT');
+      return {company_id:companyId,name,principal_id:principalId,display_name:user.rows[0]!.display_name};
+    } catch(e){ await c.query('ROLLBACK'); throw e; } finally { c.release(); }
+  }
+
+  /**
+   * Agents in a company, with only what the product needs to choose and connect one.
+   * Connector state is durable Gateway state, never inferred; no credential, digest, prefix,
+   * session id, or cursor is exposed.
+   */
+  async listCompanyAgents(companyId:string,actorId:string) {
+    const c=await this.pool.connect();
+    try {
+      await this.actor(c,companyId,actorId);
+      const result=await c.query(`SELECT a.id agent_id,p.id principal_id,p.display_name,a.status,u.display_name owner_display_name,
+        EXISTS(SELECT 1 FROM external_agent_credentials ec WHERE ec.company_id=a.company_id AND ec.agent_principal_id=p.id AND ec.status='active') connector_enrolled,
+        CASE WHEN s.status IS NULL THEN 'never' WHEN s.status<>'connected' THEN s.status WHEN s.last_seen_at < now()-interval '90 seconds' THEN 'stale' ELSE 'connected' END presence,
+        s.runtime_status,s.last_seen_at,
+        COALESCE(m.rooms,'[]'::jsonb) rooms
+        FROM agents a
+        JOIN principals p ON p.company_id=a.company_id AND p.agent_id=a.id AND p.kind='agent'
+        LEFT JOIN users u ON u.id=a.owner_user_id
+        LEFT JOIN LATERAL (SELECT es.status,es.runtime_status,es.last_seen_at FROM external_agent_sessions es WHERE es.company_id=a.company_id AND es.agent_principal_id=p.id ORDER BY es.last_seen_at DESC LIMIT 1) s ON true
+        LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('room_id',r.id,'name',r.name) ORDER BY r.name) rooms FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id WHERE rm.company_id=a.company_id AND rm.principal_id=p.id AND rm.status='active') m ON true
+        WHERE a.company_id=$1 AND p.status='active' ORDER BY p.display_name`,[companyId]);
+      return {agents:result.rows.map((row:any)=>({
+        agent_id:row.agent_id,principal_id:row.principal_id,display_name:row.display_name,status:row.status,
+        owner_display_name:row.owner_display_name,
+        connector:{enrolled:row.connector_enrolled,presence:row.presence,runtime_status:row.runtime_status??null,last_seen_at:row.last_seen_at??null},
+        rooms:row.rooms,
+      }))};
+    } finally { c.release(); }
+  }
+
   async createHuman(companyId:string,email:string,displayName:string) { const userId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO users(id,email,display_name) VALUES($1,$2,$3)`,[userId,email,displayName]); await c.query(`INSERT INTO company_users(company_id,user_id) VALUES($1,$2)`,[companyId,userId]); await c.query(`INSERT INTO principals(id,company_id,kind,user_id,display_name) VALUES($1,$2,'human',$3,$4)`,[principalId,companyId,userId,displayName]); await c.query('COMMIT'); return {user_id:userId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
   async createAgent(companyId:string,ownerUserId:string,name:string) { const agentId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO agents(id,company_id,owner_user_id,name) VALUES($1,$2,$3,$4)`,[agentId,companyId,ownerUserId,name]); await c.query(`INSERT INTO principals(id,company_id,kind,agent_id,display_name) VALUES($1,$2,'agent',$3,$4)`,[principalId,companyId,agentId,name]); await c.query('COMMIT'); return {agent_id:agentId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
   async createProject(companyId:string,actorId:string,name:string,objective:string) { await this.pool.query(`SELECT 1 FROM principals WHERE id=$1 AND company_id=$2`,[actorId,companyId]).then(r=>{if(!r.rowCount)throw new DomainError('forbidden','Invalid company principal',403)}); const id=uuidv7(); await this.pool.query(`INSERT INTO projects(id,company_id,name,objective,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[id,companyId,name,objective,actorId]); return {id,name,objective}; }

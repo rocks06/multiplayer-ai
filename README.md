@@ -129,7 +129,9 @@ internet-accessible deployment:
 
 - `POST /v1/companies` and `POST /v1/companies/:companyId/humans` are **unauthenticated**.
   They exist so the first account can bootstrap while there is no email transport. They must
-  be authenticated or replaced before staging.
+  be authenticated or replaced before staging. The product path does not use them: a signed-in
+  user creates a workspace through the authenticated `POST /v1/workspaces`, which establishes
+  their membership and principal in the same transaction.
 - Sign-in links are delivered by `LoggingSignInLinkDelivery`, which writes the token to the
   server log, or issued through an authorized company member. A real transport must be added
   behind `SignInLinkDelivery` before staging.

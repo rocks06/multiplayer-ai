@@ -69,6 +69,10 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   // Developer beta: no email transport, so an authorized company member mints a link and
   // reads it once from this response. Delivery stays behind the SignInLinkDelivery seam.
   app.post('/v1/companies/:companyId/users/:userId/sign-in-links',async req=>{const p=body(z.object({companyId:z.string().uuid(),userId:z.string().uuid()}),req.params);const session=await auth.resolveSession(readSessionCookie(req));return auth.issueSignInLinkFor({companyId:p.companyId,actorUserId:session.userId,userId:p.userId})});
+  // Authenticated workspace creation. The unauthenticated POST /v1/companies below remains a
+  // developer bootstrap and a documented staging blocker; this path does not depend on it.
+  app.post('/v1/workspaces',async req=>{const x=body(z.object({name:z.string().min(1).max(100)}),req.body);const session=await auth.resolveSession(readSessionCookie(req));return service.createWorkspaceForUser(session.userId,x.name)});
+  app.get('/v1/companies/:companyId/agents',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);return service.listCompanyAgents(p.companyId,await principal(req,p.companyId))});
   app.post('/v1/companies',async req=>{const x=body(z.object({name:z.string().min(1)}),req.body);return service.createCompany(x.name)});
   app.post('/v1/companies/:companyId/humans',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({email:z.string().email(),display_name:z.string().min(1)}),req.body);return service.createHuman(p.companyId,x.email,x.display_name)});
   app.post('/v1/companies/:companyId/agents',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({owner_user_id:z.string().uuid(),name:z.string().min(1)}),req.body);return service.createAgent(p.companyId,x.owner_user_id,x.name)});
@@ -97,7 +101,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.patch('/v1/companies/:companyId/rooms/:roomId/tasks/:taskId/assignee',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),taskId:z.string().uuid()}),req.params);const x=body(z.object({assignee_principal_id:z.string().uuid().nullable(),expected_version:z.number().int().positive()}),req.body);return service.reassignTask({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),taskId:p.taskId,assigneePrincipalId:x.assignee_principal_id,expectedVersion:x.expected_version,idempotencyKey:idem(req)})});
   app.get('/v1/companies/:companyId/rooms/:roomId/snapshot',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.snapshot(p.companyId,p.roomId,await principal(req,p.companyId))});
   app.get('/v1/companies/:companyId/rooms/:roomId/events',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const q=body(z.object({after_seq:z.coerce.number().int().min(0).default(0),limit:z.coerce.number().int().positive().max(500).default(100)}),req.query);return service.events(p.companyId,p.roomId,await principal(req,p.companyId),q.after_seq,q.limit)});
-  registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime);
+  registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime,principal);
   app.register(async realtimeRoutes=>{
     realtimeRoutes.get('/v1/companies/:companyId/rooms/:roomId/stream',{websocket:true},(socket,req)=>{
       void (async()=>{ try {

@@ -12,24 +12,24 @@ const idempotency=(req:any)=>{const key=req.headers["idempotency-key"];if(typeof
 const sessionParams=z.object({sessionId:z.string().uuid()});
 const taskStatuses=z.enum(["open","in_progress","blocked","awaiting_decision","completed","cancelled"]);
 
-export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGatewayService,rooms:RoomService,runtime:AgentRuntimeService,realtime:RealtimeHub) {
+/** Resolves the acting human principal for a company, the same way the room routes do. */
+export type ResolveHumanPrincipal = (request:any,companyId:string)=>Promise<string>;
+
+export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGatewayService,rooms:RoomService,runtime:AgentRuntimeService,realtime:RealtimeHub,resolvePrincipal:ResolveHumanPrincipal) {
   app.post("/v1/companies/:companyId/agents/:agentPrincipalId/gateway-credentials",async req=>{
     const p=parse(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);
     const x=parse(z.object({label:z.string().min(1).max(100)}),req.body);
-    const actor=req.headers["x-principal-id"];if(typeof actor!=="string")throw new DomainError("unauthenticated","x-principal-id is required",401);
-    return gateway.createCredential({companyId:p.companyId,actorId:actor,agentPrincipalId:p.agentPrincipalId,label:x.label});
+    return gateway.createCredential({companyId:p.companyId,actorId:await resolvePrincipal(req,p.companyId),agentPrincipalId:p.agentPrincipalId,label:x.label});
   });
   app.delete("/v1/companies/:companyId/gateway-credentials/:credentialId",async req=>{
     const p=parse(z.object({companyId:z.string().uuid(),credentialId:z.string().uuid()}),req.params);
-    const actor=req.headers["x-principal-id"];if(typeof actor!=="string")throw new DomainError("unauthenticated","x-principal-id is required",401);
-    return gateway.revokeCredential({companyId:p.companyId,actorId:actor,credentialId:p.credentialId});
+    return gateway.revokeCredential({companyId:p.companyId,actorId:await resolvePrincipal(req,p.companyId),credentialId:p.credentialId});
   });
 
   app.post("/v1/companies/:companyId/agents/:agentPrincipalId/enrollments",async req=>{
     const p=parse(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);
     const x=parse(z.object({label:z.string().min(1).max(100),ttl_minutes:z.number().int().min(1).max(60).optional()}),req.body);
-    const actor=req.headers["x-principal-id"];if(typeof actor!=="string")throw new DomainError("unauthenticated","x-principal-id is required",401);
-    return gateway.createEnrollment({companyId:p.companyId,actorId:actor,agentPrincipalId:p.agentPrincipalId,label:x.label,ttlMinutes:x.ttl_minutes});
+    return gateway.createEnrollment({companyId:p.companyId,actorId:await resolvePrincipal(req,p.companyId),agentPrincipalId:p.agentPrincipalId,label:x.label,ttlMinutes:x.ttl_minutes});
   });
   // Unauthenticated by design: the single-use code is the authentication, and it names the
   // principal so a connecting device can never choose one.
