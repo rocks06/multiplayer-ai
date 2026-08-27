@@ -173,6 +173,24 @@ describe("Agent Gateway v1",()=>{
   expect(stolen.status).toBe(401);
  });
 
+ it("lets one agent reply explicitly to another agent's message",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Coleman","coleman"),b=await agent(f,"JJ","jj");
+  const coleman=await external(a,f.room.id),jj=await external(b,f.room.id);
+  const findings=await coleman.message("Findings: the constraint is in the authorization boundary.","coleman-findings",b.principal_id);
+  expect(findings.status).toBe(200);
+
+  // Agent-to-agent coordination is a stated relationship, not adjacency in the transcript.
+  const reply=await jj.message("Agreed. Testing option two against the Gateway.","jj-reply",a.principal_id,findings.body.id);
+  expect(reply.status).toBe(200);
+  expect(reply.body.in_reply_to_message_id).toBe(findings.body.id);
+
+  const stored=await pool.query(`SELECT sender_principal_id,in_reply_to_message_id FROM messages WHERE id=$1`,[reply.body.id]);
+  expect(stored.rows[0]).toEqual({sender_principal_id:b.principal_id,in_reply_to_message_id:findings.body.id});
+
+  const snapshot=await jj.snapshot();
+  expect(snapshot.body.messages.at(-1).in_reply_to_message_id).toBe(findings.body.id);
+ });
+
  it("reports agent presence in the room snapshot from durable session state",async()=>{
   const f=await companyFixture(),a=await agent(f,"Presence AI","presence");
   const members=async()=>{

@@ -25,7 +25,7 @@ export class FakeExternalAgentClient {
   async snapshot(){return this.request("GET",`/v1/agent-gateway/v1/sessions/${this.sessionId}/snapshot`)}
   async tasks(){return this.request("GET",`/v1/agent-gateway/v1/sessions/${this.sessionId}/tasks`)}
   async task(id:string){return this.request("GET",`/v1/agent-gateway/v1/sessions/${this.sessionId}/tasks/${id}`)}
-  async message(body:string,key:string,addressedPrincipalId?:string){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/messages`,{body,...(addressedPrincipalId?{addressed_principal_id:addressedPrincipalId}:{})},this.sessionToken,key)}
+  async message(body:string,key:string,addressedPrincipalId?:string,inReplyToMessageId?:string){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/messages`,{body,...(addressedPrincipalId?{addressed_principal_id:addressedPrincipalId}:{}),...(inReplyToMessageId?{in_reply_to_message_id:inReplyToMessageId}:{})},this.sessionToken,key)}
   async updateTask(id:string,status:string,expectedVersion:number,key:string){return this.request("PATCH",`/v1/agent-gateway/v1/sessions/${this.sessionId}/tasks/${id}/status`,{status,expected_version:expectedVersion},this.sessionToken,key)}
   async completeTask(id:string,expectedVersion:number,key:string){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/tasks/${id}/complete`,{expected_version:expectedVersion},this.sessionToken,key)}
   async requestDecision(input:{title:string;question:string;rationale?:string;proposed_action:Record<string,unknown>},key:string){return this.request("POST",`/v1/agent-gateway/v1/sessions/${this.sessionId}/decisions`,input,this.sessionToken,key)}

@@ -136,12 +136,16 @@ CREATE TABLE IF NOT EXISTS messages (
   addressed_principal_id uuid,
   body_text text NOT NULL,
   task_id uuid,
+  in_reply_to_message_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (company_id, room_id, id),
   FOREIGN KEY (company_id, room_id) REFERENCES rooms(company_id, id),
   FOREIGN KEY (company_id, sender_principal_id) REFERENCES principals(company_id, id),
   FOREIGN KEY (company_id, addressed_principal_id) REFERENCES principals(company_id, id),
-  FOREIGN KEY (company_id, room_id, task_id) REFERENCES tasks(company_id, room_id, id)
+  FOREIGN KEY (company_id, room_id, task_id) REFERENCES tasks(company_id, room_id, id),
+  FOREIGN KEY (company_id, room_id, in_reply_to_message_id) REFERENCES messages(company_id, room_id, id)
 );
+CREATE INDEX IF NOT EXISTS messages_in_reply_to_idx ON messages(company_id, room_id, in_reply_to_message_id);
 CREATE INDEX IF NOT EXISTS messages_room_created_idx ON messages(room_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS room_events (

@@ -45,7 +45,7 @@ const pidFile=path.join(runtimeDir,`${config.MULTIPLAYER_PROFILE}.pid`);
 const logFile=path.join(runtimeDir,`${config.MULTIPLAYER_PROFILE}.log`);
 const bridgeFile=path.resolve(process.argv[1]);
 
-const VERBS=['snapshot','tasks','task --id ID','message --body TEXT [--to ID] [--task ID] --key KEY','task-status --id ID --status STATUS --version N --key KEY','task-complete --id ID --version N --key KEY','decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY','decision-get --id ID'];
+const VERBS=['snapshot','tasks','task --id ID','message --body TEXT [--to ID] [--task ID] [--reply-to ID] --key KEY','task-status --id ID --status STATUS --version N --key KEY','task-complete --id ID --version N --key KEY','decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY','decision-get --id ID'];
 
 async function loadModule(kind,envOverride,packageName){
   const candidates=[
@@ -161,7 +161,7 @@ async function action(){
   if(command==='snapshot')return json(await client.snapshot());
   if(command==='tasks')return json(await client.tasks());
   if(command==='task')return json(await client.task(need('id')));
-  if(command==='message')return json(await client.sendMessage({body:need('body'),addressedPrincipalId:cli.to?String(cli.to):undefined,taskId:cli.task?String(cli.task):undefined},need('key')));
+  if(command==='message')return json(await client.sendMessage({body:need('body'),addressedPrincipalId:cli.to?String(cli.to):undefined,taskId:cli.task?String(cli.task):undefined,inReplyToMessageId:cli['reply-to']?String(cli['reply-to']):undefined},need('key')));
   if(command==='task-status')return json(await client.updateTaskStatus(need('id'),need('status'),numeric('version'),need('key')));
   if(command==='task-complete')return json(await client.completeTask(need('id'),numeric('version'),need('key')));
   if(command==='decision-request'){

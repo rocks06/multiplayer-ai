@@ -60,6 +60,8 @@ function Participants({members,currentId,tasks}:{members:Member[];currentId:stri
 
 function Transcript({messages,members,lastEvent}:{messages:import('./types').Message[];members:Member[];lastEvent:RoomEvent|null}){
   const names=new Map(members.map(m=>[m.principal_id,m.display_name]));
+  // A reply is a stated relationship, never inferred from which message happens to sit above.
+  const senders=new Map(messages.map(m=>[m.id,m.sender_name]));
   const listRef=useRef<HTMLDivElement>(null);const [unseen,setUnseen]=useState(0);const count=messages.length;
   useEffect(()=>{const el=listRef.current;if(!el)return;const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;if(near){if(typeof el.scrollTo==='function')el.scrollTo({top:el.scrollHeight,behavior:'smooth'});else el.scrollTop=el.scrollHeight}else setUnseen(n=>n+1)},[count]);
   const jump=()=>{const el=listRef.current;if(el){if(typeof el.scrollTo==='function')el.scrollTo({top:el.scrollHeight,behavior:'smooth'});else el.scrollTop=el.scrollHeight}setUnseen(0)};
@@ -71,7 +73,7 @@ function Transcript({messages,members,lastEvent}:{messages:import('./types').Mes
         const same=index>0&&messages[index-1]?.sender_principal_id===message.sender_principal_id;
         return <article className={`message ${message.sender_kind} ${same?'continued':''}`} key={message.id} data-message-id={message.id}>
           {!same&&<header><span className={`sender-glyph ${message.sender_kind}`}>{message.sender_name.slice(0,1)}</span><strong>{message.sender_name}</strong><span>{message.sender_kind==='agent'?'AI':'Human'}</span><time dateTime={message.created_at}>{formatTime(message.created_at)}</time></header>}
-          <div className="message-body">{message.addressed_principal_id&&<span className="address">To {names.get(message.addressed_principal_id)??'room member'}</span>}<p>{message.body_text}</p></div>
+          <div className="message-body">{message.in_reply_to_message_id&&senders.has(message.in_reply_to_message_id)&&<span className="reply-to">Replying to {senders.get(message.in_reply_to_message_id)}</span>}{message.addressed_principal_id&&<span className="address">To {names.get(message.addressed_principal_id)??'room member'}</span>}<p>{message.body_text}</p></div>
         </article>})}
     </div>
     {unseen>0&&<button className="new-items" onClick={jump}>{unseen} new {unseen===1?'update':'updates'} <ArrowUp size={13}/></button>}

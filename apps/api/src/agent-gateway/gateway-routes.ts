@@ -50,8 +50,8 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/tasks",async req=>{const s=await session(req);return rooms.listEligibleTasks({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId})});
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/tasks/:taskId",async req=>{const p=parse(sessionParams.extend({taskId:z.string().uuid()}),req.params);const s=await gateway.authenticateSession(p.sessionId,authorization(req));return rooms.getTask({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,taskId:p.taskId})});
   app.post("/v1/agent-gateway/v1/sessions/:sessionId/messages",async req=>{
-    const s=await session(req);const x=parse(z.object({body:z.string().min(1),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional()}),req.body);
-    return rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,body:x.body,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,idempotencyKey:idempotency(req)});
+    const s=await session(req);const x=parse(z.object({body:z.string().min(1),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional()}),req.body);
+    return rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,body:x.body,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idempotency(req)});
   });
   app.patch("/v1/agent-gateway/v1/sessions/:sessionId/tasks/:taskId/status",async req=>{
     const p=parse(sessionParams.extend({taskId:z.string().uuid()}),req.params);const s=await gateway.authenticateSession(p.sessionId,authorization(req));const x=parse(z.object({status:taskStatuses,expected_version:z.number().int().positive()}),req.body);
