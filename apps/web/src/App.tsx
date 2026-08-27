@@ -1,8 +1,9 @@
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert,Users,X} from 'lucide-react';
-import {currentIdentity,roomFromLocation} from './api';
+import {ApiError,currentIdentity,roomFromLocation} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
+import DecisionFixture from './DecisionFixture';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
 import type {ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
@@ -124,12 +125,31 @@ function relationshipOf(message:Message,byId:Map<string,Message>,members:Member[
   };
 }
 
-function Transcript({messages,members,lastEvent}:{messages:Message[];members:Member[];lastEvent:RoomEvent|null}){
+const DECISION_VERBS:Record<string,string>={'decision.requested':'asked for a decision','decision.approved':'approved','decision.rejected':'rejected','decision.cancelled':'cancelled a decision','decision.expired':'decision expired'};
+
+function Transcript({messages,members,events,lastEvent}:{messages:Message[];members:Member[];events:RoomEvent[];lastEvent:RoomEvent|null}){
+  /* A decision belongs in the room's story: asked here, answered here, in the order it
+     happened. Once resolved it stops asking for attention and simply stays as what occurred. */
+  const timeline=useMemo(()=>{
+    const titles=new Map<string,string>();
+    for(const event of events)
+      if(event.event_type==='decision.requested'&&event.payload?.decision_id)
+        titles.set(String(event.payload.decision_id),String(event.payload.title??''));
+    const entries=[
+      ...messages.map(message=>({kind:'message' as const,at:message.created_at,key:message.id,message})),
+      ...events.filter(event=>event.event_type.startsWith('decision.')).map(event=>({
+        kind:'decision' as const,at:event.created_at,key:`event-${event.room_seq}`,event,
+        title:titles.get(String(event.payload?.decision_id??''))??'',
+      })),
+    ];
+    return entries.sort((a,b)=>Date.parse(a.at)-Date.parse(b.at)||a.key.localeCompare(b.key));
+  },[messages,events]);
+
   const byId=useMemo(()=>new Map(messages.map(m=>[m.id,m])),[messages]);
   const listRef=useRef<HTMLDivElement>(null);
   const [unseen,setUnseen]=useState(0);
   const [focusedReply,setFocusedReply]=useState<string|null>(null);
-  const count=messages.length;
+  const count=timeline.length;
 
   useEffect(()=>{const el=listRef.current;if(!el)return;const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;if(near)scrollTranscript(el,el.scrollHeight);else setUnseen(n=>n+1)},[count]);
   const jump=()=>{const el=listRef.current;if(el)scrollTranscript(el,el.scrollHeight);setUnseen(0)};
@@ -154,10 +174,20 @@ function Transcript({messages,members,lastEvent}:{messages:Message[];members:Mem
   return <div className="transcript-wrap">
     <div className="pulse-rail" aria-hidden="true"><span className={lastEvent?'pulse active':'pulse'}/></div>
     <div className="transcript" ref={listRef} data-testid="transcript">
-      {!messages.length&&<div className="empty"><strong>The room is ready.</strong><p>Start with a clear direction or assign the first piece of work.</p></div>}
-      {messages.map((message,index)=>{
+      {!timeline.length&&<div className="empty"><strong>The room is ready.</strong><p>Start with a clear direction or assign the first piece of work.</p></div>}
+      {timeline.map((entry,index)=>{
+        if(entry.kind==='decision'){
+          const verb=DECISION_VERBS[entry.event.event_type]??entry.event.event_type;
+          return <p className="timeline-note" key={entry.key}>
+            <span className="note-rule" aria-hidden="true"/>
+            <span><strong>{entry.event.actor_display_name}</strong> {verb}{entry.title&&<> · {entry.title}</>}</span>
+            <time dateTime={entry.at}>{formatTime(entry.at)}</time>
+          </p>;
+        }
+        const message=entry.message;
+        const previous=timeline[index-1];
         // Grouping only hides a repeated name; it never implies a relationship.
-        const same=index>0&&messages[index-1]?.sender_principal_id===message.sender_principal_id;
+        const same=previous?.kind==='message'&&previous.message.sender_principal_id===message.sender_principal_id;
         const rel=relationshipOf(message,byId,members);
         return <article
           className={`message ${message.sender_kind} ${rel.direction} ${same?'continued':''} ${focusedReply===message.id?'reply-target':''}`}
@@ -180,7 +210,7 @@ function Transcript({messages,members,lastEvent}:{messages:Message[];members:Mem
           </div>
         </article>})}
     </div>
-    {unseen>0&&<button className="new-items" onClick={jump}>{unseen} new {unseen===1?'update':'updates'} <ArrowUp size={13}/></button>}
+    {unseen>0&&<button type="button" className="new-items" onClick={jump}>{unseen} new {unseen===1?'update':'updates'} <ArrowUp size={13}/></button>}
   </div>
 }
 
@@ -194,17 +224,89 @@ function Composer({members,onSend}:{members:Member[];onSend:(body:string,to?:str
   </form>
 }
 
-function DecisionCard({decision,requester,canResolve,onResolve}:{decision:Decision;requester?:Member;canResolve:boolean;onResolve:(r:'approve'|'reject',note:string)=>Promise<void>}){
-  const [note,setNote]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[open,setOpen]=useState(false);
-  const act=async(result:'approve'|'reject')=>{if(busy)return;setBusy(true);setError('');try{await onResolve(result,note)}catch(x){setError((x as Error).message);setBusy(false)}};
-  return <article className="decision-card" data-testid="decision-card">
-    <div className="decision-kicker"><ShieldAlert size={15}/><span>Human authority needed</span><time dateTime={decision.requested_at}>{formatTime(decision.requested_at)}</time></div>
-    <h3>{decision.question}</h3>
-    <p className="decision-by">Asked by <strong>{requester?.display_name??'Agent'}</strong>{decision.rationale&&<> · {decision.rationale}</>}</p>
-    <button className="proposal-toggle" onClick={()=>setOpen(!open)} aria-expanded={open}>Proposed action <ChevronDown size={14}/></button>
-    {open&&<pre>{JSON.stringify(decision.proposed_action,null,2)}</pre>}
-    {canResolve?<><label className="instruction"><span>Optional instruction</span><textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Add a condition or next step" rows={2}/></label><div className="decision-actions"><button className="reject" disabled={busy} onClick={()=>void act('reject')}><X size={15}/>Reject</button><button className="approve" disabled={busy} onClick={()=>void act('approve')}><Check size={15}/>Approve</button></div></>:<p className="manager-note">A room manager can resolve this decision.</p>}
+/**
+ * A decision is an authorisation, not a conversation. Collapsed it states who is asking and
+ * what for; opened it answers the rest: what they want to do, why a human is needed, exactly
+ * what is being authorised, and what happens next. The proposed action is shown verbatim and
+ * is what the server digest-locks — the note travels with the decision and changes nothing
+ * about the action itself, which the label says in as many words.
+ */
+/**
+ * What the server refused, said in terms of the decision rather than the request. Anything we
+ * have not given a person-facing reading of keeps the server's own message, which is at least
+ * specific — never a bare status number.
+ */
+function resolutionProblem(problem:unknown):string{
+  const code=problem instanceof ApiError?problem.code:'';
+  if(code==='decision_already_resolved')return 'Someone else already decided this. Reload to see what they chose.';
+  if(code==='version_conflict'||code==='stale_decision_action')return 'This decision changed while you were reading it. Reload and review it again.';
+  if(code==='permission_denied')return 'You do not have authority to resolve decisions in this room.';
+  const message=(problem as Error)?.message;
+  return message?`Not resolved — ${message}`:'Not resolved. Nothing was sent.';
+}
+
+export function DecisionCard({decision,requester,onResolve}:{decision:Decision;requester?:Member;onResolve:(r:'approve'|'reject',note:string)=>Promise<void>}){
+  const [note,setNote]=useState('');
+  const [pending,setPending]=useState<'approve'|'reject'|null>(null);
+  const [error,setError]=useState('');
+  const [open,setOpen]=useState(false);
+  const detail=useRef<HTMLDivElement>(null);
+  // Opening replaces the control that was focused, so focus moves into what it revealed.
+  useEffect(()=>{if(open)detail.current?.focus()},[open]);
+  const who=requester?.display_name??'An agent';
+
+  const act=async(result:'approve'|'reject')=>{
+    if(pending)return;                       // one outcome in flight at a time
+    setPending(result);setError('');
+    try{await onResolve(result,note)}
+    catch(problem){setError(resolutionProblem(problem));setPending(null)}
+  };
+
+  return <article className="decision" data-testid="decision-card">
+    <div className="decision-head">
+      <span className="decision-mark">Decision</span>
+      <strong>{who}</strong>
+      <time dateTime={decision.requested_at}>{formatTime(decision.requested_at)}</time>
+    </div>
+    <p className="decision-title">{decision.title}</p>
+
+    {!open&&<button type="button" className="decision-review" onClick={()=>setOpen(true)}>Review<ChevronRight size={14}/></button>}
+
+    {open&&<div className="decision-detail" ref={detail} tabIndex={-1}>
+      <dl>
+        <dt>What {who} wants to do</dt><dd>{decision.question}</dd>
+        {decision.rationale&&<><dt>Why this needs you</dt><dd>{decision.rationale}</dd></>}
+        <dt>Exactly what you are authorising</dt>
+        <dd>
+          <pre>{JSON.stringify(decision.proposed_action,null,2)}</pre>
+          <span className="digest" title={decision.proposed_action_digest}>Locked to this exact action · {decision.proposed_action_digest.slice(0,12)}</span>
+        </dd>
+      </dl>
+      <label className="instruction">
+        <span>Note to {who}</span>
+        <small>Sent with your decision. It does not change the action above.</small>
+        <textarea value={note} onChange={event=>setNote(event.target.value)} placeholder="Add a condition or next step" rows={2} disabled={Boolean(pending)}/>
+      </label>
+      <p className="decision-after">{who} resumes on its own once you decide.</p>
+      <div className="decision-actions">
+        <button type="button" className="reject" disabled={Boolean(pending)} onClick={()=>void act('reject')}>
+          <X size={15}/>{pending==='reject'?'Rejecting…':'Reject'}
+        </button>
+        <button type="button" className="approve" disabled={Boolean(pending)} onClick={()=>void act('approve')}>
+          <Check size={15}/>{pending==='approve'?'Approving…':'Approve'}
+        </button>
+      </div>
+    </div>}
     {error&&<p className="form-error" role="alert">{error}</p>}
+  </article>
+}
+
+/** A task nobody can move without a person. Stated plainly, with no action invented for it. */
+function BlockedItem({task,owner}:{task:Task;owner?:Member}){
+  return <article className="blocked-item">
+    <span className="blocked-mark">Blocked</span>
+    <p className="blocked-title">{task.title}</p>
+    <p className="blocked-who">{owner?`${owner.display_name} cannot continue`:'Unassigned'}</p>
   </article>
 }
 
@@ -259,6 +361,7 @@ function RoomApp(){
   const navigate=useCallback((to:string)=>{history.pushState({},'',to);setPath(new URL(to,location.origin).pathname)},[]);
   if(path==='/signin')return <SignIn/>;
   if(path==='/fixtures/presence')return <PresenceFixture/>;
+  if(path==='/fixtures/decisions')return <DecisionFixture/>;
   return <RoomRoute navigate={navigate}/>;
 }
 
@@ -303,8 +406,16 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   // Every number in the mobile trigger is counted from state already known to be true.
   const openWork=snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status));
   const blocked=openWork.filter(t=>t.status==='blocked');
+  /* Needs You is work that has stopped and that only a person can restart. A decision appears
+     only for someone who can actually resolve it, and nothing merely informational — an agent
+     going quiet, a message arriving — ever qualifies. */
+  const needsYou={
+    decisions:managers?pending:[],
+    blocked:managers?blocked:[],
+    total:managers?pending.length+blocked.length:0,
+  };
   const working=agents.filter(a=>a.agent_presence==='connected'&&a.agent_runtime_status==='working');
-  const attention=pending.length+blocked.length;
+  const attention=needsYou.total;
 
   return <main className="room-app">
     <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div><button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
@@ -312,20 +423,24 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
       <RoomContext workspace={workspace} snapshot={snapshot}/>
-      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div><span className="sequence">SEQ {snapshot.snapshot_seq}</span></div><Transcript messages={snapshot.messages} members={snapshot.members} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))}/></section>
+      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div><span className="sequence">SEQ {snapshot.snapshot_seq}</span></div><Transcript messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))}/></section>
       <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
         <div className="sheet-bar">
           <span>Team &amp; work</span>
           <button ref={oversightClose} onClick={closeOversight} aria-label="Close team and work"><X size={16}/></button>
         </div>
         <div className="supervision-scroll">
-          {pending.length>0&&<section className="decisions"><div className="section-label"><span>Needs attention</span><b>{pending.length}</b></div>{pending.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} canResolve={managers} onResolve={(r,n)=>mutate(()=>api.resolveDecision(d,r,n))}/>)}</section>}
+          {needsYou.total>0&&<section className="needs-you">
+          <div className="section-label"><span>Needs you</span><b>{needsYou.total}</b></div>
+          {needsYou.decisions.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} onResolve={(result,note)=>mutate(()=>api.resolveDecision(d,result,note))}/>)}
+          {needsYou.blocked.map(t=><BlockedItem key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)}/>)}
+        </section>}
           <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}/>
           <section className="tasks"><div className="section-label"><span>Shared work</span><b>{snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status)).length}</b></div><ul>{snapshot.tasks.map(t=><TaskRow key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)} canManage={managers||t.assignee_principal_id===identity.principalId} onUpdate={s=>mutate(()=>api.updateTask(t.id,s,t.version))}/>)}</ul>{!snapshot.tasks.length&&<p className="small-empty">No tasks yet. Add the first concrete piece of work.</p>}<TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/></section>
           <details className="activity"><summary className="section-label"><span>Room activity</span></summary><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></details>
         </div>
       </aside>
-      {oversightOpen&&<button className="sheet-scrim" aria-label="Close team and work" onClick={closeOversight}/>}
+      {oversightOpen&&<button type="button" className="sheet-scrim" aria-label="Close team and work" onClick={closeOversight}/>}
     </div>
     <button ref={oversightTrigger} className="oversight-trigger" onClick={()=>setOversightOpen(true)} aria-expanded={oversightOpen}>
       <span className="trigger-team">{agents.length} {agents.length===1?'agent':'agents'}{working.length?` · ${working.length} working`:''}</span>

@@ -41,8 +41,10 @@ describe('Slice 6 room interface',()=>{
   // A decision this agent requested has stopped it, which outranks any work in progress.
   expect(screen.getByText('Waiting for your decision',{selector:'.state-label'})).toBeVisible();
   expect(screen.queryByText(/Never connected/)).toBeNull();
-  expect(screen.getByTestId('decision-card')).toHaveTextContent('May I publish the verified launch note?');
-  expect(screen.getByRole('button',{name:'Approve'})).toBeEnabled();
+  // Collapsed, a decision states who is asking and what for; resolving it is a deliberate step.
+  expect(screen.getByTestId('decision-card')).toHaveTextContent('Approve release');
+  expect(screen.getByRole('button',{name:/Review/})).toBeEnabled();
+  expect(screen.queryByRole('button',{name:/Approve/})).not.toBeInTheDocument();
   expect(screen.getByText('The source review is complete.')).toBeVisible();
  });
  it('reports agent presence from durable Gateway state rather than inferring it',async()=>{
@@ -108,8 +110,107 @@ describe('Slice 6 room interface',()=>{
    ?new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}})
    :new Response(JSON.stringify(contributor),{status:200,headers:{'content-type':'application/json'}}));
   render(<RoomApp/>);
-  expect(await screen.findByText('A room manager can resolve this decision.')).toBeVisible();
+  await screen.findByRole('heading',{name:'Launch room'});
+  // Needs You holds only work this person can actually restart, so a contributor sees none of
+  // it — not a disabled card, and not an explanation of what someone else could do.
+  expect(screen.queryByTestId('decision-card')).not.toBeInTheDocument();
+  expect(screen.queryByText(/Needs you/i)).not.toBeInTheDocument();
   expect(screen.queryByRole('button',{name:'Approve'})).not.toBeInTheDocument();
+ });
+
+ it('leaves a resolved decision as quiet history, not an open question',async()=>{
+  const at=(n:number)=>new Date(Date.now()-n*60_000).toISOString();
+  const event=(seq:number,type:string,who:string,kind:string,minutes:number)=>({
+   room_seq:seq,event_type:type,actor_display_name:who,actor_kind:kind,created_at:at(minutes),
+   payload:{decision_id:'decision',title:'Approve release'}});
+  const resolved={...snapshot,briefing:{...snapshot.briefing,unresolved_decisions:[],important_recent_activity:[
+   event(6,'decision.requested',"Alex's Agent",'agent',9),
+   event(7,'decision.rejected','Alex','human',2),
+  ]}};
+  vi.mocked(fetch).mockImplementation(async(url:any)=>new Response(
+   JSON.stringify(String(url).includes('/v1/auth/me')?identity:resolved),
+   {status:200,headers:{'content-type':'application/json'}}));
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  // The story of the decision stays in place, in order, phrased as what happened.
+  const notes=document.querySelectorAll('.timeline-note');
+  expect(notes).toHaveLength(2);
+  expect(notes[0]).toHaveTextContent("Alex's Agent asked for a decision · Approve release");
+  expect(notes[1]).toHaveTextContent('Alex rejected · Approve release');
+  // And it stops asking for anything: no card, nothing left in Needs You.
+  expect(screen.queryByTestId('decision-card')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:/Review/})).not.toBeInTheDocument();
+ });
+
+ it('states who is asking, what for, what is authorised, and what happens next',async()=>{
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  fireEvent.click(await screen.findByRole('button',{name:/Review/}));
+  expect(screen.getByText("What Alex's Agent wants to do")).toBeVisible();
+  expect(screen.getByText('Why this needs you')).toBeVisible();
+  expect(screen.getByText('Exactly what you are authorising')).toBeVisible();
+  // The note must never read as though it changes the action being authorised.
+  expect(screen.getByText(/does not change the action above/)).toBeVisible();
+  expect(screen.getByText(/resumes on its own once you decide/)).toBeVisible();
+  expect(screen.getByText(/Locked to this exact action/)).toBeVisible();
+  expect(screen.getByRole('button',{name:/Approve/})).toBeEnabled();
+  expect(screen.getByRole('button',{name:/Reject/})).toBeEnabled();
+ });
+
+ it('can be reviewed and resolved without a pointer',async()=>{
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  const review=screen.getByRole('button',{name:/Review/});
+  review.focus();
+  expect(document.activeElement).toBe(review);
+  // Enter on a focused button is the browser's own activation; assert what it produces.
+  fireEvent.click(review);
+  // Reading continues from the decision itself rather than the top of the document.
+  await waitFor(()=>expect(document.activeElement).toHaveClass('decision-detail'));
+  const detail=document.activeElement as HTMLElement;
+  // Everything needed to decide is reachable by tabbing forward from there, in reading order.
+  const stops=[...detail.querySelectorAll('textarea,button')].map(el=>el.textContent?.trim()||el.tagName);
+  expect(stops).toEqual(['TEXTAREA','Reject','Approve']);
+  const approve=screen.getByRole('button',{name:/Approve/});
+  approve.focus();
+  fireEvent.click(approve);
+  await waitFor(()=>expect(vi.mocked(fetch).mock.calls.some(([url,init]:any)=>
+   init?.method==='POST'&&String(url).includes('/approve'))).toBe(true));
+ });
+
+ it('says so when the server refuses, and lets the person try again',async()=>{
+  vi.mocked(fetch).mockImplementation(async(url:any,init?:RequestInit)=>{
+   if(String(url).includes('/v1/auth/me'))return new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}});
+   if(init?.method==='POST'&&String(url).includes('/approve'))
+    return new Response(JSON.stringify({error:{code:'decision_already_resolved',message:'Decision is no longer pending'}}),{status:409,headers:{'content-type':'application/json'}});
+   return new Response(JSON.stringify(snapshot),{status:200,headers:{'content-type':'application/json'}});
+  });
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  fireEvent.click(await screen.findByRole('button',{name:/Review/}));
+  fireEvent.click(screen.getByRole('button',{name:/Approve/}));
+  // A refused decision must not look resolved, and must not become unresolvable.
+  // Said in terms of the decision, not the transport: what happened and what to do about it.
+  expect(await screen.findByRole('alert')).toHaveTextContent('Someone else already decided this. Reload to see what they chose.');
+  await waitFor(()=>expect(screen.getByRole('button',{name:/Approve/})).toBeEnabled());
+  expect(screen.getByRole('button',{name:/Reject/})).toBeEnabled();
+ });
+
+ it('refuses a second submission while one is in flight',async()=>{
+  let calls=0;
+  vi.mocked(fetch).mockImplementation(async(url:any,init?:RequestInit)=>{
+   if(String(url).includes('/v1/auth/me'))return new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}});
+   if(init?.method==='POST'&&String(url).includes('/approve')){calls+=1;await new Promise(r=>setTimeout(r,80));return new Response(JSON.stringify({ok:true}),{status:200,headers:{'content-type':'application/json'}})}
+   return new Response(JSON.stringify(snapshot),{status:200,headers:{'content-type':'application/json'}});
+  });
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  fireEvent.click(await screen.findByRole('button',{name:/Review/}));
+  const approve=screen.getByRole('button',{name:/Approve/});
+  fireEvent.click(approve);
+  fireEvent.click(approve);
+  fireEvent.click(approve);
+  await waitFor(()=>expect(calls).toBe(1));
  });
  it('takes a fresh snapshot and reconnects when realtime requires resynchronization',async()=>{
   render(<RoomApp/>);await screen.findByRole('heading',{name:'Launch room'});

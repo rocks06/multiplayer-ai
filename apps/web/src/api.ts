@@ -10,6 +10,11 @@ const commandKey=()=>{
  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
 };
 
+/** Carries the server's own error code, so callers can say something better than a status number. */
+export class ApiError extends Error{
+  constructor(message:string,readonly code:string,readonly status:number){super(message)}
+}
+
 export class RoomApi {
   constructor(readonly identity:RoomIdentity){}
   private get base(){return `/v1/companies/${this.identity.companyId}/rooms/${this.identity.roomId}`}
@@ -19,7 +24,7 @@ export class RoomApi {
     const response=await fetch(`${this.base}${path}`,{...init,headers,credentials:'same-origin'});
     if(!response.ok){
       const body=await response.json().catch(()=>({})) as ApiErrorShape;
-      throw new Error(body.error?.message??`Request failed (${response.status})`);
+      throw new ApiError(body.error?.message??`Request failed (${response.status})`,body.error?.code??'unknown',response.status);
     }
     return response.json() as Promise<T>;
   }
@@ -28,7 +33,9 @@ export class RoomApi {
   sendMessage(body:string,addressedPrincipalId?:string){return this.request('/messages',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined})})}
   createTask(input:{title:string;description:string;assigneePrincipalId?:string}){return this.request('/tasks',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({title:input.title,description:input.description,assignee_principal_id:input.assigneePrincipalId||undefined})})}
   updateTask(taskId:string,status:TaskStatus,expectedVersion:number){return this.request(`/tasks/${taskId}/status`,{method:'PATCH',headers:{'idempotency-key':commandKey()},body:JSON.stringify({status,expected_version:expectedVersion})})}
-  resolveDecision(decision:Decision,resolution:'approve'|'reject',note:string){return this.request(`/decisions/${decision.id}/${resolution}`,{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({proposed_action_digest:decision.proposed_action_digest,expected_version:decision.version,note:note||undefined})})}
+  /** The key is stable per decision and outcome, so a double submission returns the original
+   *  result instead of colliding on the version it already advanced. */
+  resolveDecision(decision:Decision,resolution:'approve'|'reject',note:string){return this.request(`/decisions/${decision.id}/${resolution}`,{method:'POST',headers:{'idempotency-key':`decision-${decision.id}-${resolution}-v${decision.version}`},body:JSON.stringify({proposed_action_digest:decision.proposed_action_digest,expected_version:decision.version,note:note||undefined})})}
   streamUrl(afterSeq?:number){
     const scheme=location.protocol==='https:'?'wss':'ws';
     const params=new URLSearchParams();

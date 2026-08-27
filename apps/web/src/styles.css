@@ -262,3 +262,50 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .worktable{grid-template-rows:minmax(0,1fr)}
 .conversation,.supervision,.room-context{min-height:0}
 }
+
+@layer components{
+/* A decision asks for authority, so it is stated plainly and sized like everything else in the
+   rail. Attention comes from a single amber mark and from being first, not from scale. */
+.needs-you{display:flex;flex-direction:column;gap:var(--s3)}
+.decision{border:1px solid color-mix(in srgb,var(--wait) 30%,var(--line));border-radius:var(--r-surface);background:var(--surface);padding:var(--s3) var(--s4) var(--s4)}
+.decision-head{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:var(--t-caption)}
+.decision-mark{padding:2px 7px;border-radius:var(--r-pill);background:var(--wait-soft);color:var(--wait);font-weight:650;letter-spacing:.03em}
+.decision-head strong{font-weight:600;color:var(--ink)}
+.decision-head time{margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums}
+.decision-title{margin:0;font-size:var(--t-body);line-height:1.4;font-weight:550;color:var(--ink);overflow-wrap:anywhere}
+.decision-review{display:inline-flex;align-items:center;gap:3px;margin-top:9px;padding:5px 10px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--surface);color:var(--ink);font-size:var(--t-small);font-weight:550}
+.decision-review:hover{border-color:var(--ink-2)}
+.decision-detail:focus{outline:none}
+.decision-detail{margin-top:var(--s3);display:flex;flex-direction:column;gap:var(--s3)}
+.decision-detail dl{margin:0;display:flex;flex-direction:column;gap:9px}
+.decision-detail dt{font-size:var(--t-micro);letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.decision-detail dd{margin:2px 0 0;font-size:var(--t-small);line-height:1.5;color:var(--ink-2);overflow-wrap:anywhere}
+.decision-detail pre{margin:0;padding:9px 10px;max-height:190px;overflow:auto;border:1px solid var(--line);border-radius:var(--r-control);background:var(--soft);color:var(--ink-2);font-size:var(--t-caption);line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.digest{display:block;margin-top:5px;font-size:var(--t-micro);color:var(--faint);font-variant-numeric:tabular-nums}
+.instruction{display:flex;flex-direction:column;gap:3px}
+.instruction>span{font-size:var(--t-micro);letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.instruction>small{font-size:var(--t-caption);color:var(--muted)}
+.instruction textarea{margin-top:4px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--surface);color:var(--ink);font-size:var(--t-small);resize:vertical}
+.instruction textarea:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 16%,transparent)}
+.decision-after{margin:0;font-size:var(--t-caption);color:var(--muted)}
+.decision-actions{display:grid;grid-template-columns:1fr 1fr;gap:var(--s2)}
+.decision-actions button{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 12px;border-radius:var(--r-control);font-size:var(--t-small);font-weight:600}
+.decision-actions .reject{border:1px solid var(--line-strong);background:var(--surface);color:var(--ink)}
+.decision-actions .reject:not(:disabled):hover{border-color:var(--stop);color:var(--stop)}
+.decision-actions .approve{background:var(--ink);color:var(--on-ink)}
+.decision-actions .approve:not(:disabled):hover{opacity:.88}
+.decision-actions button:disabled{opacity:.55;cursor:default}
+.decision-actions button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+.blocked-item{border:1px solid var(--line);border-left:2px solid var(--stop);border-radius:0 var(--r-control) var(--r-control) 0;background:var(--surface);padding:9px 12px}
+.blocked-mark{font-size:var(--t-micro);letter-spacing:.08em;text-transform:uppercase;color:var(--stop);font-weight:650}
+.blocked-title{margin:3px 0 1px;font-size:var(--t-small);font-weight:550;color:var(--ink);overflow-wrap:anywhere}
+.blocked-who{margin:0;font-size:var(--t-caption);color:var(--muted)}
+
+/* Once answered, a decision is simply part of what happened. */
+.timeline-note{display:flex;align-items:baseline;gap:8px;margin:var(--s3) 0;padding-left:2px;font-size:var(--t-caption);color:var(--muted)}
+.timeline-note .note-rule{width:14px;height:1px;background:var(--line-strong);flex:0 0 auto;position:relative;top:-3px}
+.timeline-note>span{flex:1 1 auto;min-width:0;text-wrap:pretty}
+.timeline-note strong{font-weight:600;color:var(--ink-2)}
+.timeline-note time{margin-left:auto;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+}
