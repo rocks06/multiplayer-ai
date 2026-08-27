@@ -38,8 +38,9 @@ describe('Slice 6 room interface',()=>{
   expect(await screen.findByRole('heading',{name:'Launch room'})).toBeVisible();
   expect(screen.getByText('Alex',{selector:'strong'})).toBeVisible();
   expect(screen.getAllByText("Alex's Agent").length).toBeGreaterThan(0);
-  expect(screen.getByText(/Working/,{selector:'small'})).toBeVisible();
-  expect(screen.queryByText(/Not connected/)).toBeNull();
+  // A decision this agent requested has stopped it, which outranks any work in progress.
+  expect(screen.getByText('Waiting for your decision',{selector:'.state-label'})).toBeVisible();
+  expect(screen.queryByText(/Never connected/)).toBeNull();
   expect(screen.getByTestId('decision-card')).toHaveTextContent('May I publish the verified launch note?');
   expect(screen.getByRole('button',{name:'Approve'})).toBeEnabled();
   expect(screen.getByText('The source review is complete.')).toBeVisible();
@@ -48,30 +49,31 @@ describe('Slice 6 room interface',()=>{
   // A task can be in progress while the runtime that owns it has vanished. The room must say
   // so instead of reporting the agent as working, which is the blind spot found in physical
   // testing when a connector had been gone for minutes and still read as live.
-  const cases:Array<[any,RegExp]>=[
-   [{agent_presence:'never'},/Not connected/],
-   [{agent_presence:'offline',agent_last_seen_at:new Date().toISOString()},/Offline/],
-   [{agent_presence:'stale',agent_last_seen_at:new Date().toISOString()},/Unresponsive/],
-   [{agent_presence:'revoked',agent_last_seen_at:new Date().toISOString()},/Access revoked/],
-   [{agent_presence:'connected',agent_runtime_status:'idle',agent_last_seen_at:new Date().toISOString()},/Connected . idle/],
+  const cases:Array<[any,string]>=[
+   [{agent_presence:'never'},'Never connected'],
+   [{agent_presence:'offline',agent_last_seen_at:new Date().toISOString()},'Offline'],
+   [{agent_presence:'stale',agent_last_seen_at:new Date().toISOString()},'Unresponsive'],
+   [{agent_presence:'revoked',agent_last_seen_at:new Date().toISOString()},'Access revoked'],
+   [{agent_presence:'connected',agent_runtime_status:'idle',agent_last_seen_at:new Date().toISOString()},'Idle'],
   ];
   for(const [presence,expected] of cases){
    cleanup();
-   const variant={...snapshot,members:[snapshot.members[0]!,{...snapshot.members[1]!,agent_runtime_status:null,...presence}]};
+   // Each case isolates one presence state, so the shared pending decision is cleared.
+   const variant={...snapshot,briefing:{...snapshot.briefing,unresolved_decisions:[]},members:[snapshot.members[0]!,{...snapshot.members[1]!,agent_runtime_status:null,...presence}]};
    vi.stubGlobal('fetch',vi.fn(async(url:string)=>String(url).includes('/v1/auth/me')
     ?new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}})
     :new Response(JSON.stringify(variant),{status:200,headers:{'content-type':'application/json'}})));
    render(<RoomApp/>);
    await screen.findByRole('heading',{name:'Launch room'});
-   expect(screen.getByText(expected,{selector:'small'})).toBeVisible();
-   expect(screen.queryByText(/^Working$/,{selector:'small'})).toBeNull();
+   expect(screen.getByText(expected,{selector:'.state-label'})).toBeVisible();
+   expect(screen.queryByText('Working',{selector:'.state-label'})).toBeNull();
   }
  });
 
  it('shows waiting on a peer only from a real dependency',async()=>{
   // The agent is connected and idle, but its task is blocked by work owned by someone else.
   // That is a modelled dependency, never an inference from an unanswered message.
-  const blocked={...snapshot,
+  const blocked={...snapshot,briefing:{...snapshot.briefing,unresolved_decisions:[]},
    members:[{...snapshot.members[0]!},{...snapshot.members[1]!,agent_runtime_status:'idle' as const}],
    tasks:[{...snapshot.tasks[0]!,blocked_by:[{task_id:'blocker',title:'Investigate constraints',status:'in_progress' as const,assignee_principal_id:alex}]}]};
   vi.mocked(fetch).mockImplementation(async(url:any)=>String(url).includes('/v1/auth/me')
@@ -79,8 +81,8 @@ describe('Slice 6 room interface',()=>{
    :new Response(JSON.stringify(blocked),{status:200,headers:{'content-type':'application/json'}}));
   render(<RoomApp/>);
   await screen.findByRole('heading',{name:'Launch room'});
-  expect(screen.getByText(/Waiting on Alex/,{selector:'small'})).toBeVisible();
-  expect(screen.queryByText(/Connected . idle/,{selector:'small'})).toBeNull();
+  expect(screen.getByText('Waiting on Alex',{selector:'.state-label'})).toBeVisible();
+  expect(screen.queryByText('Idle',{selector:'.state-label'})).toBeNull();
  });
 
  it('sends an addressed message and clears the composer after authoritative success',async()=>{

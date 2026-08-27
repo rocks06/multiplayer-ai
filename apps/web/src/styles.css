@@ -182,3 +182,41 @@ details.activity>summary:focus-visible{outline:2px solid var(--focus);outline-of
 .supervision .rail-heading{padding:0 0 var(--s3)}
 .supervision .rail-note{margin:var(--s4) 0 0}
 }
+
+@layer components{
+/* Presence is read, not decoded: a name, what it is doing, and the work it is doing it on.
+   The indicator is a 6px dot that only ever carries state colour — no pulsing, no badges. */
+.person-row{align-items:flex-start;gap:10px;padding:9px 4px}
+.person-copy{gap:3px}
+.person-state{display:flex;align-items:center;gap:6px;min-height:15px;font-size:var(--t-caption);color:var(--ink-2)}
+.state-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto}
+.state-dot.live{background:var(--live)}
+.state-dot.wait{background:var(--wait)}
+.state-dot.idle{background:var(--faint)}
+.state-dot.gone{background:transparent;box-shadow:inset 0 0 0 1px var(--faint)}
+.state-dot.stop{background:var(--stop)}
+.state-label{font-weight:550;color:var(--ink)}
+/* Tabular digits and a reserved width keep an elapsed reading from nudging the row. */
+.state-since{color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.state-since::before{content:"· "}
+.person-detail{font-size:var(--t-caption);line-height:1.4;color:var(--muted);overflow-wrap:anywhere}
+/* Only a change of state moves: the colour crosses, the row does not. */
+.state-dot{transition:background-color var(--m-state) var(--ease),box-shadow var(--m-state) var(--ease)}
+@media (prefers-reduced-motion:reduce){.state-dot{transition:none}}
+
+.fixture-note{display:flex;align-items:center;gap:8px;padding:10px var(--s4);border-bottom:1px solid var(--line);background:var(--wait-soft);color:var(--wait);font-size:var(--t-small);font-weight:550}
+.fixture-page{height:100%;overflow:auto;background:var(--paper)}
+.fixture-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:var(--s4);padding:var(--s5)}
+.fixture-card{border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);padding:var(--s4)}
+.fixture-card h3{margin:0 0 var(--s3);font-size:var(--t-caption);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
+}
+
+@layer responsive{
+/* Participants used to be the full-width mobile rail, where two columns fitted. They now live
+   in a narrow oversight column at every size, so People and Agents stack and each row keeps
+   its whole state line. */
+@media (max-width:899px){
+  .supervision .participants{display:flex;flex-direction:column;gap:0;border-bottom:0}
+  .supervision .participants .rail-heading,.supervision .participants .rail-note{grid-column:auto}
+}
+}

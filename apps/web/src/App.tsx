@@ -1,7 +1,9 @@
-import {useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
+import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert,Users,X} from 'lucide-react';
 import {currentIdentity,roomFromLocation} from './api';
 import SignIn,{rememberIntent} from './SignIn';
+import PresenceFixture from './PresenceFixture';
+import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
 import type {ConnectionState,Decision,Member,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
 import './styles.css';
@@ -11,9 +13,61 @@ const labels:Record<TaskStatus,string>={open:'Open',in_progress:'In progress',bl
 const transitions:Record<TaskStatus,TaskStatus[]>={open:['in_progress','cancelled'],in_progress:['blocked','awaiting_decision','completed','cancelled'],blocked:['in_progress','cancelled'],awaiting_decision:['in_progress','cancelled'],completed:[],cancelled:[]};
 
 function Mark({member}:{member:Member}){return <span className={`identity-mark ${member.kind}`} aria-hidden="true">{member.display_name.slice(0,1).toUpperCase()}</span>}
-function Person({member,current,status}:{member:Member;current:boolean;status?:AgentStatus}){
-  return <li className="person-row"><Mark member={member}/><span className="person-copy"><strong>{member.display_name}{current&&<em>you</em>}</strong><small>{member.kind==='human'?'Human':status?.label??'Not connected'} · {member.role.replace('_',' ')}</small></span>{status&&<span className={`presence-dot ${status.tone}`} title={status.title}/>}</li>
+/** One shared clock for the whole rail, coarse enough that labels do not rewrite themselves. */
+function useCoarseNow(active:boolean){
+  const [now,setNow]=useState(()=>Date.now());
+  useEffect(()=>{
+    if(!active)return;
+    const id=setInterval(()=>setNow(Date.now()),15_000);
+    return()=>clearInterval(id);
+  },[active]);
+  return now;
 }
+
+/* Primitive props so the memo actually holds: a row re-renders only when something it shows
+   has changed, not every time the rail's clock ticks. */
+const PresenceRow=memo(function PresenceRow({name,initial,label,tone,detail,elapsed,lastSeenAt}:{name:string;initial:string;label:string;tone:string;detail?:string;elapsed:string|null;lastSeenAt?:string}){
+  return <li className="person-row">
+    <span className="identity-mark agent" aria-hidden="true">{initial}</span>
+    <span className="person-copy">
+      <strong>{name}</strong>
+      <small className="person-state">
+        <span className={`state-dot ${tone}`} aria-hidden="true"/>
+        <span className="state-label">{label}</span>
+        {elapsed&&<span className="state-since" title={lastSeenAt}>{elapsed}</span>}
+      </small>
+      {detail&&<small className="person-detail">{detail}</small>}
+    </span>
+  </li>;
+});
+
+function HumanRow({member,current}:{member:Member;current:boolean}){
+  return <li className="person-row">
+    <Mark member={member}/>
+    <span className="person-copy">
+      <strong>{member.display_name}{current&&<em>you</em>}</strong>
+      <small className="person-state"><span className="state-label">{member.role.replace('_',' ')}</span></small>
+    </span>
+  </li>;
+}
+
+export function Participants({members,currentId,tasks,decisions}:{members:Member[];currentId:string;tasks:Task[];decisions:Decision[]}){
+  const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
+  // Only agents that are not currently reachable carry an elapsed reading, so the clock runs
+  // only when something on screen actually depends on it.
+  const presences=agents.map(agent=>({agent,presence:describePresence(agent,{tasks,decisions,members})}));
+  const now=useCoarseNow(presences.some(entry=>entry.presence.since));
+  return <aside className="participants" aria-label="Room participants">
+    <div className="rail-heading"><Users size={15}/><span>In this room</span><b>{members.length}</b></div>
+    <section><h2>People</h2><ul>{humans.map(m=><HumanRow key={m.principal_id} member={m} current={m.principal_id===currentId}/>)}</ul></section>
+    <section><h2>Agents</h2><ul>{presences.map(({agent,presence})=>
+      <PresenceRow key={agent.principal_id} name={agent.display_name} initial={agent.display_name.slice(0,1).toUpperCase()}
+        label={presence.label} tone={presence.tone} detail={presence.detail}
+        elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>)}</ul></section>
+    <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state, never inferred.</div>
+  </aside>;
+}
+
 function Connection({state}:{state:ConnectionState}){
   const copy:Record<ConnectionState,string>={connecting:'Connecting',live:'Live',reconnecting:'Reconnecting',resyncing:'Resyncing',offline:'Offline',revoked:'Access removed'};
   return <span className={`connection ${state}`} role="status"><i/>{copy[state]}</span>
@@ -30,35 +84,6 @@ function activityText(event:RoomEvent){
 }
 
 type AgentStatus={label:string;tone:'ok'|'busy'|'warn'|'off'|'bad';title:string};
-function Participants({members,currentId,tasks}:{members:Member[];currentId:string;tasks:Task[]}){
-  const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
-  // Connection comes from durable Gateway state. Room activity may say what an agent was
-  // doing, but it can never say whether the agent is still there.
-  const statusFor=(member:Member):AgentStatus=>{
-    const seen=member.agent_last_seen_at?`Last seen ${new Date(member.agent_last_seen_at).toLocaleTimeString()}`:'Never connected';
-    switch(member.agent_presence??'never'){
-      case 'never':return {label:'Not connected',tone:'off',title:'This agent has never connected a runtime'};
-      case 'offline':return {label:'Offline',tone:'off',title:seen};
-      case 'revoked':return {label:'Access revoked',tone:'bad',title:seen};
-      case 'stale':return {label:'Unresponsive',tone:'warn',title:`${seen} — the Gateway still holds a session but the runtime has stopped reporting`};
-    }
-    if(tasks.some(t=>t.assignee_principal_id===member.principal_id&&t.status==='awaiting_decision'))return {label:'Waiting for a decision',tone:'ok',title:seen};
-    // Waiting on a peer is a real dependency, never inferred from an unanswered message.
-    const blocker=tasks.filter(t=>t.assignee_principal_id===member.principal_id&&!['completed','cancelled'].includes(t.status)).flatMap(t=>t.blocked_by??[])[0];
-    if(blocker){
-      const owner=members.find(m=>m.principal_id===blocker.assignee_principal_id);
-      return {label:owner?`Waiting on ${owner.display_name}`:'Waiting on other work',tone:'warn',title:`Blocked by “${blocker.title}”`};
-    }
-    return member.agent_runtime_status==='working'?{label:'Working',tone:'busy',title:seen}:{label:'Connected · idle',tone:'ok',title:seen};
-  };
-  return <aside className="participants" aria-label="Room participants">
-    <div className="rail-heading"><Users size={15}/><span>In this room</span><b>{members.length}</b></div>
-    <section><h2>People</h2><ul>{humans.map(m=><Person key={m.principal_id} member={m} current={m.principal_id===currentId}/>)}</ul></section>
-    <section><h2>Agents</h2><ul>{agents.map(m=><Person key={m.principal_id} member={m} current={false} status={statusFor(m)}/>)}</ul></section>
-    <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state, never inferred.</div>
-  </aside>
-}
-
 function Transcript({messages,members,lastEvent}:{messages:import('./types').Message[];members:Member[];lastEvent:RoomEvent|null}){
   const names=new Map(members.map(m=>[m.principal_id,m.display_name]));
   // A reply is a stated relationship, never inferred from which message happens to sit above.
@@ -155,6 +180,7 @@ function RoomApp(){
   },[]);
   const navigate=useCallback((to:string)=>{history.pushState({},'',to);setPath(new URL(to,location.origin).pathname)},[]);
   if(path==='/signin')return <SignIn/>;
+  if(path==='/fixtures/presence')return <PresenceFixture/>;
   return <RoomRoute navigate={navigate}/>;
 }
 
@@ -216,7 +242,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
         </div>
         <div className="supervision-scroll">
           {pending.length>0&&<section className="decisions"><div className="section-label"><span>Needs attention</span><b>{pending.length}</b></div>{pending.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} canResolve={managers} onResolve={(r,n)=>mutate(()=>api.resolveDecision(d,r,n))}/>)}</section>}
-          <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks}/>
+          <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}/>
           <section className="tasks"><div className="section-label"><span>Shared work</span><b>{snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status)).length}</b></div><ul>{snapshot.tasks.map(t=><TaskRow key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)} canManage={managers||t.assignee_principal_id===identity.principalId} onUpdate={s=>mutate(()=>api.updateTask(t.id,s,t.version))}/>)}</ul>{!snapshot.tasks.length&&<p className="small-empty">No tasks yet. Add the first concrete piece of work.</p>}<TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/></section>
           <details className="activity"><summary className="section-label"><span>Room activity</span></summary><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></details>
         </div>
