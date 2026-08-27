@@ -172,6 +172,24 @@ export class RoomService {
     });
   }
 
+  /** Hand a task to a different principal, or unassign it. Manager-only, optimistic, and
+   * audited. Reassignment is a task mutation, so it takes and advances the version. */
+  async reassignTask(input:{companyId:string;roomId:string;actorId:string;taskId:string;assigneePrincipalId:string|null;expectedVersion:number;idempotencyKey:string}) {
+    return this.command({...input,commandType:'task.reassign',input:{taskId:input.taskId,assigneePrincipalId:input.assigneePrincipalId,expectedVersion:input.expectedVersion},permission:'task.update.any'}, async(c)=>{
+      const current=await c.query<{status:TaskStatus;version:number;assignee_principal_id:string|null}>(`SELECT status,version,assignee_principal_id FROM tasks WHERE id=$1 AND company_id=$2 AND room_id=$3 FOR UPDATE`,[input.taskId,input.companyId,input.roomId]);
+      if(!current.rowCount)throw new DomainError('task_not_found','Task not found',404);
+      const task=current.rows[0]!;
+      if(task.version!==input.expectedVersion)throw new DomainError('version_conflict','Task changed since it was read',409,{expected_version:input.expectedVersion,current_version:task.version});
+      // Finished work has no owner to change; reopening is a separate decision.
+      if(['completed','cancelled'].includes(task.status))throw new DomainError('task_not_reassignable',`Cannot reassign a ${task.status} task`,422);
+      if(input.assigneePrincipalId)await this.membership(c,input.companyId,input.roomId,input.assigneePrincipalId);
+      const updated=await c.query<{version:number}>(`UPDATE tasks SET assignee_principal_id=$1,version=version+1,updated_at=now() WHERE id=$2 AND company_id=$3 AND room_id=$4 AND version=$5 RETURNING version`,[input.assigneePrincipalId,input.taskId,input.companyId,input.roomId,input.expectedVersion]);
+      if(!updated.rowCount)throw new DomainError('version_conflict','Task changed since it was read',409,{expected_version:input.expectedVersion});
+      const response={id:input.taskId,status:task.status,assignee_principal_id:input.assigneePrincipalId,previous_assignee_principal_id:task.assignee_principal_id,version:updated.rows[0]!.version};
+      return {response,event:{type:'task.reassigned',entityType:'task',entityId:input.taskId,entityVersion:updated.rows[0]!.version,payload:response}};
+    });
+  }
+
   async getTask(input:{companyId:string;roomId:string;actorId:string;taskId:string;runGuard?:RunGuard}){
     const c=await this.pool.connect();try{await c.query('BEGIN');await this.actor(c,input.companyId,input.actorId);await this.authorize(c,input.companyId,input.roomId,input.actorId,'room.read');if(input.runGuard)await this.assertRunGuard(c,input.companyId,input.roomId,input.actorId,input.runGuard);const result=await c.query(`SELECT id,title,description,status,assignee_principal_id,version,updated_at FROM tasks WHERE company_id=$1 AND room_id=$2 AND id=$3`,[input.companyId,input.roomId,input.taskId]);if(!result.rowCount)throw new DomainError('task_not_found','Task not found',404);await c.query('COMMIT');return result.rows[0];}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
   }
