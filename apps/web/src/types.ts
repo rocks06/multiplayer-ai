@@ -2,7 +2,8 @@ export type PrincipalKind='human'|'agent';
 export type RoomRole='manager'|'contributor'|'worker_agent';
 export type TaskStatus='open'|'in_progress'|'blocked'|'awaiting_decision'|'completed'|'cancelled';
 
-export interface Member {principal_id:string;display_name:string;kind:PrincipalKind;role:RoomRole;responsibilities:string}
+export type AgentPresence='connected'|'stale'|'offline'|'revoked'|'never';
+export interface Member {principal_id:string;display_name:string;kind:PrincipalKind;role:RoomRole;responsibilities:string;agent_presence?:AgentPresence|null;agent_connection?:string|null;agent_runtime_status?:'idle'|'working'|null;agent_last_seen_at?:string|null}
 export interface Task {id:string;title:string;description:string;status:TaskStatus;assignee_principal_id:string|null;version:number;updated_at:string}
 export interface Message {id:string;sender_principal_id:string;addressed_principal_id:string|null;body_text:string;task_id:string|null;created_at:string;sender_name:string;sender_kind:PrincipalKind}
 export interface Decision {id:string;run_id:string|null;requested_by_principal_id:string;title:string;question:string;rationale:string;proposed_action:Record<string,unknown>;proposed_action_digest:string;status:'pending'|'approved'|'rejected'|'cancelled'|'expired';version:number;resolved_by_principal_id:string|null;resolution_note:string|null;requested_at:string;resolved_at:string|null;expires_at:string|null}

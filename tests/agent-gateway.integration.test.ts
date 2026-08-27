@@ -172,6 +172,35 @@ describe("Agent Gateway v1",()=>{
   expect(stolen.status).toBe(401);
  });
 
+ it("reports agent presence in the room snapshot from durable session state",async()=>{
+  const f=await companyFixture(),a=await agent(f,"Presence AI","presence");
+  const members=async()=>{
+   const snap=await request("GET",`/v1/companies/${f.company.id}/rooms/${f.room.id}/snapshot`,undefined,{"x-principal-id":f.owner.principal_id});
+   return snap.json().members as any[];
+  };
+  const mine=async()=>(await members()).find(m=>m.principal_id===a.principal_id);
+
+  // Never connected is distinct from offline: nothing has ever run for this principal.
+  expect((await mine()).agent_presence).toBe("never");
+  expect((await members()).find(m=>m.principal_id===f.owner.principal_id).agent_presence).toBeNull();
+
+  const c=await external(a,f.room.id);await c.connect(0);
+  expect((await mine()).agent_presence).toBe("connected");
+  expect((await mine()).agent_runtime_status).toBe("idle");
+
+  expect((await c.heartbeat("working")).status).toBe(200);
+  expect((await mine()).agent_runtime_status).toBe("working");
+
+  // A session the Gateway still calls connected but which stopped reporting must not read
+  // as live — this is the state that made a vanished connector look healthy.
+  await pool.query(`UPDATE external_agent_sessions SET last_seen_at=now()-interval '2 minutes' WHERE id=$1`,[c.sessionId]);
+  expect((await mine()).agent_presence).toBe("stale");
+
+  await pool.query(`UPDATE external_agent_sessions SET status='offline',disconnected_at=now() WHERE id=$1`,[c.sessionId]);
+  expect((await mine()).agent_presence).toBe("offline");
+  c.close();
+ });
+
  it("forces stale and slow clients to resynchronize instead of dropping or reordering events",async()=>{
   await app.close();await start({maxReplayEvents:1,maxUnackedEvents:1,pollIntervalMs:15});const f=await companyFixture(),a=await agent(f,"Slow AI","slow");const c=await external(a,f.room.id);
   await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"one"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-one"});await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"two"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-two"});

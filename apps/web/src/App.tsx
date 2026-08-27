@@ -10,8 +10,8 @@ const labels:Record<TaskStatus,string>={open:'Open',in_progress:'In progress',bl
 const transitions:Record<TaskStatus,TaskStatus[]>={open:['in_progress','cancelled'],in_progress:['blocked','awaiting_decision','completed','cancelled'],blocked:['in_progress','cancelled'],awaiting_decision:['in_progress','cancelled'],completed:[],cancelled:[]};
 
 function Mark({member}:{member:Member}){return <span className={`identity-mark ${member.kind}`} aria-hidden="true">{member.display_name.slice(0,1).toUpperCase()}</span>}
-function Person({member,current,status}:{member:Member;current:boolean;status?:string}){
-  return <li className="person-row"><Mark member={member}/><span className="person-copy"><strong>{member.display_name}{current&&<em>you</em>}</strong><small>{member.kind==='human'?'Human':status??'Idle'} · {member.role.replace('_',' ')}</small></span>{status==='Working'&&<span className="working-dot" title="Working"/>}</li>
+function Person({member,current,status}:{member:Member;current:boolean;status?:AgentStatus}){
+  return <li className="person-row"><Mark member={member}/><span className="person-copy"><strong>{member.display_name}{current&&<em>you</em>}</strong><small>{member.kind==='human'?'Human':status?.label??'Not connected'} · {member.role.replace('_',' ')}</small></span>{status&&<span className={`presence-dot ${status.tone}`} title={status.title}/>}</li>
 }
 function Connection({state}:{state:ConnectionState}){
   const copy:Record<ConnectionState,string>={connecting:'Connecting',live:'Live',reconnecting:'Reconnecting',resyncing:'Resyncing',offline:'Offline',revoked:'Access removed'};
@@ -28,21 +28,27 @@ function activityText(event:RoomEvent){
   return copy[event.event_type]??event.event_type.replaceAll('.',' ').replaceAll('_',' ');
 }
 
-function Participants({members,currentId,tasks,activity}:{members:Member[];currentId:string;tasks:Task[];activity:RoomEvent[]}){
+type AgentStatus={label:string;tone:'ok'|'busy'|'warn'|'off'|'bad';title:string};
+function Participants({members,currentId,tasks}:{members:Member[];currentId:string;tasks:Task[]}){
   const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
-  const statusFor=(id:string)=>{
-    const pending=tasks.some(t=>t.assignee_principal_id===id&&t.status==='awaiting_decision');
-    if(pending)return 'Waiting';
-    const active=tasks.some(t=>t.assignee_principal_id===id&&t.status==='in_progress');
-    const last=activity.filter(e=>e.actor_principal_id===id||e.payload?.agent_principal_id===id).at(-1);
-    if(active||last?.event_type==='agent.run_started'||last?.event_type==='agent.run_resumed')return 'Working';
-    return 'Idle';
+  // Connection comes from durable Gateway state. Room activity may say what an agent was
+  // doing, but it can never say whether the agent is still there.
+  const statusFor=(member:Member):AgentStatus=>{
+    const seen=member.agent_last_seen_at?`Last seen ${new Date(member.agent_last_seen_at).toLocaleTimeString()}`:'Never connected';
+    switch(member.agent_presence??'never'){
+      case 'never':return {label:'Not connected',tone:'off',title:'This agent has never connected a runtime'};
+      case 'offline':return {label:'Offline',tone:'off',title:seen};
+      case 'revoked':return {label:'Access revoked',tone:'bad',title:seen};
+      case 'stale':return {label:'Unresponsive',tone:'warn',title:`${seen} — the Gateway still holds a session but the runtime has stopped reporting`};
+    }
+    if(tasks.some(t=>t.assignee_principal_id===member.principal_id&&t.status==='awaiting_decision'))return {label:'Waiting for a decision',tone:'ok',title:seen};
+    return member.agent_runtime_status==='working'?{label:'Working',tone:'busy',title:seen}:{label:'Connected · idle',tone:'ok',title:seen};
   };
   return <aside className="participants" aria-label="Room participants">
     <div className="rail-heading"><Users size={15}/><span>In this room</span><b>{members.length}</b></div>
     <section><h2>People</h2><ul>{humans.map(m=><Person key={m.principal_id} member={m} current={m.principal_id===currentId}/>)}</ul></section>
-    <section><h2>Agents</h2><ul>{agents.map(m=><Person key={m.principal_id} member={m} current={false} status={statusFor(m.principal_id)}/>)}</ul></section>
-    <div className="rail-note"><span className="presence-ring"/>Human presence is not inferred. “You” marks this browser session.</div>
+    <section><h2>Agents</h2><ul>{agents.map(m=><Person key={m.principal_id} member={m} current={false} status={statusFor(m)}/>)}</ul></section>
+    <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state. Human presence is not inferred; “you” marks this browser session.</div>
   </aside>
 }
 
@@ -126,7 +132,7 @@ function Room({identity}:{identity:NonNullable<ReturnType<typeof identityFromLoc
     {briefingOpen&&<section className="briefing"><div><span>Normalized room briefing</span><h2>{snapshot.briefing.project_objective}</h2></div><dl><div><dt>Your role</dt><dd>{snapshot.briefing.joining_principal.role}</dd></div><div><dt>Your responsibility</dt><dd>{snapshot.briefing.joining_principal.responsibilities||'Contribute to the room objective'}</dd></div><div><dt>Active work</dt><dd>{snapshot.briefing.active_tasks.length} tasks · {snapshot.briefing.blockers.length} blocked</dd></div></dl></section>}
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
-      <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} activity={recent}/>
+      <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks}/>
       <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div><span className="sequence">SEQ {snapshot.snapshot_seq}</span></div><Transcript messages={snapshot.messages} members={snapshot.members} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))}/></section>
       <aside className="supervision" aria-label="Tasks and decisions">
         {pending.length>0&&<section className="decisions"><div className="section-label"><span>Needs attention</span><b>{pending.length}</b></div>{pending.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} canResolve={managers} onResolve={(r,n)=>mutate(()=>api.resolveDecision(d,r,n))}/>)}</section>}
