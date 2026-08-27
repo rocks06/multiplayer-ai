@@ -45,6 +45,22 @@ export function roomFromLocation():{companyId:string;roomId:string}|null{
 
 export interface SignedInIdentity {user:{id:string;email:string;display_name:string};companies:Array<{company_id:string;company_name:string;principal_id:string;display_name:string}>}
 
+export async function requestSignInLink(email:string){
+  const response=await fetch('/v1/auth/sign-in-links',{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify({email})});
+  if(!response.ok){
+    const body=await response.json().catch(()=>({})) as ApiErrorShape;
+    throw new Error(body.error?.message??'Could not issue a sign-in link');
+  }
+  return response.json() as Promise<{status:string}>;
+}
+
+/** Exchange a single-use link for a session. Rejects when the link is spent or expired. */
+export async function redeemSignInToken(token:string):Promise<SignedInIdentity>{
+  const response=await fetch('/v1/auth/sessions',{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify({token})});
+  if(!response.ok)throw new Error('Sign-in link is invalid, already used, or expired');
+  return response.json() as Promise<SignedInIdentity>;
+}
+
 /** Identity comes from the session cookie. The client never names a principal. */
 export async function currentIdentity():Promise<SignedInIdentity|null>{
   const response=await fetch('/v1/auth/me',{credentials:'same-origin'});

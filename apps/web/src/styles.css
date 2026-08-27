@@ -88,3 +88,30 @@ time,.sequence,.pct,[data-numeric]{font-variant-numeric:tabular-nums}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.001ms!important}}
 }
 .reply-to{display:block;margin-bottom:3px;font-size:10px;color:var(--muted);border-left:2px solid var(--line);padding-left:7px}
+
+@layer components{
+/* Signing in is entering the product, not configuring security: one column, one question,
+   no card and no chrome. The serif appears once, as identity. */
+.auth{display:grid;place-items:center;min-height:100%;padding:var(--s5);background:var(--paper)}
+.auth-panel{width:100%;max-width:340px;display:flex;flex-direction:column;align-items:flex-start;gap:var(--s3)}
+.auth .brand-mark{margin-bottom:var(--s3)}
+.auth h1{font:500 28px/1.15 var(--serif);letter-spacing:-.015em;margin:0;color:var(--ink)}
+.auth-lead{margin:0;font-size:var(--t-body);line-height:1.55;color:var(--muted);text-wrap:pretty}
+.auth-lead strong{color:var(--ink);font-weight:600}
+.auth-note{margin:0;font-size:var(--t-small);line-height:1.5;color:var(--faint);text-wrap:pretty}
+.auth-quiet{margin:0;font-size:var(--t-body);color:var(--muted)}
+.auth-error{margin:0;font-size:var(--t-small);color:var(--stop)}
+.auth form{display:flex;flex-direction:column;gap:var(--s2);width:100%;margin-top:var(--s2)}
+.auth label{font-size:var(--t-caption);letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.auth input{width:100%;padding:11px 12px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--surface);color:var(--ink);font-size:var(--t-body);transition:border-color var(--m-state) var(--ease)}
+.auth input::placeholder{color:var(--faint)}
+.auth input:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 16%,transparent)}
+.auth button{padding:11px 14px;border-radius:var(--r-control);background:var(--ink);color:var(--on-ink);font-size:var(--t-body);font-weight:550;transition:opacity var(--m-state) var(--ease)}
+.auth button:disabled{opacity:.4;cursor:default}
+.auth button:not(:disabled):hover{opacity:.88}
+.auth .auth-secondary{align-self:flex-start;padding:0;background:none;color:var(--muted);font-weight:400;text-decoration:underline;text-underline-offset:3px}
+.auth .auth-secondary:hover{color:var(--ink)}
+.auth-list{display:flex;flex-direction:column;gap:var(--s1);width:100%;margin:0}
+.auth-list li{padding:9px 12px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--surface);font-size:var(--t-body);color:var(--ink)}
+@media (max-width:600px){.auth{place-items:start center;padding-top:var(--s7)}}
+}

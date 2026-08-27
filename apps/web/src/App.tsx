@@ -1,6 +1,7 @@
-import {useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert,Users,X} from 'lucide-react';
 import {currentIdentity,roomFromLocation} from './api';
+import SignIn,{rememberIntent} from './SignIn';
 import {useRoomSession} from './use-room';
 import type {ConnectionState,Decision,Member,RoomEvent,RoomIdentity,Task,TaskStatus} from './types';
 import './styles.css';
@@ -121,29 +122,42 @@ function TaskCreator({agents,onCreate}:{agents:Member[];onCreate:(x:{title:strin
   return <form className="task-form" onSubmit={submit}><input autoFocus aria-label="Task title" placeholder="Task title" value={title} onChange={e=>setTitle(e.target.value)}/><textarea aria-label="Task description" placeholder="What does done look like?" value={description} onChange={e=>setDescription(e.target.value)} rows={2}/><select aria-label="Task owner" value={owner} onChange={e=>setOwner(e.target.value)}><option value="">Unassigned</option>{agents.map(a=><option value={a.principal_id} key={a.principal_id}>{a.display_name}</option>)}</select><div><button type="button" onClick={()=>setOpen(false)}>Cancel</button><button disabled={busy||!title.trim()}>Create task</button></div>{error&&<p className="form-error">{error}</p>}</form>
 }
 
-function RoomApp(){
+function RoomRoute({navigate}:{navigate:(to:string)=>void}){
   const room=useMemo(roomFromLocation,[]);
-  const [state,setState]=useState<{status:'loading'}|{status:'signed_out'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity}>({status:'loading'});
+  const [state,setState]=useState<{status:'loading'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity}>({status:'loading'});
   useEffect(()=>{
     if(!room)return;
     let alive=true;
     void currentIdentity().then(me=>{
       if(!alive)return;
-      if(!me)return setState({status:'signed_out'});
+      // Signing in returns you here rather than dropping you somewhere generic.
+      if(!me){rememberIntent(location.pathname);return navigate('/signin')}
       const membership=me.companies.find(c=>c.company_id===room.companyId);
       if(!membership)return setState({status:'no_access'});
       setState({status:'ready',identity:{...room,principalId:membership.principal_id}});
     }).catch(error=>{if(alive)setState({status:'error',message:(error as Error).message})});
     return()=>{alive=false};
-  },[room?.companyId,room?.roomId]);
+  },[room?.companyId,room?.roomId,navigate]);
 
   if(!room)return <main className="route-error"><div className="brand-mark">M</div><h1>Room link incomplete</h1><p>Open a link that includes the company and the room.</p><code>/rooms/company-id/room-id</code></main>;
-  if(state.status==='loading')return <main className="route-error"><div className="brand-mark">M</div><h1>Loading</h1></main>;
-  if(state.status==='signed_out')return <main className="route-error"><div className="brand-mark">M</div><h1>Sign in to continue</h1><p>Open your sign-in link to join this room.</p></main>;
+  if(state.status==='loading')return <main className="route-error"><div className="brand-mark">M</div><p className="auth-quiet">Opening the room…</p></main>;
   if(state.status==='no_access')return <main className="route-error"><div className="brand-mark">M</div><h1>No access to this workspace</h1><p>Your account is not a member of this company.</p></main>;
   if(state.status==='error')return <main className="route-error"><div className="brand-mark">M</div><h1>Something went wrong</h1><p>{state.message}</p></main>;
   return <Room identity={state.identity}/>;
 }
+
+function RoomApp(){
+  const [path,setPath]=useState(()=>location.pathname);
+  useEffect(()=>{
+    const sync=()=>setPath(location.pathname);
+    addEventListener('popstate',sync);
+    return()=>removeEventListener('popstate',sync);
+  },[]);
+  const navigate=useCallback((to:string)=>{history.pushState({},'',to);setPath(new URL(to,location.origin).pathname)},[]);
+  if(path==='/signin')return <SignIn/>;
+  return <RoomRoute navigate={navigate}/>;
+}
+
 
 function Room({identity}:{identity:RoomIdentity}){
   const {api,snapshot,connection,lastEvent,error,refresh}=useRoomSession(identity);
