@@ -68,6 +68,21 @@ describe('Slice 6 room interface',()=>{
   }
  });
 
+ it('shows waiting on a peer only from a real dependency',async()=>{
+  // The agent is connected and idle, but its task is blocked by work owned by someone else.
+  // That is a modelled dependency, never an inference from an unanswered message.
+  const blocked={...snapshot,
+   members:[{...snapshot.members[0]!},{...snapshot.members[1]!,agent_runtime_status:'idle' as const}],
+   tasks:[{...snapshot.tasks[0]!,blocked_by:[{task_id:'blocker',title:'Investigate constraints',status:'in_progress' as const,assignee_principal_id:alex}]}]};
+  vi.mocked(fetch).mockImplementation(async(url:any)=>String(url).includes('/v1/auth/me')
+   ?new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}})
+   :new Response(JSON.stringify(blocked),{status:200,headers:{'content-type':'application/json'}}));
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  expect(screen.getByText(/Waiting on Alex/,{selector:'small'})).toBeVisible();
+  expect(screen.queryByText(/Connected . idle/,{selector:'small'})).toBeNull();
+ });
+
  it('sends an addressed message and clears the composer after authoritative success',async()=>{
   render(<RoomApp/>);await screen.findByRole('heading',{name:'Launch room'});
   fireEvent.change(screen.getByLabelText('Send to'),{target:{value:agent}});

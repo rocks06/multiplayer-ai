@@ -122,4 +122,20 @@ DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm start:w
 
 The API queues and controls runs; the worker claims and executes them independently. `WORKER_ID`, `AGENT_LEASE_MS`, and `AGENT_POLL_MS` may be set for local runtime testing.
 
+## Staging blockers
+
+These are acceptable for the local developer beta and must be closed before any
+internet-accessible deployment:
+
+- `POST /v1/companies` and `POST /v1/companies/:companyId/humans` are **unauthenticated**.
+  They exist so the first account can bootstrap while there is no email transport. They must
+  be authenticated or replaced before staging.
+- Sign-in links are delivered by `LoggingSignInLinkDelivery`, which writes the token to the
+  server log, or issued through an authorized company member. A real transport must be added
+  behind `SignInLinkDelivery` before staging.
+- `ALLOW_HEADER_PRINCIPAL` must remain unset in any deployed environment. It restores the
+  Phase 1A `x-principal-id` / `principal_id` development identity path.
+- Any active company human can still administer gateway credentials and enrollment codes;
+  there is no security-administrator role.
+
 Real model providers, production-grade human/machine authentication administration, external actions, agent memory, artifacts, SDK/framework adapters, multi-person quorum/approval chains, and the product UI remain subsequent slices.

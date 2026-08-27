@@ -42,6 +42,12 @@ function Participants({members,currentId,tasks}:{members:Member[];currentId:stri
       case 'stale':return {label:'Unresponsive',tone:'warn',title:`${seen} — the Gateway still holds a session but the runtime has stopped reporting`};
     }
     if(tasks.some(t=>t.assignee_principal_id===member.principal_id&&t.status==='awaiting_decision'))return {label:'Waiting for a decision',tone:'ok',title:seen};
+    // Waiting on a peer is a real dependency, never inferred from an unanswered message.
+    const blocker=tasks.filter(t=>t.assignee_principal_id===member.principal_id&&!['completed','cancelled'].includes(t.status)).flatMap(t=>t.blocked_by??[])[0];
+    if(blocker){
+      const owner=members.find(m=>m.principal_id===blocker.assignee_principal_id);
+      return {label:owner?`Waiting on ${owner.display_name}`:'Waiting on other work',tone:'warn',title:`Blocked by “${blocker.title}”`};
+    }
     return member.agent_runtime_status==='working'?{label:'Working',tone:'busy',title:seen}:{label:'Connected · idle',tone:'ok',title:seen};
   };
   return <aside className="participants" aria-label="Room participants">

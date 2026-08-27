@@ -102,11 +102,30 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   completed_at timestamptz,
+  dependency_override_at timestamptz,
+  dependency_override_by_principal_id uuid,
+  CHECK ((dependency_override_at IS NULL) = (dependency_override_by_principal_id IS NULL)),
   FOREIGN KEY (company_id, room_id) REFERENCES rooms(company_id, id),
   FOREIGN KEY (company_id, created_by_principal_id) REFERENCES principals(company_id, id),
   FOREIGN KEY (company_id, assignee_principal_id) REFERENCES principals(company_id, id),
+  FOREIGN KEY (company_id, dependency_override_by_principal_id) REFERENCES principals(company_id, id),
   UNIQUE (company_id, room_id, id)
 );
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+  company_id uuid NOT NULL,
+  room_id uuid NOT NULL,
+  task_id uuid NOT NULL,
+  depends_on_task_id uuid NOT NULL,
+  created_by_principal_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (company_id, task_id, depends_on_task_id),
+  CHECK (task_id <> depends_on_task_id),
+  FOREIGN KEY (company_id, room_id, task_id) REFERENCES tasks(company_id, room_id, id),
+  FOREIGN KEY (company_id, room_id, depends_on_task_id) REFERENCES tasks(company_id, room_id, id),
+  FOREIGN KEY (company_id, created_by_principal_id) REFERENCES principals(company_id, id)
+);
+CREATE INDEX IF NOT EXISTS task_dependencies_blocking_idx ON task_dependencies(company_id, depends_on_task_id);
 CREATE INDEX IF NOT EXISTS tasks_room_status_idx ON tasks(room_id, status, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS messages (
