@@ -1,0 +1,9 @@
+{
+  "name": "@multiplayer-ai/connector-hermes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hermes Agent adapter for the Multiplayer AI connector. The only package that knows Hermes exists.",
+  "main": "../../dist/packages/connector-hermes/src/index.js",
+  "types": "../../dist/packages/connector-hermes/src/index.d.ts"
+}

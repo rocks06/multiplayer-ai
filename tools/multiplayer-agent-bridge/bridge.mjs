@@ -1,12 +1,11 @@
 #!/usr/bin/env node
+// Thin CLI over the connector core. Protocol behaviour lives in packages/connector-core and
+// the Hermes specifics in packages/connector-hermes; this file is argument parsing, local
+// file layout, and process lifecycle only.
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
-import {spawn} from 'node:child_process';
-import {randomUUID} from 'node:crypto';
-import WebSocket from 'ws';
+import {pathToFileURL} from 'node:url';
 
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const die=(message,code=1)=>{console.error(message);process.exit(code)};
 const json=value=>console.log(JSON.stringify(value,null,2));
 
@@ -31,13 +30,6 @@ function loadEnv(file){
   return values;
 }
 
-function secureWrite(file,value){
-  fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
-  const temp=`${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temp,JSON.stringify(value,null,2)+'\n',{mode:0o600});
-  fs.chmodSync(temp,0o600);fs.renameSync(temp,file);
-}
-
 const cli=args(process.argv.slice(2));
 const command=cli._[0]??'help';
 const envInput=String(cli.env??process.env.MULTIPLAYER_ENV_FILE??'');
@@ -52,309 +44,133 @@ const stateFile=path.join(runtimeDir,`${config.MULTIPLAYER_PROFILE}.state.json`)
 const pidFile=path.join(runtimeDir,`${config.MULTIPLAYER_PROFILE}.pid`);
 const logFile=path.join(runtimeDir,`${config.MULTIPLAYER_PROFILE}.log`);
 const bridgeFile=path.resolve(process.argv[1]);
-let state=fs.existsSync(stateFile)?JSON.parse(fs.readFileSync(stateFile,'utf8')):{last_contiguous_seq:null,processed_event_ids:[],pending_actionable_events:[]};
-state.processed_event_ids=Array.isArray(state.processed_event_ids)?state.processed_event_ids:[];
-state.pending_actionable_events=Array.isArray(state.pending_actionable_events)?state.pending_actionable_events:[];
-let activeHermesChild=null;
-const save=()=>secureWrite(stateFile,state);
 
-async function http(method,route,body,token,idempotencyKey){
-  const headers={authorization:'Bearer '+token};
-  if(body!==undefined)headers['content-type']='application/json';
-  if(idempotencyKey)headers['idempotency-key']=idempotencyKey;
-  const timeoutMs=Number(config.MULTIPLAYER_HTTP_TIMEOUT_MS??15000);
-  const response=await fetch(`${config.MULTIPLAYER_BASE_URL}${route}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(Number.isFinite(timeoutMs)&&timeoutMs>0?timeoutMs:15000)});
-  const text=await response.text();
-  let value;try{value=text?JSON.parse(text):{}}catch{value={raw:text}}
-  if(!response.ok){const error=new Error(`Gateway HTTP ${response.status}: ${value?.error?.code??'request_failed'} ${value?.error?.message??''}`);error.status=response.status;error.body=value;throw error}
-  return value;
-}
+const VERBS=['snapshot','tasks','task --id ID','message --body TEXT [--to ID] [--task ID] --key KEY','task-status --id ID --status STATUS --version N --key KEY','task-complete --id ID --version N --key KEY','decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY','decision-get --id ID'];
 
-async function openSession(){
-  const rooms=await http('GET','/v1/agent-gateway/v1/rooms',undefined,config.MULTIPLAYER_CREDENTIAL);
-  if(rooms.agent_principal_id!==config.MULTIPLAYER_AGENT_PRINCIPAL_ID)throw Object.assign(new Error('Credential principal does not match local configuration'),{terminal:true});
-  if(!rooms.rooms.some(room=>room.id===config.MULTIPLAYER_ROOM_ID))throw Object.assign(new Error('Configured room is not authorized for this credential'),{terminal:true});
-  const opened=await http('POST','/v1/agent-gateway/v1/sessions',{room_id:config.MULTIPLAYER_ROOM_ID,runtime_status:'idle'},config.MULTIPLAYER_CREDENTIAL);
-  state={...state,session_id:opened.session_id,session_token:opened.session_token,room_id:opened.room_id,agent_principal_id:opened.agent_principal_id,connection:'created'};
-  save();return state;
+async function loadModule(kind,envOverride,packageName){
+  const candidates=[
+    process.env[envOverride],
+    path.join(path.dirname(bridgeFile),'core',packageName,'src','index.js'),
+    path.resolve(path.dirname(bridgeFile),`../../dist/packages/${packageName}/src/index.js`),
+  ].filter(Boolean);
+  for(const candidate of candidates)if(fs.existsSync(candidate))return import(pathToFileURL(candidate).href);
+  die(`${kind} build not found. Run "pnpm build:server" in the repository, or set ${envOverride}.`);
 }
-async function ensureSession(){if(!state.session_id||!state.session_token)await openSession();return state}
-const sessionRoute=suffix=>`/v1/agent-gateway/v1/sessions/${state.session_id}${suffix}`;
-async function sessionHttp(method,suffix,body,key){await ensureSession();return http(method,sessionRoute(suffix),body,state.session_token,key)}
+const loadCore=()=>loadModule('Connector core','MULTIPLAYER_CONNECTOR_CORE','connector-core');
+const loadHermes=()=>loadModule('Hermes adapter','MULTIPLAYER_CONNECTOR_HERMES','connector-hermes');
+
+const gatewayConfig=()=>({
+  baseUrl:config.MULTIPLAYER_BASE_URL,
+  roomId:config.MULTIPLAYER_ROOM_ID,
+  agentPrincipalId:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,
+  credential:config.MULTIPLAYER_CREDENTIAL,
+  httpTimeoutMs:Number(config.MULTIPLAYER_HTTP_TIMEOUT_MS??15000),
+});
 
 function need(name){const value=cli[name];if(value===undefined||value===true)die(`--${name} is required`);return String(value)}
 const numeric=name=>{const value=Number(need(name));if(!Number.isInteger(value)||value<0)die(`--${name} must be a non-negative integer`);return value};
 
-async function action(){
-  if(command==='help')return console.log(`Usage: node bridge.mjs <command> --env FILE [options]\n\nDaemon: run | status [--verify] | stop\nAgent actions: snapshot | tasks | task --id ID | message --body TEXT [--to ID] [--task ID] --key KEY | task-status --id ID --status STATUS --version N --key KEY | task-complete --id ID --version N --key KEY | decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY | decision-get --id ID | heartbeat --runtime-status idle|working`);
-  if(command==='check')return json({valid:true,profile:config.MULTIPLAYER_PROFILE,base_url:config.MULTIPLAYER_BASE_URL,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,credential_present:true,credential_value_exposed:false});
-  if(command==='status'){
-    const pid=fs.existsSync(pidFile)?Number(fs.readFileSync(pidFile,'utf8')):null;
-    const running=pid!==null&&(()=>{try{process.kill(pid,0);return true}catch{return false}})();
-    // state.connection is only this bridge's last local claim. A killed, crashed, slept, or
-    // network-isolated daemon leaves it reading 'live' forever, so never report it as live
-    // unless the daemon process actually exists.
-    const report={profile:config.MULTIPLAYER_PROFILE,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,session_id:state.session_id??null,pid,process_running:running,connection:running?(state.connection??'not_started'):'not_running',last_contiguous_seq:state.last_contiguous_seq??null,pending_actionable_events:state.pending_actionable_events.length};
-    if(cli.verify){
+/** A client bound to the session already on disk, for one-shot agent commands. */
+async function boundClient(core){
+  const store=new core.FileStateStore(stateFile);
+  const state=store.load();
+  const client=new core.GatewayClient(gatewayConfig(),session=>{
+    const current=store.load();
+    store.save({...current,session_id:session.sessionId,session_token:session.sessionToken,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID});
+  });
+  if(state.session_id&&state.session_token)client.adoptSession({sessionId:state.session_id,sessionToken:state.session_token});
+  await client.ensureSession();
+  return client;
+}
+
+async function statusReport(core){
+  const state=new core.FileStateStore(stateFile).load();
+  const pid=fs.existsSync(pidFile)?Number(fs.readFileSync(pidFile,'utf8')):null;
+  const running=pid!==null&&(()=>{try{process.kill(pid,0);return true}catch{return false}})();
+  // state.connection is only this connector's last local claim. A killed, crashed, slept, or
+  // network-isolated daemon leaves it reading 'live' forever, so never report it as live
+  // unless the daemon process actually exists.
+  const report={profile:config.MULTIPLAYER_PROFILE,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,session_id:state.session_id??null,pid,process_running:running,connection:running?(state.connection??'not_started'):'not_running',last_contiguous_seq:state.last_contiguous_seq??null,pending_actionable_events:state.pending_actionable_events.length};
+  if(cli.verify){
+    const client=new core.GatewayClient(gatewayConfig());
+    try{
+      const rooms=await client.listRooms();
+      const room=rooms.rooms.find(item=>item.id===config.MULTIPLAYER_ROOM_ID);
+      report.room_authorized=Boolean(room);
+      report.room_last_event_seq=room?Number(room.last_event_seq):null;
+    }catch(error){report.room_authorized=false;report.verify_error=String(error.message??error)}
+    // Whether this process is running and whether the Gateway holds a connected session are
+    // independent facts. Ask about the existing session without opening a new one.
+    if(state.session_id&&state.session_token){
       try{
-        const rooms=await http('GET','/v1/agent-gateway/v1/rooms',undefined,config.MULTIPLAYER_CREDENTIAL);
-        const room=rooms.rooms.find(item=>item.id===config.MULTIPLAYER_ROOM_ID);
-        report.room_authorized=Boolean(room);
-        report.room_last_event_seq=room?Number(room.last_event_seq):null;
-      }catch(error){report.room_authorized=false;report.verify_error=String(error.message??error)}
-      // Whether this process is running is a local fact; whether the Gateway still holds a
-      // connected session is a durable one. They fail independently, so report both.
-      if(state.session_id&&state.session_token){
-        try{
-          const session=await http('GET',`/v1/agent-gateway/v1/sessions/${state.session_id}`,undefined,state.session_token);
-          report.gateway_session_status=session.status;
-          report.gateway_runtime_status=session.runtime_status;
-          report.gateway_last_ack_room_seq=Number(session.last_ack_room_seq);
-          report.gateway_last_seen_at=session.last_seen_at;
-          if(Number.isFinite(Number(session.room_last_event_seq)))report.room_last_event_seq=Number(session.room_last_event_seq);
-        }catch(error){report.gateway_session_status='unreachable';report.session_verify_error=String(error.message??error)}
-      }else report.gateway_session_status='none';
-      report.behind_by=report.room_last_event_seq!==null&&report.room_last_event_seq!==undefined&&report.last_contiguous_seq!==null?Math.max(0,report.room_last_event_seq-report.last_contiguous_seq):null;
-    }
-    return json(report);
+        const session=await client.http('GET',`/v1/agent-gateway/v1/sessions/${state.session_id}`,undefined,state.session_token);
+        report.gateway_session_status=session.status;
+        report.gateway_runtime_status=session.runtime_status;
+        report.gateway_last_ack_room_seq=Number(session.last_ack_room_seq);
+        report.gateway_last_seen_at=session.last_seen_at;
+        if(Number.isFinite(Number(session.room_last_event_seq)))report.room_last_event_seq=Number(session.room_last_event_seq);
+      }catch(error){report.gateway_session_status='unreachable';report.session_verify_error=String(error.message??error)}
+    }else report.gateway_session_status='none';
+    report.behind_by=report.room_last_event_seq!==null&&report.room_last_event_seq!==undefined&&report.last_contiguous_seq!==null?Math.max(0,report.room_last_event_seq-report.last_contiguous_seq):null;
   }
-  if(command==='stop'){
-    if(!fs.existsSync(pidFile))return json({stopped:false,reason:'not_running'});
-    const pid=Number(fs.readFileSync(pidFile,'utf8'));try{process.kill(pid,'SIGTERM');return json({stopped:true,pid})}catch{return json({stopped:false,reason:'stale_pid',pid})}
-  }
-  if(command==='snapshot')return json(await sessionHttp('GET','/snapshot'));
-  if(command==='tasks')return json(await sessionHttp('GET','/tasks'));
-  if(command==='task')return json(await sessionHttp('GET',`/tasks/${need('id')}`));
-  if(command==='message')return json(await sessionHttp('POST','/messages',{body:need('body'),...(cli.to?{addressed_principal_id:String(cli.to)}:{}),...(cli.task?{task_id:String(cli.task)}:{})},need('key')));
-  if(command==='task-status')return json(await sessionHttp('PATCH',`/tasks/${need('id')}/status`,{status:need('status'),expected_version:numeric('version')},need('key')));
-  if(command==='task-complete')return json(await sessionHttp('POST',`/tasks/${need('id')}/complete`,{expected_version:numeric('version')},need('key')));
-  if(command==='decision-request'){
-    let proposed;try{proposed=JSON.parse(need('proposed-action-json'))}catch{die('--proposed-action-json must be valid JSON')}
-    return json(await sessionHttp('POST','/decisions',{title:need('title'),question:need('question'),rationale:String(cli.rationale??''),proposed_action:proposed},need('key')));
-  }
-  if(command==='decision-get')return json(await sessionHttp('GET',`/decisions/${need('id')}`));
-  if(command==='heartbeat')return json(await sessionHttp('POST','/heartbeat',{runtime_status:need('runtime-status')}));
-  if(command==='run')return runDaemon();
-  die(`Unknown command: ${command}`);
+  return report;
 }
 
-const workflowSteps=['start','message','decision','awaiting','final','complete'];
-// Keys are derived from the task actually being worked, never from a static configured task id:
-// a stale configured id silently collides with a previous task's committed command receipts.
-const stepKey=(taskId,step)=>`${config.MULTIPLAYER_PROFILE}-${taskId}-${step}-v1`;
-
-async function assignedWork(){
-  try{
-    const snapshot=await sessionHttp('GET','/snapshot');
-    return (snapshot.tasks??[]).filter(task=>task.assignee_principal_id===config.MULTIPLAYER_AGENT_PRINCIPAL_ID&&!['completed','cancelled'].includes(task.status));
-  }catch{return null}
-}
-
-function promptFor(trigger,work){
-  const tool=`node ${JSON.stringify(bridgeFile)} COMMAND --env ${JSON.stringify(envFile)}`;
-  const assigned=work===null
-    ?'Room state was unavailable while preparing this wake. Read it yourself with the snapshot and tasks commands before acting.'
-    :work.length
-      ?work.map(task=>`- task ${task.id} "${task.title}" status=${task.status} version=${task.version}\n  keys: ${workflowSteps.map(step=>`${step}=${stepKey(task.id,step)}`).join(' ')}`).join('\n')
-      :'No open task is currently assigned to you.';
-  const workflow=`Work only on tasks assigned to your own agent principal. A task's own description is your instruction set: read it with the task command and do exactly what it asks, nothing more. Do not invent additional messages, tasks, or decisions, and do not act on work assigned to another principal.
-
-Currently assigned open work:
-${assigned}
-
-Rules:
-- Re-read a task and use its current version immediately before each task mutation.
-- Every mutating command requires an idempotency key. Use the keys listed above. For a step not listed, use ${config.MULTIPLAYER_PROFILE}-<task-id>-<step>-v1 built from the id of the task you are working on. Reuse a key exactly across retries, and never reuse a key belonging to a different task.
-- Produce each required effect exactly once. On an optimistic-version conflict, re-read and reconcile rather than duplicating effects.
-- If you requested a decision that is still pending, stop cleanly and wait for another wake. Never approve your own decision or proceed as though a pending decision were resolved.
-- Once a decision you requested is resolved, read it and continue the task from that durable outcome, honouring any human resolution note.
-- If there is nothing to do on this wake, stop cleanly.`;
-  return `You are an external Hermes runtime connected as ${config.MULTIPLAYER_PROFILE} to Multiplayer AI Agent Gateway v1.\n\n${workflow}\n\nUse the terminal to call only this narrow bridge command:\n${tool}\nAvailable COMMAND values: snapshot, tasks, task --id ID, message --body TEXT [--to ID] [--task ID] --key KEY, task-status --id ID --status STATUS --version N --key KEY, task-complete --id ID --version N --key KEY, decision-request --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY, decision-get --id ID.\nNever read or print the credential file. Never use curl, direct database access, x-principal-id, or any identity other than this configured bridge. Treat PostgreSQL room state as authoritative.\n\nWake reason:\n${JSON.stringify(trigger).slice(0,12000)}`;
-}
-
-async function runHermes(trigger){
-  state.hermes_running=true;state.last_wake_at=new Date().toISOString();save();
-  await sessionHttp('POST','/heartbeat',{runtime_status:'working'}).catch(()=>{});
-  const log=fs.openSync(logFile,'a',0o600);
-  const hermes=config.HERMES_COMMAND??'hermes';
-  const work=await assignedWork();
-  let code=1;
-  try{
-    const child=spawn(hermes,['chat','-q',promptFor(trigger,work),'--toolsets','terminal,file,web','--source',`multiplayer-${config.MULTIPLAYER_PROFILE}`,'--quiet'],{stdio:['ignore',log,log],env:{...process.env}});
-    activeHermesChild=child;
-    code=await new Promise(resolve=>{
-      let settled=false;
-      const finish=value=>{if(settled)return;settled=true;resolve(value??1)};
-      child.once('error',error=>{fs.writeSync(log,`[bridge] Hermes spawn failed: ${error.message}\n`);finish(1)});
-      child.once('exit',finish);
-    });
-  }catch(error){fs.writeSync(log,`[bridge] Hermes spawn failed: ${error.message}\n`)}
-  finally{activeHermesChild=null;fs.closeSync(log);state.hermes_running=false;state.last_hermes_exit=code;save()}
-  await sessionHttp('POST','/heartbeat',{runtime_status:'idle'}).catch(()=>{});
-  return code;
-}
-
-const decisionResolutionEvents=new Set(['decision.approved','decision.rejected','decision.cancelled','decision.expired']);
-const eventKey=event=>String(event.id??`room-seq:${event.room_seq}`);
-function isActionableCandidate(event){
-  if(decisionResolutionEvents.has(event.event_type))return true;
-  if(event.actor_principal_id===config.MULTIPLAYER_AGENT_PRINCIPAL_ID)return false;
-  if(event.event_type==='message.sent')return true;
-  if(String(event.event_type??'').startsWith('task.'))return true;
-  return ['human.redirect','agent.redirected'].includes(event.event_type);
-}
-
-async function isRelevantActionable(marker){
-  if(marker.type==='room.snapshot')return true;
-  const event=marker.event;
-  if(decisionResolutionEvents.has(event.event_type)){
-    const decisionId=event.payload?.decision_id??event.entity_id;
-    if(!decisionId)return false;
-    const decision=await sessionHttp('GET',`/decisions/${decisionId}`);
-    return decision.requested_by_principal_id===config.MULTIPLAYER_AGENT_PRINCIPAL_ID;
-  }
-  if(event.event_type==='message.sent'){
-    const addressed=event.payload?.addressed_principal_id;
-    return addressed===config.MULTIPLAYER_AGENT_PRINCIPAL_ID || (event.actor_kind==='human' && !addressed);
-  }
-  if(String(event.event_type??'').startsWith('task.')){
-    if(event.payload?.assignee_principal_id)return event.payload.assignee_principal_id===config.MULTIPLAYER_AGENT_PRINCIPAL_ID;
-    const snapshot=await sessionHttp('GET','/snapshot');
-    const task=snapshot.tasks?.find(item=>item.id===(event.entity_id??event.payload?.id));
-    return task?.assignee_principal_id===config.MULTIPLAYER_AGENT_PRINCIPAL_ID;
-  }
-  const target=event.payload?.agent_principal_id??event.payload?.target_principal_id??event.payload?.addressed_principal_id;
-  return target===config.MULTIPLAYER_AGENT_PRINCIPAL_ID;
-}
-
-async function runDaemon(){
+async function runDaemon(core,hermes){
   fs.mkdirSync(runtimeDir,{recursive:true,mode:0o700});
   if(fs.existsSync(pidFile)){
-    const old=Number(fs.readFileSync(pidFile,'utf8'));try{process.kill(old,0);die(`Bridge already running with PID ${old}`)}catch{}
+    const old=Number(fs.readFileSync(pidFile,'utf8'));
+    try{process.kill(old,0);die(`Bridge already running with PID ${old}`)}catch{}
   }
   fs.writeFileSync(pidFile,String(process.pid)+'\n',{mode:0o600});
-  let stopping=false,socket=null,wakeTimer=null,hermesBusy=false,retryDelay=1000;
-  const cleanup=()=>{stopping=true;if(wakeTimer)clearTimeout(wakeTimer);if(activeHermesChild)activeHermesChild.kill('SIGTERM');if(socket)socket.close();try{fs.unlinkSync(pidFile)}catch{};state.connection='offline';save()};
-  process.on('SIGTERM',()=>{cleanup();process.exit(0)});process.on('SIGINT',()=>{cleanup();process.exit(0)});
-  const rememberActionable=marker=>{
-    if(!state.pending_actionable_events.some(item=>item.key===marker.key))state.pending_actionable_events.push(marker);
-    save();
-  };
-  const scheduleWake=(delay=750)=>{
-    if(stopping||wakeTimer||hermesBusy||!state.pending_actionable_events.length)return;
-    wakeTimer=setTimeout(()=>{wakeTimer=null;void drainPending()},delay);
-  };
-  const drainPending=async()=>{
-    if(stopping||hermesBusy||!state.pending_actionable_events.length)return;
-    hermesBusy=true;
-    const candidates=[...state.pending_actionable_events];
-    const relevant=[];
-    const irrelevant=[];
-    try{
-      for(const marker of candidates){
-        if(await isRelevantActionable(marker))relevant.push(marker);else irrelevant.push(marker);
-      }
-      if(irrelevant.length){
-        const keys=new Set(irrelevant.map(item=>item.key));
-        state.pending_actionable_events=state.pending_actionable_events.filter(item=>!keys.has(item.key));save();
-      }
-      if(!relevant.length){retryDelay=1000;return}
-      const code=await runHermes(relevant);
-      if(code!==0)throw new Error(`Hermes exited with code ${code}`);
-      const completed=new Set(relevant.map(item=>item.key));
-      state.pending_actionable_events=state.pending_actionable_events.filter(item=>!completed.has(item.key));
-      retryDelay=1000;save();
-    }catch(error){
-      fs.appendFileSync(logFile,`\nbridge wake failed; durable actionable events retained for retry: ${error.message}\n`);
-      state.last_wake_error=String(error.message??error);save();
-      retryDelay=Math.min(retryDelay*2,30000);
-    }finally{
-      hermesBusy=false;
-      if(state.pending_actionable_events.length)scheduleWake(retryDelay);
-    }
-  };
-  // Reconnect/replay recovery belongs to the bridge itself. Ordinary Wi-Fi loss, sleep, a
-  // Gateway restart, or a dropped socket must recover without a human rerunning `run` and
-  // without relying on an external supervisor.
-  const backoffCeiling=Number(config.MULTIPLAYER_RECONNECT_MAX_MS??30000);
-  const pingInterval=Number(config.MULTIPLAYER_WS_PING_MS??20000);
-  const baseDelay=Number(config.MULTIPLAYER_RECONNECT_BASE_MS??1000);
-  let connectDelay=baseDelay;
-  const message=error=>String(error?.message??error);
-  const isTerminal=error=>error?.terminal===true||message(error).includes('Gateway access revoked')||(error?.status===401&&error?.body?.error?.code==='gateway_unauthenticated');
-  const isSessionRejected=error=>error?.body?.error?.code==='gateway_session_invalid'||message(error).includes('gateway_session_invalid');
-  while(!stopping){
-    let heartbeat=null,watchdog=null;
-    try{
-      await ensureSession();
-      const wsBase=config.MULTIPLAYER_BASE_URL.replace(/^http:/,'ws:').replace(/^https:/,'wss:');
-      const cursor=state.last_contiguous_seq;
-      const url=`${wsBase}${sessionRoute('/stream')}${cursor===null?'':`?after_seq=${cursor}`}`;
-      socket=new WebSocket(url,{headers:{authorization:`Bearer ${state.session_token}`}});
-      await new Promise((resolve,reject)=>{
-        socket.once('open',resolve);socket.once('error',reject);
-      });
-      state.connection='live';save();
-      connectDelay=baseDelay;
-      scheduleWake(0);
-      heartbeat=setInterval(()=>sessionHttp('POST','/heartbeat',{runtime_status:hermesBusy?'working':'idle'}).catch(()=>{}),20000);
-      // A slept laptop or a silently dropped route leaves a half-open socket that never emits
-      // close, so the bridge would wait on a connection the Gateway can no longer reach.
-      // Unanswered pings are the only reliable signal; force the reconnect instead.
-      let pongAt=Date.now();
-      socket.on('pong',()=>{pongAt=Date.now()});
-      watchdog=setInterval(()=>{
-        if(Date.now()-pongAt>pingInterval*2.5){state.connection='stalled';save();socket.terminate();return}
-        try{socket.ping()}catch{}
-      },pingInterval);
-      const closure=await new Promise((resolve,reject)=>{
-        socket.on('message',raw=>{
-          try{
-            const frame=JSON.parse(raw.toString());
-            if(frame.type==='room.snapshot'){
-              const snapshotSeq=Number(frame.snapshot_seq);
-              state.last_contiguous_seq=snapshotSeq;state.processed_event_ids=[];
-              rememberActionable({key:`room.snapshot:${snapshotSeq}`,type:'room.snapshot',snapshot_seq:snapshotSeq});
-              scheduleWake();return;
-            }
-            if(frame.type==='room.event'){
-              const seq=Number(frame.event.room_seq),last=Number(state.last_contiguous_seq??0);
-              if(seq<=last)return;
-              if(seq!==last+1){state.connection='gap';save();socket.close();return}
-              state.last_contiguous_seq=seq;
-              state.processed_event_ids=[...state.processed_event_ids,eventKey(frame.event)].slice(-500);
-              if(isActionableCandidate(frame.event))rememberActionable({key:eventKey(frame.event),type:'room.event',event:frame.event});
-              else save();
-              socket.send(JSON.stringify({type:'ack',room_seq:seq}));
-              scheduleWake();
-              return;
-            }
-            if(frame.type==='resync_required'){state.last_contiguous_seq=null;state.connection='resync_required';save();socket.close();return}
-            if(frame.type==='access_revoked'){state.connection='access_revoked';save();reject(new Error('Gateway access revoked'));return}
-            if(frame.type==='protocol_error'){reject(new Error(`Gateway protocol error: ${frame.code}`))}
-          }catch(error){reject(error)}
-        });
-        socket.once('close',code=>resolve({code}));socket.once('error',reject);
-      });
-      // A rejected subscription closes before, or instead of, delivering protocol_error.
-      // Treat the close code as authoritative so an unusable session is never retried forever.
-      if(closure&&(closure.code===4401||closure.code===4403)){
-        state.connection='session_rejected';delete state.session_id;delete state.session_token;save();
-        connectDelay=Math.min(connectDelay*2,backoffCeiling);
-      }
-    }catch(error){
-      state.connection='reconnecting';state.last_error=message(error);save();
-      if(isTerminal(error))throw error;
-      // A session id the Gateway no longer accepts can never recover by retrying it. Drop it
-      // and open a fresh session; the persisted contiguous cursor still drives normal replay.
-      if(isSessionRejected(error)){delete state.session_id;delete state.session_token;save()}
-      connectDelay=Math.min(connectDelay*2,backoffCeiling);
-    }finally{
-      if(heartbeat)clearInterval(heartbeat);
-      if(watchdog)clearInterval(watchdog);
-    }
-    if(!stopping)await sleep(connectDelay+Math.floor(Math.random()*250));
+
+  const runtime=new core.ConnectorRuntime({
+    config:gatewayConfig(),
+    profile:config.MULTIPLAYER_PROFILE,
+    store:new core.FileStateStore(stateFile),
+    adapter:new hermes.HermesAdapter({command:config.HERMES_COMMAND}),
+    commandSurface:{template:`node ${JSON.stringify(bridgeFile)} COMMAND --env ${JSON.stringify(envFile)}`,verbs:VERBS},
+    logPath:logFile,
+    stream:{
+      reconnectBaseMs:Number(config.MULTIPLAYER_RECONNECT_BASE_MS??1000),
+      reconnectMaxMs:Number(config.MULTIPLAYER_RECONNECT_MAX_MS??30000),
+      pingIntervalMs:Number(config.MULTIPLAYER_WS_PING_MS??20000),
+    },
+  });
+
+  const cleanup=()=>{runtime.stop();try{fs.unlinkSync(pidFile)}catch{}};
+  process.on('SIGTERM',()=>{cleanup();process.exit(0)});
+  process.on('SIGINT',()=>{cleanup();process.exit(0)});
+  await runtime.start();
+}
+
+async function action(){
+  if(command==='help')return console.log(`Usage: node bridge.mjs <command> --env FILE [options]\n\nDaemon: run | status [--verify] | stop\nAgent actions: ${VERBS.join(' | ')} | heartbeat --runtime-status idle|working`);
+  if(command==='check')return json({valid:true,profile:config.MULTIPLAYER_PROFILE,base_url:config.MULTIPLAYER_BASE_URL,room_id:config.MULTIPLAYER_ROOM_ID,agent_principal_id:config.MULTIPLAYER_AGENT_PRINCIPAL_ID,credential_present:true,credential_value_exposed:false});
+  if(command==='stop'){
+    if(!fs.existsSync(pidFile))return json({stopped:false,reason:'not_running'});
+    const pid=Number(fs.readFileSync(pidFile,'utf8'));
+    try{process.kill(pid,'SIGTERM');return json({stopped:true,pid})}catch{return json({stopped:false,reason:'stale_pid',pid})}
   }
+
+  const core=await loadCore();
+  if(command==='status')return json(await statusReport(core));
+  if(command==='run')return runDaemon(core,await loadHermes());
+
+  const client=await boundClient(core);
+  if(command==='snapshot')return json(await client.snapshot());
+  if(command==='tasks')return json(await client.tasks());
+  if(command==='task')return json(await client.task(need('id')));
+  if(command==='message')return json(await client.sendMessage({body:need('body'),addressedPrincipalId:cli.to?String(cli.to):undefined,taskId:cli.task?String(cli.task):undefined},need('key')));
+  if(command==='task-status')return json(await client.updateTaskStatus(need('id'),need('status'),numeric('version'),need('key')));
+  if(command==='task-complete')return json(await client.completeTask(need('id'),numeric('version'),need('key')));
+  if(command==='decision-request'){
+    let proposed;try{proposed=JSON.parse(need('proposed-action-json'))}catch{die('--proposed-action-json must be valid JSON')}
+    return json(await client.requestDecision({title:need('title'),question:need('question'),rationale:String(cli.rationale??''),proposedAction:proposed},need('key')));
+  }
+  if(command==='decision-get')return json(await client.decision(need('id')));
+  if(command==='heartbeat')return json(await client.heartbeat(need('runtime-status')));
+  die(`Unknown command: ${command}`);
 }
 
 action().catch(error=>die(error.stack??String(error)));

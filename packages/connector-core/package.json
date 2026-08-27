@@ -1,0 +1,9 @@
+{
+  "name": "@multiplayer-ai/connector-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-neutral Agent Gateway client and connector runtime. No agent-runtime or OS specifics.",
+  "main": "../../dist/packages/connector-core/src/index.js",
+  "types": "../../dist/packages/connector-core/src/index.d.ts"
+}
