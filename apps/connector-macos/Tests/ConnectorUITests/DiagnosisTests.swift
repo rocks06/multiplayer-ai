@@ -92,3 +92,19 @@ struct DiagnosisTests {
         }
     }
 }
+
+
+@Suite("Where this Mac is pointed")
+struct WorkspaceAddressTests {
+    @Test("an address has to be somewhere a code could actually be spent")
+    func usable() {
+        #expect(ConnectorModel.usableAddress("http://workspace.local:4100"))
+        #expect(ConnectorModel.usableAddress("https://rooms.example.com"))
+        #expect(ConnectorModel.usableAddress("  http://10.0.0.4:4100  "))
+        // A default of "localhost" is wrong on every Mac except the one running the workspace,
+        // so nothing is assumed and an empty or half-typed address does not enable Connect.
+        #expect(!ConnectorModel.usableAddress(""))
+        #expect(!ConnectorModel.usableAddress("workspace.local:4100"))
+        #expect(!ConnectorModel.usableAddress("http://"))
+    }
+}

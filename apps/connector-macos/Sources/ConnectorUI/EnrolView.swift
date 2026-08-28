@@ -6,15 +6,14 @@ import SwiftUI
 /// person may have to go and fix, and finding out afterwards would waste the code.
 public struct EnrolView: View {
     @Bindable var model: ConnectorModel
-    @State private var code = ""
-    @State private var workspace = "http://localhost:4100"
-    @State private var showWorkspaceField = false
+    // Held on the model, not here: this view does not survive the popover closing.
     @FocusState private var codeFocused: Bool
 
     private var runtime: SidecarState.Runtime { model.sidecar.state.runtime }
     private var codeLooksComplete: Bool {
-        code.trimmingCharacters(in: .whitespaces).count >= 14
+        model.code.trimmingCharacters(in: .whitespaces).count >= 14
     }
+    private var addressLooksUsable: Bool { model.addressLooksUsable }
 
     public init(model: ConnectorModel) { self.model = model }
 
@@ -35,12 +34,12 @@ public struct EnrolView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            TextField("MPAI-0000-0000-0000", text: $code)
+            TextField("MPAI-0000-0000-0000", text: $model.code)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 14, design: .monospaced))
                 .focused($codeFocused)
                 .onSubmit { submit() }
-                .onChange(of: code) { _, value in code = value.uppercased() }
+                .onChange(of: model.code) { _, value in model.code = value.uppercased() }
 
             // What the runtime check found, stated plainly and before it costs anyone a code.
             HStack(spacing: 7) {
@@ -67,13 +66,13 @@ public struct EnrolView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if showWorkspaceField {
+            do {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Workspace address")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
-                    TextField("http://…", text: $workspace)
+                    TextField("http://your-workspace:4100", text: $model.workspaceAddress)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
                 }
@@ -95,12 +94,7 @@ public struct EnrolView: View {
             HStack(spacing: 8) {
                 Button(model.busy ? "Connecting…" : "Connect") { submit() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.busy || !codeLooksComplete)
-                Button(showWorkspaceField ? "Hide address" : "Change address") {
-                    showWorkspaceField.toggle()
-                }
-                .buttonStyle(.link)
-                .font(.system(size: 11))
+                    .disabled(model.busy || !codeLooksComplete || !addressLooksUsable)
                 Spacer()
                 Button("Quit") { NSApplication.shared.terminate(nil) }
                     .buttonStyle(.link)
@@ -111,10 +105,11 @@ public struct EnrolView: View {
     }
 
     private func submit() {
-        guard codeLooksComplete, !model.busy else { return }
+        guard codeLooksComplete, addressLooksUsable, !model.busy else { return }
         Task {
-            await model.enroll(code: code, workspace: workspace.trimmingCharacters(in: .whitespaces))
-            if model.enrolment != nil { code = "" }
+            await model.enroll(code: model.code,
+                               workspace: model.workspaceAddress.trimmingCharacters(in: .whitespaces))
+            if model.enrolment != nil { model.code = "" }
         }
     }
 }

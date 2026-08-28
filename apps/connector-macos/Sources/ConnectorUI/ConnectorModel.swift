@@ -7,10 +7,28 @@ public final class ConnectorModel {
     public let sidecar: SidecarClient
     public var enrolment: Keychain.Enrolment?
     public var showingDiagnostics = false
+
+    /* The menu bar popover tears its content view down every time it closes, which is exactly
+       what happens when someone clicks away to copy their code. Anything they have typed lives
+       here instead, so it is still there when they come back. */
+    public var code = ""
+    public var workspaceAddress: String = UserDefaults.standard.string(forKey: addressKey) ?? "" {
+        didSet { UserDefaults.standard.set(workspaceAddress, forKey: ConnectorModel.addressKey) }
+    }
+    public var showingWorkspaceField = false
+    static let addressKey = "com.multiplayerai.connector.workspace-address"
     public var busy = false
     public var notice: String?
 
     public var health: Health { Diagnosis.health(of: sidecar.state) }
+
+    /// A code can only be spent against somewhere real, so both are required before connecting.
+    public var addressLooksUsable: Bool { ConnectorModel.usableAddress(workspaceAddress) }
+    nonisolated public static func usableAddress(_ address: String) -> Bool {
+        let trimmed = address.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") else { return false }
+        return URL(string: trimmed)?.host?.isEmpty == false
+    }
 
     /// `live: false` builds a model that touches nothing — no helper spawned, no Keychain read —
     /// so the views can be rendered and reasoned about on their own.
