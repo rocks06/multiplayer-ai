@@ -1,0 +1,6 @@
+[build]
+  command = "pnpm build:marketing"
+  publish = "dist/marketing"
+
+[build.environment]
+  NODE_VERSION = "24"
