@@ -20,7 +20,19 @@ import readline from 'node:readline';
 import * as core from '../../../dist/packages/connector-core/src/index.js';
 import * as hermes from '../../../dist/packages/connector-hermes/src/index.js';
 
-const VERBS = ['message', 'task', 'complete', 'decision', 'heartbeat', 'snapshot'];
+/* What an agent may do, and the exact shape it is told to use. The names are what this binary
+   dispatches on; the surface strings are what the runtime is shown. */
+const VERB_NAMES = ['snapshot', 'tasks', 'task', 'status', 'complete', 'message', 'decision', 'heartbeat'];
+const COMMAND_SURFACE = [
+  'snapshot',
+  'tasks',
+  'task --id ID',
+  'status --id ID --status STATUS --version N --key KEY',
+  'complete --id ID --version N --key KEY',
+  'message --body TEXT [--to ID] [--task ID] [--reply-to ID] --key KEY',
+  'decision --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY',
+  'heartbeat --runtime-status idle|working',
+];
 const SUPPORT = path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI');
 const STATE_FILE = path.join(SUPPORT, 'connector-state.json');
 const LOG_FILE = path.join(SUPPORT, 'connector.log');
@@ -44,14 +56,62 @@ async function runVerb(verb, argv) {
   const raw = process.env[SESSION_ENV];
   if (!raw) { console.error('No open session. The Connector opens one when it connects.'); process.exit(2); }
   const session = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
+
   const client = new core.GatewayClient({
     baseUrl: session.baseUrl, roomId: session.roomId,
     agentPrincipalId: session.agentPrincipalId, credential: '',
   });
-  const handle = { sessionId: session.sessionId, sessionToken: session.sessionToken };
-  const args = Object.fromEntries(argv.flatMap((entry, index) =>
-    entry.startsWith('--') ? [[entry.slice(2), argv[index + 1] ?? '']] : []));
-  const result = await client.sessionHttp(handle, verb, args);
+  /* The room-scoped session the Connector already opened is adopted rather than a new one being
+     negotiated: this process never sees the machine credential and could not open one anyway. */
+  client.adoptSession({ sessionId: session.sessionId, sessionToken: session.sessionToken });
+
+  const args = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (!argv[i].startsWith('--')) continue;
+    const name = argv[i].slice(2);
+    const next = argv[i + 1];
+    args[name] = next === undefined || next.startsWith('--') ? 'true' : next;
+    if (args[name] !== 'true') i++;
+  }
+  const need = (name) => {
+    const value = args[name];
+    if (value === undefined) { console.error(`Missing --${name}`); process.exit(2); }
+    return value;
+  };
+  const version = () => {
+    const value = Number(need('version'));
+    if (!Number.isInteger(value)) { console.error('--version must be a whole number'); process.exit(2); }
+    return value;
+  };
+
+  let result;
+  switch (verb) {
+    case 'snapshot': result = await client.snapshot(); break;
+    case 'tasks': result = await client.tasks(); break;
+    case 'task': result = await client.task(need('id')); break;
+    case 'status': result = await client.updateTaskStatus(need('id'), need('status'), version(), need('key')); break;
+    case 'complete': result = await client.completeTask(need('id'), version(), need('key')); break;
+    case 'heartbeat': result = await client.heartbeat(args['runtime-status'] === 'working' ? 'working' : 'idle'); break;
+    case 'message':
+      result = await client.sendMessage({
+        body: need('body'),
+        addressedPrincipalId: args.to,
+        taskId: args.task,
+        inReplyToMessageId: args['reply-to'],
+      }, need('key'));
+      break;
+    case 'decision': {
+      let proposedAction;
+      try { proposedAction = JSON.parse(need('proposed-action-json')) }
+      catch { console.error('--proposed-action-json must be valid JSON'); process.exit(2) }
+      result = await client.requestDecision({
+        title: need('title'), question: need('question'),
+        rationale: args.rationale, proposedAction,
+      }, need('key'));
+      break;
+    }
+    default: console.error(`Unknown command ${verb}`); process.exit(2);
+  }
   console.log(JSON.stringify(result));
 }
 
@@ -130,7 +190,7 @@ class Connector {
       profile: 'macos',
       store: this.store(),
       adapter: this.adapter,
-      commandSurface: { template: `${JSON.stringify(selfPath)} COMMAND`, verbs: VERBS },
+      commandSurface: { template: `${JSON.stringify(selfPath)} COMMAND`, verbs: COMMAND_SURFACE },
       logPath: LOG_FILE,
     });
 
@@ -261,7 +321,7 @@ async function daemon() {
 
 async function main() {
   const [verb, ...rest] = process.argv.slice(2);
-  if (verb && VERBS.includes(verb)) await runVerb(verb, rest);
+  if (verb && VERB_NAMES.includes(verb)) await runVerb(verb, rest);
   else await daemon();
 }
 
