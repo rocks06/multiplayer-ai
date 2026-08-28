@@ -140,6 +140,44 @@ describe("Agent Gateway v1",()=>{
   expect((await post(`/v1/companies/${f.company.id}/agents/${a.principal_id}/enrollments`,{label:"Self"},{"x-principal-id":a.principal_id})).statusCode).toBe(403);
  });
 
+ it("does not consume a valid enrollment until a usable room binding can be returned, and redeems atomically once",async()=>{
+  const f=await companyFixture("Atomic Enrollment");
+  const unroomed=(await post(`/v1/companies/${f.company.id}/agents`,{name:"Coleman"},{"x-principal-id":f.owner.principal_id})).json();
+  const issued=await post(`/v1/companies/${f.company.id}/agents/${unroomed.principal_id}/enrollments`,{label:"Coleman runtime"},{"x-principal-id":f.owner.principal_id});
+  const code=issued.json().enrollment_code as string;
+
+  const before=await pool.query(`SELECT count(*)::int count FROM external_agent_credentials WHERE company_id=$1 AND agent_principal_id=$2`,[f.company.id,unroomed.principal_id]);
+  const refused=await post("/v1/agent-gateway/v1/enroll",{code,device_label:"Mac mini"});
+  expect(refused.statusCode).toBe(409);
+  expect(refused.json().error.code).toBe("enrollment_room_required");
+  const afterFailure=await pool.query(`SELECT status,consumed_at,credential_id FROM agent_enrollment_tokens WHERE code_prefix=$1`,[code.slice(0,9)]);
+  expect(afterFailure.rows[0]).toEqual({status:"pending",consumed_at:null,credential_id:null});
+  const credentialsAfterFailure=await pool.query(`SELECT count(*)::int count FROM external_agent_credentials WHERE company_id=$1 AND agent_principal_id=$2`,[f.company.id,unroomed.principal_id]);
+  expect(credentialsAfterFailure.rows[0].count).toBe(before.rows[0].count);
+  const sessionsAfterFailure=await pool.query(`SELECT count(*)::int count FROM external_agent_sessions WHERE company_id=$1 AND agent_principal_id=$2`,[f.company.id,unroomed.principal_id]);
+  expect(sessionsAfterFailure.rows[0].count).toBe(0);
+
+  await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/members`,{principal_id:unroomed.principal_id,role:"worker_agent",responsibilities:"Coordinate the release"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"join-after-failed-enrollment"});
+
+  // Competing requests exercise the row lock: exactly one receives the one usable credential.
+  const attempts=await Promise.all([
+    post("/v1/agent-gateway/v1/enroll",{code,device_label:"Mac mini A"}),
+    post("/v1/agent-gateway/v1/enroll",{code,device_label:"Mac mini B"}),
+  ]);
+  expect(attempts.map(result=>result.statusCode).sort()).toEqual([200,401]);
+  const success=attempts.find(result=>result.statusCode===200)!;
+  expect(success.json().rooms.map((room:any)=>room.id)).toEqual([f.room.id]);
+  expect(typeof success.json().credential_token).toBe("string");
+  expect((await post("/v1/agent-gateway/v1/enroll",{code})).statusCode).toBe(401);
+
+  const finalToken=await pool.query(`SELECT status,consumed_at,credential_id FROM agent_enrollment_tokens WHERE code_prefix=$1`,[code.slice(0,9)]);
+  expect(finalToken.rows[0].status).toBe("consumed");
+  expect(finalToken.rows[0].consumed_at).not.toBeNull();
+  expect(finalToken.rows[0].credential_id).not.toBeNull();
+  const finalCredentials=await pool.query(`SELECT count(*)::int count FROM external_agent_credentials WHERE company_id=$1 AND agent_principal_id=$2`,[f.company.id,unroomed.principal_id]);
+  expect(finalCredentials.rows[0].count).toBe(before.rows[0].count+1);
+ });
+
  it("reports durable session status read-only, including after disconnect, without touching liveness",async()=>{
   const f=await companyFixture(),a=await agent(f,"Status AI","status"),b=await agent(f,"Other AI","other");
   const c=await external(a,f.room.id);await c.connect(0);

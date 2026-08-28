@@ -126,7 +126,7 @@ export interface WorkspaceAgent {
   connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'never';runtime_status:string|null;last_seen_at:string|null};
   rooms:Array<{room_id:string;name:string}>|null;
 }
-export interface WorkspaceRoom {room_id:string;name:string;project_id:string;project_name:string}
+export interface WorkspaceRoom {room_id:string;name:string;project_id:string;project_name:string;objective?:string}
 
 export const createWorkspace=(name:string)=>
   send<{company_id:string;name:string;principal_id:string}>('/v1/workspaces',{method:'POST',body:JSON.stringify({name})});
@@ -147,6 +147,10 @@ export const createEnrollmentCode=(companyId:string,agentPrincipalId:string,labe
 
 export const createProject=(companyId:string,name:string,objective:string)=>
   send<{id:string;name:string;objective:string}>(`/v1/companies/${companyId}/projects`,{method:'POST',body:JSON.stringify({name,objective})});
+
+export const setProjectObjective=(companyId:string,projectId:string,objective:string,expectedObjective:string)=>
+  send<{id:string;name:string;objective:string}>(`/v1/companies/${companyId}/projects/${projectId}/objective`,
+    {method:'PATCH',body:JSON.stringify({objective,expected_objective:expectedObjective})});
 
 export const createRoom=(companyId:string,projectId:string,name:string)=>
   send<{id:string;name:string}>(`/v1/companies/${companyId}/projects/${projectId}/rooms`,{method:'POST',body:JSON.stringify({name})});

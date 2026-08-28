@@ -81,18 +81,20 @@ export class AgentGatewayService {
     const c=await this.pool.connect();
     try {
       await c.query("BEGIN");
-      // Consuming and validating in one statement is what makes a code single-use under
-      // concurrent redemption attempts.
-      const claimed=await c.query<{id:string;company_id:string;agent_principal_id:string;label:string}>(`UPDATE agent_enrollment_tokens SET status='consumed',consumed_at=now(),device_label=$2 WHERE code_hash=$1 AND status='pending' AND expires_at>now() RETURNING id,company_id,agent_principal_id,label`,[hash(input.code),input.deviceLabel??null]);
+      // Lock the still-usable code before checking anything that could make enrollment fail.
+      // Concurrent redeemers serialize here; after the winner commits, the loser re-checks the
+      // predicate and sees no pending token. Nothing is consumed until every prerequisite passes.
+      const claimed=await c.query<{id:string;company_id:string;agent_principal_id:string;label:string}>(`SELECT id,company_id,agent_principal_id,label FROM agent_enrollment_tokens WHERE code_hash=$1 AND status='pending' AND expires_at>now() FOR UPDATE`,[hash(input.code)]);
       if(!claimed.rowCount) throw new DomainError("enrollment_invalid","Enrollment code is invalid, already used, or expired",401);
       const token=claimed.rows[0]!;
       const agent=await c.query(`SELECT 1 FROM principals p JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id WHERE p.company_id=$1 AND p.id=$2 AND p.kind='agent' AND p.status='active' AND a.status='active'`,[token.company_id,token.agent_principal_id]);
       if(!agent.rowCount) throw new DomainError("agent_not_found","Agent principal is no longer active",404);
+      const rooms=await c.query(`SELECT r.id,r.name,p.name project_name FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id WHERE rm.company_id=$1 AND rm.principal_id=$2 AND rm.status='active' AND rm.role='worker_agent' ORDER BY rm.joined_at`,[token.company_id,token.agent_principal_id]);
+      if(!rooms.rowCount) throw new DomainError("enrollment_room_required","Add this agent to a room before connecting it",409);
       const credentialId=uuidv7(),credential=secret("magc");
       const label=input.deviceLabel?`${token.label} (${input.deviceLabel})`:token.label;
       await c.query(`INSERT INTO external_agent_credentials(id,company_id,agent_principal_id,token_hash,token_prefix,label,created_by_principal_id) SELECT $1,$2,$3,$4,$5,$6,created_by_principal_id FROM agent_enrollment_tokens WHERE id=$7`,[credentialId,token.company_id,token.agent_principal_id,hash(credential),credential.slice(0,12),label,token.id]);
-      await c.query(`UPDATE agent_enrollment_tokens SET credential_id=$2 WHERE id=$1`,[token.id,credentialId]);
-      const rooms=await c.query(`SELECT r.id,r.name,p.name project_name FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id WHERE rm.company_id=$1 AND rm.principal_id=$2 AND rm.status='active' AND rm.role='worker_agent' ORDER BY rm.joined_at`,[token.company_id,token.agent_principal_id]);
+      await c.query(`UPDATE agent_enrollment_tokens SET status='consumed',consumed_at=now(),device_label=$2,credential_id=$3 WHERE id=$1`,[token.id,input.deviceLabel??null,credentialId]);
       const name=await c.query<{display_name:string}>(`SELECT display_name FROM principals WHERE company_id=$1 AND id=$2`,[token.company_id,token.agent_principal_id]);
       await c.query("COMMIT");
       return {protocol:"agent-gateway.v1",credential_id:credentialId,credential_token:credential,company_id:token.company_id,agent_principal_id:token.agent_principal_id,agent_display_name:name.rows[0]?.display_name??null,rooms:rooms.rows};

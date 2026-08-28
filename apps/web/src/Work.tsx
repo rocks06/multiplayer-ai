@@ -245,8 +245,8 @@ export function SharedWork({tasks,members,agents,canManage,currentId,actions,chi
  * own machine may still be finishing its current step, and finds out at its next contact. The
  * copy says that rather than pretending a remote process stopped on command.
  */
-export function AgentControls({member,agent,canManage,actions,onMessage}:{
-  member:Member;agent?:CompanyAgent;canManage:boolean;actions:WorkActions;onMessage:(principalId:string)=>void}){
+export function AgentControls({member,agent,canManage,actions,onMessage,onConnect}:{
+  member:Member;agent?:CompanyAgent;canManage:boolean;actions:WorkActions;onMessage:(principalId:string)=>void;onConnect?:(member:Member)=>void}){
   const [open,setOpen]=useState(false);
   const [confirmingPause,setConfirmingPause]=useState(false);
   const {busy,problem,run}=useAction();
@@ -258,6 +258,7 @@ export function AgentControls({member,agent,canManage,actions,onMessage}:{
       aria-label={`Supervise ${member.display_name}`} onClick={()=>{setOpen(v=>!v);setConfirmingPause(false)}}>•••</button>
     {open&&<div className="agent-menu">
       <button type="button" onClick={()=>{onMessage(member.principal_id);setOpen(false)}}>Message {member.display_name}</button>
+      {member.agent_presence==='never'&&onConnect&&<button type="button" onClick={()=>{onConnect(member);setOpen(false)}}>Connect {member.display_name}</button>}
 
       {!agent&&<p className="agent-note">This agent is not registered to the workspace, so it cannot be paused from here.</p>}
 

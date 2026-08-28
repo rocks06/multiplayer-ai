@@ -1,6 +1,6 @@
 import {useCallback,useEffect,useRef,useState,type FormEvent} from 'react';
 import {ArrowRight,Check,ChevronRight,Copy,Plus,RefreshCw} from 'lucide-react';
-import {ApiError,addRoomMember,addWorkspaceAgent,createEnrollmentCode,createProject,createRoom,createWorkspace,
+import {ApiError,addRoomMember,addWorkspaceAgent,createEnrollmentCode,createProject,createRoom,createWorkspace,setProjectObjective,
   currentIdentity,listWorkspaceAgents,listWorkspaceRooms,type SignedInIdentity,type WorkspaceAgent,type WorkspaceRoom} from './api';
 import {rememberIntent} from './SignIn';
 
@@ -13,7 +13,8 @@ import {rememberIntent} from './SignIn';
  * you left off, and an agent counts as connected only when the Gateway says it has appeared.
  */
 
-type Step='workspace'|'agents'|'objective'|'ready';
+type Step='workspace'|'agents'|'room'|'connect'|'objective'|'ready';
+export const UNSET_OBJECTIVE='No objective has been set yet.';
 
 interface Workspace{companyId:string;name:string}
 
@@ -26,10 +27,13 @@ interface Workspace{companyId:string;name:string}
  */
 export function resumeAt(workspace:Workspace|null,agents:WorkspaceAgent[],rooms:WorkspaceRoom[]):Step{
   if(!workspace)return 'workspace';
-  if(rooms.length)return 'ready';
   if(!agents.length)return 'agents';
-  if(!agents.some(agent=>connectionOf(agent).ready))return 'agents';
-  return 'objective';
+  if(!rooms.length)return 'room';
+  if(rooms[0]?.objective===UNSET_OBJECTIVE){
+    if(agents.some(agent=>!connectionOf(agent).arrived))return 'connect';
+    return 'objective';
+  }
+  return 'ready';
 }
 
 /**
@@ -77,8 +81,8 @@ function useSubmit(){
 
 function Shell({step,children}:{step:Step;children:React.ReactNode}){
   const steps:Array<{key:Step;label:string}>=[
-    {key:'workspace',label:'Workspace'},{key:'agents',label:'Agents'},
-    {key:'objective',label:'First work'},{key:'ready',label:'Room'}];
+    {key:'workspace',label:'Workspace'},{key:'agents',label:'Agents'},{key:'room',label:'Room'},
+    {key:'connect',label:'Connect'},{key:'objective',label:'First work'},{key:'ready',label:'Ready'}];
   const at=steps.findIndex(s=>s.key===step);
   return <main className="welcome">
     <div className="welcome-panel">
@@ -125,7 +129,7 @@ function NameWorkspace({onCreated}:{onCreated:(workspace:Workspace)=>void}){
  * The code below is what joins the two, and nothing on this screen reports a connection that
  * the Gateway has not actually seen.
  */
-function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent:WorkspaceAgent;onChanged:()=>void}){
+export function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent:WorkspaceAgent;onChanged:()=>void}){
   const [code,setCode]=useState<{value:string;expiresAt:string}|null>(null);
   const [expired,setExpired]=useState(false);
   const [copied,setCopied]=useState(false);
@@ -221,15 +225,14 @@ function AddAgent({onAdd,count}:{onAdd:(name:string)=>Promise<unknown>;count:num
   </form>;
 }
 
-function Agents({companyId,agents,onAdd,onRefresh,onDone}:{
+function Agents({agents,onAdd,onDone}:{
   companyId:string;agents:WorkspaceAgent[];onAdd:(name:string)=>Promise<unknown>;onRefresh:()=>void;onDone:()=>void}){
-  const pending=agents.filter(agent=>!connectionOf(agent).ready).length;
   return <>
     <h1>{agents.length?'Your agents':'Bring in your first agent'}</h1>
     <p className="welcome-lead">
       {agents.length
-        ? 'Agents work together in a room, so most workspaces want at least two. You can connect them now or come back to it.'
-        : 'Name the agent you already work with. Connecting it comes next, and can wait if you are not at its machine.'}
+        ? 'Agents work together in a room, so most workspaces want at least two. Create their room next, then connect them.'
+        : 'Name the agent you already work with. You will create its room before connecting it.'}
     </p>
 
     {agents.length>0&&<ul className="agent-list">
@@ -238,7 +241,7 @@ function Agents({companyId,agents,onAdd,onRefresh,onDone}:{
           <span className="identity-mark agent" aria-hidden="true">{agent.display_name.slice(0,1).toUpperCase()}</span>
           <strong>{agent.display_name}</strong>
         </div>
-        <ConnectAgent companyId={companyId} agent={agent} onChanged={onRefresh}/>
+        <p className="connect-state idle"><span className="state-dot" aria-hidden="true"/>Not connected yet</p>
       </li>)}
     </ul>}
 
@@ -246,47 +249,74 @@ function Agents({companyId,agents,onAdd,onRefresh,onDone}:{
 
     {agents.length>0&&<div className="welcome-forward">
       <button type="button" className="primary" onClick={onDone}>
-        {pending?'Continue without connecting yet':'Next: what they should work on'}<ArrowRight size={15}/></button>
-      {pending>0&&<p className="welcome-note">
-        You can set the work up now and connect the rest when you are at their machines.</p>}
+        Next: create a room<ArrowRight size={15}/></button>
     </div>}
   </>;
 }
 
-function FirstObjective({companyId,agents,onCreated}:{
-  companyId:string;agents:WorkspaceAgent[];onCreated:(room:WorkspaceRoom)=>void}){
+function CreateFirstRoom({companyId,agents,onCreated}:{
+  companyId:string;agents:WorkspaceAgent[];onCreated:(room:WorkspaceRoom)=>Promise<void>}){
   const [name,setName]=useState('');
-  const [objective,setObjective]=useState('');
   const {busy,problem,run}=useSubmit();
   const field=useRef<HTMLInputElement>(null);
   useEffect(()=>{field.current?.focus()},[]);
 
   const submit=(event:FormEvent)=>{
     event.preventDefault();
-    if(!name.trim()||!objective.trim())return;
+    if(!name.trim())return;
     void run(async()=>{
-      const project=await createProject(companyId,name.trim(),objective.trim());
+      const project=await createProject(companyId,name.trim(),UNSET_OBJECTIVE);
       const room=await createRoom(companyId,project.id,name.trim());
-      // Everyone you have added starts in the room; that is the point of a shared workspace.
       for(const agent of agents)await addRoomMember(companyId,room.id,agent.principal_id,'');
-      onCreated({room_id:room.id,name:room.name,project_id:project.id,project_name:project.name});
+      await onCreated({room_id:room.id,name:room.name,project_id:project.id,project_name:project.name,objective:UNSET_OBJECTIVE});
     });
   };
 
   return <>
-    <h1>What should they work on?</h1>
+    <h1>Create their room</h1>
     <p className="welcome-lead">
-      This becomes the room your agents share: {agents.map(a=>a.display_name).join(' and ')} will
-      start there, and so will you.
+      {agents.map(a=>a.display_name).join(' and ')} need a room before the Connector can join them.
+      Name it now; you will connect them before setting the first objective.
     </p>
     <form onSubmit={submit}>
-      <label htmlFor="work-name">Name this piece of work</label>
+      <label htmlFor="work-name">Room name</label>
       <input id="work-name" ref={field} value={name} placeholder="Developer API" maxLength={100}
         onChange={event=>setName(event.target.value)}/>
+      <button disabled={busy||!name.trim()}>{busy?'Setting up…':'Create the room'}<ArrowRight size={15}/></button>
+      {problem&&<p className="auth-error" role="alert">{problem}</p>}
+    </form>
+  </>;
+}
+
+function ConnectAgents({companyId,agents,onRefresh,onDone}:{companyId:string;agents:WorkspaceAgent[];onRefresh:()=>void;onDone:()=>void}){
+  const waiting=agents.filter(agent=>!connectionOf(agent).arrived);
+  return <>
+    <h1>Connect your agents</h1>
+    <p className="welcome-lead">Their room is ready. Use the Connector enrollment flow on each machine. The first objective unlocks after every agent has appeared.</p>
+    <ul className="agent-list">{agents.map(agent=><li key={agent.principal_id}>
+      <div className="agent-head"><span className="identity-mark agent" aria-hidden="true">{agent.display_name.slice(0,1).toUpperCase()}</span><strong>{agent.display_name}</strong></div>
+      <ConnectAgent companyId={companyId} agent={agent} onChanged={onRefresh}/>
+    </li>)}</ul>
+    <div className="welcome-forward"><button type="button" className="primary" disabled={waiting.length>0} onClick={onDone}>Next: set the first objective<ArrowRight size={15}/></button>
+      {waiting.length>0&&<p className="welcome-note">This unlocks after {waiting.map(agent=>agent.display_name).join(' and ')} {waiting.length===1?'connects':'connect'}.</p>}
+    </div>
+  </>;
+}
+
+function FirstObjective({companyId,room,onDone}:{companyId:string;room:WorkspaceRoom;onDone:()=>void}){
+  const [objective,setObjective]=useState('');
+  const {busy,problem,run}=useSubmit();
+  const field=useRef<HTMLTextAreaElement>(null);
+  useEffect(()=>{field.current?.focus()},[]);
+  return <>
+    <h1>Set the first objective</h1>
+    <p className="welcome-lead">Tell everyone in {room.name} what they should achieve first.</p>
+    <form onSubmit={(event:FormEvent)=>{event.preventDefault();if(objective.trim())void run(async()=>{
+      await setProjectObjective(companyId,room.project_id,objective.trim(),UNSET_OBJECTIVE);onDone();
+    })}}>
       <label htmlFor="work-objective">What are they trying to achieve?</label>
-      <textarea id="work-objective" value={objective} rows={3} placeholder="Launch the public developer API"
-        onChange={event=>setObjective(event.target.value)}/>
-      <button disabled={busy||!name.trim()||!objective.trim()}>{busy?'Setting up…':'Create the room'}<ArrowRight size={15}/></button>
+      <textarea id="work-objective" ref={field} value={objective} rows={3} placeholder="Launch the public developer API" onChange={event=>setObjective(event.target.value)}/>
+      <button disabled={busy||!objective.trim()}>{busy?'Saving…':'Enter the room'}<ArrowRight size={15}/></button>
       {problem&&<p className="auth-error" role="alert">{problem}</p>}
     </form>
   </>;
@@ -372,12 +402,15 @@ export default function Welcome({navigate}:{navigate:(to:string)=>void}){
       <Agents companyId={workspace.companyId} agents={agents}
         onAdd={async name=>{await addWorkspaceAgent(workspace.companyId,name);await load()}}
         onRefresh={()=>{void load()}}
-        onDone={()=>setHere('objective')}/>}
-    {step==='objective'&&workspace&&
-      <FirstObjective companyId={workspace.companyId} agents={agents}
-        onCreated={room=>{setRooms([room]);setHere('ready');enter(room)}}/>}
+        onDone={()=>setHere('room')}/>}
+    {step==='room'&&workspace&&<CreateFirstRoom companyId={workspace.companyId} agents={agents}
+      onCreated={async room=>{setRooms([room]);await load();setHere('connect')}}/>}
+    {step==='connect'&&workspace&&<ConnectAgents companyId={workspace.companyId} agents={agents}
+      onRefresh={()=>{void load()}} onDone={()=>setHere('objective')}/>}
+    {step==='objective'&&workspace&&rooms[0]&&<FirstObjective companyId={workspace.companyId} room={rooms[0]}
+      onDone={()=>{void load();enter(rooms[0]!)}}/>}
     {step==='ready'&&workspace&&<Ready workspace={workspace} rooms={rooms} agents={agents} onEnter={enter}/>}
-    {step==='objective'&&<button type="button" className="welcome-back" onClick={()=>setHere('agents')}>Back to agents</button>}
+    {step==='room'&&<button type="button" className="welcome-back" onClick={()=>setHere('agents')}>Back to agents</button>}
     {identity&&<p className="welcome-who">Signed in as {identity.user.display_name}</p>}
   </Shell>;
 }

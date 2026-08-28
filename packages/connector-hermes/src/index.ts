@@ -47,7 +47,36 @@ export class HermesAdapter implements AgentRuntimeAdapter {
 
   constructor(private readonly options: HermesAdapterOptions = {}) {}
 
-  private get command() { return this.options.command ?? "hermes"; }
+  /**
+   * Where Hermes is looked for.
+   *
+   * An app launched from the Dock, from Finder, or at login inherits the system PATH, not the
+   * one a login shell builds — so a Hermes installed where it installs itself is invisible to a
+   * bare `hermes` lookup even though the person plainly has it. The usual install locations are
+   * therefore tried directly before giving up.
+   */
+  private candidates(): string[] {
+    if (this.options.command) return [this.options.command];
+    const home = process.env.HOME ?? "";
+    return [
+      "hermes",
+      ...(home ? [`${home}/.local/bin/hermes`, `${home}/.hermes/bin/hermes`] : []),
+      "/opt/homebrew/bin/hermes",
+      "/usr/local/bin/hermes",
+      "/Applications/Hermes.app/Contents/MacOS/hermes",
+    ];
+  }
+
+  /** The first candidate that answers, remembered so later calls do not search again. */
+  private resolved: string | null = null;
+  private get command() {
+    if (this.resolved) return this.resolved;
+    for (const candidate of this.candidates()) {
+      const probe = spawnSync(candidate, ["--version"], { encoding: "utf8" });
+      if (!probe.error && probe.status === 0) { this.resolved = candidate; return candidate; }
+    }
+    return this.options.command ?? "hermes";
+  }
 
   async detect(): Promise<RuntimeDetection> {
     const probe = spawnSync(this.command, ["--version"], { encoding: "utf8" });
@@ -55,7 +84,7 @@ export class HermesAdapter implements AgentRuntimeAdapter {
       return {
         available: false,
         name: "Hermes Agent",
-        reason: `Hermes was not found. Install it, or point the connector at its executable. Tried: ${this.command}`,
+        reason: `Hermes was not found on this Mac. Install it, or point the connector at its executable.`,
       };
     }
     const output = `${probe.stdout ?? ""}${probe.stderr ?? ""}`;

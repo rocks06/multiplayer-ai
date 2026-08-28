@@ -144,8 +144,8 @@ export class RoomService {
     const c=await this.pool.connect();
     try {
       await this.actor(c,companyId,actorId);
-      const result=await c.query<{room_id:string;name:string;project_id:string;project_name:string}>(
-        `SELECT r.id room_id,r.name,p.id project_id,p.name project_name
+      const result=await c.query<{room_id:string;name:string;project_id:string;project_name:string;objective:string}>(
+        `SELECT r.id room_id,r.name,p.id project_id,p.name project_name,p.objective
          FROM room_members rm
          JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id
          JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id
@@ -176,6 +176,35 @@ export class RoomService {
   }
 
   async createProject(companyId:string,actorId:string,name:string,objective:string) { await this.pool.query(`SELECT 1 FROM principals WHERE id=$1 AND company_id=$2`,[actorId,companyId]).then(r=>{if(!r.rowCount)throw new DomainError('forbidden','Invalid company principal',403)}); const id=uuidv7(); await this.pool.query(`INSERT INTO projects(id,company_id,name,objective,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[id,companyId,name,objective,actorId]); return {id,name,objective}; }
+  /**
+   * Projects own objectives; rooms only point at projects. No existing command updates that
+   * field, so onboarding needs this small compare-and-set mutation to create the room first.
+   * Projects do not have a version column. Locking the row and comparing its prior objective
+   * gives the same stale-write refusal as versioned room commands, while replaying the already
+   * applied value is harmless and idempotent.
+   */
+  async setProjectObjective(companyId:string,projectId:string,actorId:string,objective:string,expectedObjective:string) {
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      const actor=await this.actor(c,companyId,actorId);
+      if(actor.kind!=='human')throw new DomainError('permission_denied','Only a person can set the project objective',403);
+      const project=await c.query<{id:string;name:string;objective:string}>(
+        `SELECT id,name,objective FROM projects WHERE company_id=$1 AND id=$2 FOR UPDATE`,[companyId,projectId]);
+      if(!project.rowCount)throw new DomainError('project_not_found','Project not found',404);
+      const manager=await c.query(`SELECT 1 FROM rooms r JOIN room_members rm ON rm.company_id=r.company_id AND rm.room_id=r.id
+        WHERE r.company_id=$1 AND r.project_id=$2 AND rm.principal_id=$3 AND rm.status='active' AND rm.role='manager' LIMIT 1`,
+        [companyId,projectId,actorId]);
+      if(!manager.rowCount)throw new DomainError('permission_denied','Active room manager access is required to set the objective',403);
+      const current=project.rows[0]!;
+      if(current.objective===objective){await c.query('COMMIT');return current}
+      if(current.objective!==expectedObjective)throw new DomainError('version_conflict','Project objective changed since it was read',409,{expected_objective:expectedObjective,current_objective:current.objective});
+      const changed=await c.query<{id:string;name:string;objective:string}>(
+        `UPDATE projects SET objective=$3 WHERE company_id=$1 AND id=$2 RETURNING id,name,objective`,[companyId,projectId,objective]);
+      await c.query('COMMIT');
+      return changed.rows[0]!;
+    } catch(error){await c.query('ROLLBACK');throw error} finally{c.release()}
+  }
   async createRoom(companyId:string,projectId:string,actorId:string,name:string,responsibilities:string) { const c=await this.pool.connect(); try { await c.query('BEGIN'); const actor=await this.actor(c,companyId,actorId); const roomId=uuidv7(), memberId=uuidv7(), commandId=uuidv7(); await c.query(`INSERT INTO rooms(id,company_id,project_id,name,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[roomId,companyId,projectId,name,actorId]); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,'manager',$5)`,[memberId,companyId,roomId,actorId,responsibilities]); await this.appendEvent(c,{companyId,roomId,actor,eventType:'room.created',entityType:'room',entityId:roomId,payload:{name},commandId,correlationId:commandId}); await this.appendEvent(c,{companyId,roomId,actor,eventType:'member.joined',entityType:'room_member',entityId:memberId,payload:{principal_id:actorId,role:'manager'},commandId,correlationId:commandId}); await c.query('COMMIT'); return {id:roomId,name,room_seq:2}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
 
   async addMember(input:{companyId:string;roomId:string;actorId:string;principalId:string;role:RoomRole;responsibilities:string;idempotencyKey:string}) { return this.command({...input,commandType:'member.add',input:{principalId:input.principalId,role:input.role,responsibilities:input.responsibilities},permission:'member.manage'}, async(c)=>{ const target=await this.actor(c,input.companyId,input.principalId); const id=uuidv7(); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,$5,$6)`,[id,input.companyId,input.roomId,input.principalId,input.role,input.responsibilities]); return {response:{id,principal_id:target.id,role:input.role},event:{type:'member.joined',entityType:'room_member',entityId:id,payload:{principal_id:target.id,role:input.role}}}; }); }

@@ -5,6 +5,6 @@ export default defineConfig({
     testTimeout:20_000,
     hookTimeout:20_000,
     fileParallelism:false,
-    include:['tests/room-ui.test.tsx','tests/marketing-site.test.tsx'],
+    include:['tests/room-ui.test.tsx','tests/welcome-ui.test.tsx','tests/marketing-site.test.tsx'],
   },
 });

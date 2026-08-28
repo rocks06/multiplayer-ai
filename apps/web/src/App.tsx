@@ -4,11 +4,12 @@ import {ApiError,currentIdentity,roomFromLocation} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
-import Welcome from './Welcome';
+import Welcome,{ConnectAgent} from './Welcome';
 import {AgentControls,SharedWork,type WorkActions} from './Work';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
 import type {CompanyAgent,ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
+import type {WorkspaceAgent} from './api';
 import './styles.css';
 
 const formatTime=(value:string)=>new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));
@@ -54,9 +55,9 @@ function HumanRow({member,current}:{member:Member;current:boolean}){
   </li>;
 }
 
-export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage}:{
+export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect}:{
   members:Member[];currentId:string;tasks:Task[];decisions:Decision[];
-  companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void}){
+  companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void;onConnect?:(member:Member)=>void}){
   const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
   // Only agents that are not currently reachable carry an elapsed reading, so the clock runs
   // only when something on screen actually depends on it.
@@ -72,7 +73,7 @@ export function Participants({members,currentId,tasks,decisions,companyAgents,ca
           label={presence.label} tone={presence.tone} detail={presence.detail} paused={record?.status==='paused'}
           elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>
         {actions&&onMessage&&
-          <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage}/>}
+          <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect}/>}
       </li>;
     })}</ul></section>
     <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state, never inferred.</div>
@@ -391,6 +392,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
 
   const [addressee,setAddressee]=useState('');
   const [composerFocus,setComposerFocus]=useState(0);
+  const [connecting,setConnecting]=useState<Member|null>(null);
   /* Which agent record an action addresses, and whether it is paused, are company-level facts
      the room snapshot does not carry. They are refetched whenever the room reports an agent
      changing, so a pause made here or elsewhere is reflected without polling. */
@@ -443,6 +445,14 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   };
   const working=agents.filter(a=>a.agent_presence==='connected'&&a.agent_runtime_status==='working');
   const attention=needsYou.total;
+  const connectingRecord=connecting&&companyAgents.find(agent=>agent.principal_id===connecting.principal_id);
+  const enrollmentAgent:WorkspaceAgent|null=connecting&&connectingRecord?{
+    agent_id:connectingRecord.agent_id,principal_id:connecting.principal_id,display_name:connecting.display_name,
+    status:connectingRecord.status,owner_display_name:null,
+    connector:{enrolled:Boolean(connectingRecord.connector_enrolled),presence:connecting.agent_presence??'never',
+      runtime_status:connecting.agent_runtime_status??null,last_seen_at:connecting.agent_last_seen_at??null},
+    rooms:[{room_id:identity.roomId,name:snapshot.room.name}],
+  }:null;
 
   return <main className="room-app">
     <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div><button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
@@ -463,7 +473,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
           {needsYou.blocked.map(t=><BlockedItem key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)}/>)}
         </section>}
           <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}
-            companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent}/>
+            companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent} onConnect={setConnecting}/>
           <SharedWork tasks={snapshot.tasks} members={snapshot.members} agents={agents} canManage={managers} currentId={identity.principalId} actions={actions}>
             <TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/>
           </SharedWork>
@@ -476,6 +486,14 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
       <span className="trigger-team">{agents.length} {agents.length===1?'agent':'agents'}{working.length?` · ${working.length} working`:''}</span>
       {attention>0&&<span className="trigger-attention">{attention} needs you</span>}
     </button>
+    {enrollmentAgent&&<div className="connect-overlay" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)setConnecting(null)}}>
+      <section className="connect-dialog" role="dialog" aria-modal="true" aria-labelledby="connect-agent-title">
+        <button type="button" className="connect-close" aria-label="Close connection setup" onClick={()=>setConnecting(null)}><X size={16}/></button>
+        <h2 id="connect-agent-title">Connect {enrollmentAgent.display_name}</h2>
+        <p>Use the Multiplayer AI Connector on the machine where this agent runs.</p>
+        <ConnectAgent companyId={identity.companyId} agent={enrollmentAgent} onChanged={loadAgents}/>
+      </section>
+    </div>}
     <div className="sr-live" aria-live="polite">{lastEvent&&`${lastEvent.actor_display_name} ${activityText(lastEvent)}`}</div>
   </main>;
 }

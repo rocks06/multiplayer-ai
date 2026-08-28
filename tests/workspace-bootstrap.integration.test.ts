@@ -107,7 +107,7 @@ describe("Workspace bootstrap and agent listing", () => {
 
       const listed = await call("GET", `/v1/companies/${workspace.company_id}/rooms`, undefined, { cookie: me.cookie });
       expect(listed.statusCode).toBe(200);
-      expect(listed.json()).toEqual({ rooms: [{ room_id: room.id, name: "API Launch", project_id: project.id, project_name: "Developer API" }] });
+      expect(listed.json()).toEqual({ rooms: [{ room_id: room.id, name: "API Launch", project_id: project.id, project_name: "Developer API", objective: "Launch it" }] });
     });
 
     it("is empty for a new workspace rather than absent", async () => {

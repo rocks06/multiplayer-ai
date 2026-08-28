@@ -220,4 +220,21 @@ describe('Slice 6 room interface',()=>{
   await waitFor(()=>expect(FakeSocket.instances).toHaveLength(2));
   expect(await screen.findByRole('status')).toHaveTextContent('Live');
  });
+ it('opens the existing enrollment flow from Never connected room controls',async()=>{
+  const never={...snapshot,briefing:{...snapshot.briefing,unresolved_decisions:[]},members:[snapshot.members[0]!,{...snapshot.members[1]!,agent_presence:'never' as const,agent_connection:'never' as const,agent_runtime_status:null,agent_last_seen_at:null}]};
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+   if(String(url).includes('/v1/auth/me'))return new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}});
+   if(String(url).endsWith(`/v1/companies/${company}/agents`))return new Response(JSON.stringify({agents:[{agent_id:'agent-record',principal_id:agent,display_name:"Alex's Agent",status:'active',owner_display_name:'Alex'}]}),{status:200,headers:{'content-type':'application/json'}});
+   if(init?.method==='POST'&&String(url).includes('/enrollments'))return new Response(JSON.stringify({enrollment_code:'MPAI-82HT-KT87-BZ74',expires_at:new Date(Date.now()+900_000).toISOString()}),{status:200,headers:{'content-type':'application/json'}});
+   return new Response(JSON.stringify(never),{status:200,headers:{'content-type':'application/json'}});
+  }));
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  fireEvent.click(screen.getByRole('button',{name:"Supervise Alex's Agent"}));
+  fireEvent.click(screen.getByRole('button',{name:"Connect Alex's Agent"}));
+  expect(await screen.findByRole('dialog',{name:"Connect Alex's Agent"})).toBeVisible();
+  fireEvent.click(screen.getByRole('button',{name:'Connect this agent'}));
+  expect(await screen.findByText('MPAI-82HT-KT87-BZ74')).toBeVisible();
+  expect(vi.mocked(fetch).mock.calls.some(([url,init]:any)=>init?.method==='POST'&&String(url).includes('/enrollments'))).toBe(true);
+ });
 });
