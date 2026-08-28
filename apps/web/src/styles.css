@@ -486,3 +486,19 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
   .welcome-steps{gap:var(--s2)}
 }
 }
+
+/* Adding an agent to a room: occasional, so it sits quietly under the team rather than
+   standing as a permanent call to action. */
+@layer components{
+.add-agent-row{display:flex;align-items:center;gap:5px;margin-top:var(--s2);padding:6px 4px;color:var(--moss);font-size:10px;font-weight:700}
+.add-agent-row:hover{text-decoration:underline}
+.add-agent-form{display:grid;gap:var(--s2);margin-top:var(--s2);padding:11px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface)}
+.add-agent-form .field{display:grid;gap:4px}
+.add-agent-form input,.add-agent-form select{width:100%;border:1px solid var(--line);border-radius:var(--r-control);padding:7px;background:var(--paper);font-size:11px}
+.add-agent-form input:focus-visible,.add-agent-form select:focus-visible{border-color:var(--ink)}
+.add-agent-note{font-size:9px;line-height:1.5;color:var(--faint);text-wrap:pretty}
+.add-agent-actions{display:flex;gap:6px;justify-content:flex-end}
+.add-agent-actions button{padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--paper);font-size:10px;font-weight:650}
+.add-agent-actions button:last-child{border-color:var(--ink);background:var(--ink);color:var(--on-ink)}
+.add-agent-actions button:disabled{opacity:.45;cursor:default}
+}

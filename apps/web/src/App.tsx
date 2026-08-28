@@ -1,6 +1,6 @@
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert,Users,X} from 'lucide-react';
-import {ApiError,currentIdentity,roomFromLocation} from './api';
+import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,roomFromLocation} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
@@ -55,9 +55,64 @@ function HumanRow({member,current}:{member:Member;current:boolean}){
   </li>;
 }
 
-export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect}:{
+/**
+ * Bringing another agent into this room.
+ *
+ * Agents arrive one at a time and rarely, so this stays folded away beside the team rather than
+ * standing as a permanent call to action. It adds nothing new to the model: an agent the
+ * workspace already knows is simply made a member here, and a new name registers an identity and
+ * then does the same. Connecting it to the machine it runs on is the existing flow, opened for
+ * you straight afterwards.
+ */
+function AddAgent({available,onAdd}:{available:CompanyAgent[];onAdd:(choice:{name?:string;principalId?:string})=>Promise<void>}){
+  const [open,setOpen]=useState(false);
+  const [name,setName]=useState('');
+  const [existing,setExisting]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [problem,setProblem]=useState('');
+  const field=useRef<HTMLInputElement>(null);
+  useEffect(()=>{if(open&&!available.length)field.current?.focus()},[open,available.length]);
+
+  const submit=async(choice:{name?:string;principalId?:string})=>{
+    if(busy)return;
+    setBusy(true);setProblem('');
+    try{await onAdd(choice);setName('');setExisting('');setOpen(false)}
+    catch(failure){setProblem((failure as Error).message||'That did not work.')}
+    finally{setBusy(false)}
+  };
+
+  if(!open)return <button type="button" className="add-agent-row" onClick={()=>setOpen(true)}>
+    <Plus size={13}/>Add agent</button>;
+
+  return <form className="add-agent-form" onSubmit={event=>{event.preventDefault();if(name.trim())void submit({name:name.trim()})}}>
+    {available.length>0&&<label className="field">
+      <span className="field-label">Agent you already have</span>
+      <select value={existing} disabled={busy} aria-label="Add an agent already in this workspace"
+        onChange={event=>{const id=event.target.value;setExisting(id);if(id)void submit({principalId:id})}}>
+        <option value="">Choose an agent…</option>
+        {available.map(agent=><option value={agent.principal_id} key={agent.principal_id}>{agent.display_name}</option>)}
+      </select>
+    </label>}
+
+    <label className="field">
+      <span className="field-label">{available.length?'Or connect a new one':'Agent name'}</span>
+      <input ref={field} value={name} placeholder="Research agent" maxLength={100} disabled={busy}
+        aria-label="Agent name" onChange={event=>setName(event.target.value)}/>
+    </label>
+    <small className="add-agent-note">Names an agent you already run. You connect it from its own Mac next.</small>
+
+    {problem&&<p className="form-error" role="alert">{problem}</p>}
+    <div className="add-agent-actions">
+      <button type="button" onClick={()=>{setOpen(false);setName('');setProblem('')}} disabled={busy}>Cancel</button>
+      <button disabled={busy||!name.trim()}>{busy?'Adding…':'Add agent'}</button>
+    </div>
+  </form>;
+}
+
+export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect,onAddAgent}:{
   members:Member[];currentId:string;tasks:Task[];decisions:Decision[];
-  companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void;onConnect?:(member:Member)=>void}){
+  companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void;
+  onConnect?:(member:Member)=>void;onAddAgent?:(choice:{name?:string;principalId?:string})=>Promise<void>}){
   const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
   // Only agents that are not currently reachable carry an elapsed reading, so the clock runs
   // only when something on screen actually depends on it.
@@ -75,7 +130,12 @@ export function Participants({members,currentId,tasks,decisions,companyAgents,ca
         {actions&&onMessage&&
           <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect}/>}
       </li>;
-    })}</ul></section>
+    })}</ul>
+      {!agents.length&&<p className="small-empty">No agents here yet. Add one you already run.</p>}
+      {/* Only agents this workspace knows and this room does not already have. */}
+      {canManage&&onAddAgent&&
+        <AddAgent available={(companyAgents??[]).filter(a=>!members.some(m=>m.principal_id===a.principal_id))} onAdd={onAddAgent}/>}
+    </section>
     <div className="rail-note"><span className="presence-ring"/>Agent presence is durable Gateway state, never inferred.</div>
   </aside>;
 }
@@ -431,6 +491,18 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
     pause:agent=>mutate(()=>api.pauseAgent(agent.agent_id)).then(loadAgents),
     resume:agent=>mutate(()=>api.resumeAgent(agent.agent_id)).then(loadAgents),
   };
+  /* One path, whether the agent is new to the workspace or only new to this room: it ends as a
+     member here, and then the same connect flow the rest of the product uses. */
+  const addAgentToRoom=async(choice:{name?:string;principalId?:string})=>{
+    const principalId=choice.principalId
+      ?? (await addWorkspaceAgent(identity.companyId,choice.name!.trim())).principal_id;
+    await addRoomMember(identity.companyId,identity.roomId,principalId,'');
+    await refresh();
+    loadAgents();
+    // Offer the connect step straight away, from what the room now reports.
+    const joined=(await api.snapshot()).members.find(m=>m.principal_id===principalId);
+    if(joined)setConnecting(joined);
+  };
   const messageAgent=(principalId:string)=>{setAddressee(principalId);setComposerFocus(n=>n+1);setOversightOpen(false)};
   // Every number in the mobile trigger is counted from state already known to be true.
   const openWork=snapshot.tasks.filter(t=>!['completed','cancelled'].includes(t.status));
@@ -473,7 +545,8 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
           {needsYou.blocked.map(t=><BlockedItem key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)}/>)}
         </section>}
           <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}
-            companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent} onConnect={setConnecting}/>
+            companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent} onConnect={setConnecting}
+            onAddAgent={addAgentToRoom}/>
           <SharedWork tasks={snapshot.tasks} members={snapshot.members} agents={agents} canManage={managers} currentId={identity.principalId} actions={actions}>
             <TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/>
           </SharedWork>
