@@ -30,13 +30,13 @@ func state(gateway: String, running: Bool = true, enrolled: Bool = true,
                        path: hermes ? "/usr/local/bin/hermes" : nil,
                        reason: hermes ? nil : "Hermes was not found on this Mac. Install it, then check again."),
         sync: .init(lastContiguousSeq: seq, pending: pending),
-        identity: .init(agentDisplayName: "Coleman", roomName: "Developer API", projectName: "Developer API"),
+        identity: .init(agentDisplayName: "Agent A", roomName: "Developer API", projectName: "Developer API"),
         lastError: error)
 }
 
 let enrolment = Keychain.Enrolment(
     baseURL: "http://workspace.local", roomId: "r", roomName: "Developer API",
-    projectName: "Developer API", agentPrincipalId: "p", agentDisplayName: "Coleman")
+    projectName: "Developer API", agentPrincipalId: "p", agentDisplayName: "Agent A")
 
 let out = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "./previews")
 try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)

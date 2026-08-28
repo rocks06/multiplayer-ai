@@ -5,8 +5,8 @@ import type {Decision,Member,Task} from '../apps/web/src/types';
 const AGENT='00000000-0000-4000-8000-0000000000a1';
 const PEER='00000000-0000-4000-8000-0000000000a2';
 
-const agent=(o:Partial<Member>={}):Member=>({principal_id:AGENT,display_name:'JJ',kind:'agent',role:'worker_agent',responsibilities:'',...o});
-const peer:Member={principal_id:PEER,display_name:'Coleman',kind:'agent',role:'worker_agent',responsibilities:''};
+const agent=(o:Partial<Member>={}):Member=>({principal_id:AGENT,display_name:'Agent B',kind:'agent',role:'worker_agent',responsibilities:'',...o});
+const peer:Member={principal_id:PEER,display_name:'Agent A',kind:'agent',role:'worker_agent',responsibilities:''};
 const task=(o:Partial<Task>={}):Task=>({id:'t1',title:'Design the quota contract',description:'',status:'in_progress',assignee_principal_id:AGENT,version:1,updated_at:new Date().toISOString(),...o});
 const pendingDecision:Decision={id:'d1',run_id:null,requested_by_principal_id:AGENT,title:'Publish now?',question:'',rationale:'',proposed_action:{},proposed_action_digest:'a'.repeat(64),status:'pending',version:1,resolved_by_principal_id:null,resolution_note:null,requested_at:new Date().toISOString(),resolved_at:null,expires_at:null};
 const describe_=(member:Member,tasks:Task[]=[],decisions:Decision[]=[])=>describePresence(member,{tasks,decisions,members:[member,peer]});
@@ -36,7 +36,7 @@ describe('agent presence',()=>{
   it('names the peer an agent is waiting on, from a real dependency',()=>{
     const blocked=task({status:'open',blocked_by:[{task_id:'t2',title:'Investigate',status:'in_progress',assignee_principal_id:PEER}]});
     expect(describe_(agent({agent_presence:'connected',agent_runtime_status:'idle'}),[blocked]))
-      .toMatchObject({label:'Waiting on Coleman',tone:'wait',detail:'Design the quota contract'});
+      .toMatchObject({label:'Waiting on Agent A',tone:'wait',detail:'Design the quota contract'});
   });
 
   it('falls back to unnamed waiting when the blocking work has no owner',()=>{

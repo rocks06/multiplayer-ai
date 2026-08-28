@@ -15,8 +15,8 @@ const TASK='00000000-0000-4000-8000-0000000000b1';
 const BLOCKER='00000000-0000-4000-8000-0000000000b2';
 const minutesAgo=(n:number)=>new Date(Date.now()-n*60_000).toISOString();
 
-const peer:Member={principal_id:PEER,display_name:'Coleman',kind:'agent',role:'worker_agent',responsibilities:'Research'};
-const agent=(overrides:Partial<Member>):Member=>({principal_id:AGENT,display_name:'JJ',kind:'agent',role:'worker_agent',responsibilities:'Integration',...overrides});
+const peer:Member={principal_id:PEER,display_name:'Agent A',kind:'agent',role:'worker_agent',responsibilities:'Research'};
+const agent=(overrides:Partial<Member>):Member=>({principal_id:AGENT,display_name:'Agent B',kind:'agent',role:'worker_agent',responsibilities:'Integration',...overrides});
 
 const task=(overrides:Partial<Task>):Task=>({id:TASK,title:'Design the published quota contract',description:'',status:'in_progress',assignee_principal_id:AGENT,version:2,updated_at:minutesAgo(4),...overrides});
 const blockedTask=task({status:'open',blocked_by:[{task_id:BLOCKER,title:'Investigate rate-limit behaviour',status:'in_progress',assignee_principal_id:PEER}]});
@@ -31,7 +31,7 @@ const cases:Array<{name:string;member:Member;tasks:Task[];decisions:Decision[]}>
   {name:'Offline',member:agent({agent_presence:'offline',agent_runtime_status:'idle',agent_last_seen_at:minutesAgo(47)}),tasks:[],decisions:[]},
   {name:'Access revoked',member:agent({agent_presence:'revoked',agent_last_seen_at:minutesAgo(180)}),tasks:[],decisions:[]},
   {name:'Never connected',member:agent({agent_presence:'never'}),tasks:[],decisions:[]},
-  {name:'Long name, mixed state',member:agent({display_name:'Coleman Rate-Limit And Quota Investigation Agent',agent_presence:'connected',agent_runtime_status:'working',agent_last_seen_at:minutesAgo(0)}),tasks:[task({title:'Investigate rate-limit behaviour under sustained burst load across every published developer endpoint'})],decisions:[]},
+  {name:'Long name, mixed state',member:agent({display_name:'Agent A Rate-Limit And Quota Investigation Agent',agent_presence:'connected',agent_runtime_status:'working',agent_last_seen_at:minutesAgo(0)}),tasks:[task({title:'Investigate rate-limit behaviour under sustained burst load across every published developer endpoint'})],decisions:[]},
 ];
 
 export default function PresenceFixture(){

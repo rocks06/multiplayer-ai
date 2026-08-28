@@ -75,18 +75,18 @@ describe("Task dependencies", () => {
     expect((await call("POST", `${f.base}/tasks/${dependent.id}/dependency-override`, { reason: "in a hurry" }, asActor(f.worker.principal_id))).statusCode).toBe(403);
 
     const key = crypto.randomUUID();
-    const granted = await call("POST", `${f.base}/tasks/${dependent.id}/dependency-override`, { reason: "Coleman is unavailable today" }, asActor(f.owner.principal_id, key));
+    const granted = await call("POST", `${f.base}/tasks/${dependent.id}/dependency-override`, { reason: "Agent A is unavailable today" }, asActor(f.owner.principal_id, key));
     expect(granted.statusCode).toBe(200);
     expect(granted.json().overridden_dependencies).toEqual([blocker.id]);
 
     // Idempotent: the same key returns the original result and emits no second event.
-    const replayed = await call("POST", `${f.base}/tasks/${dependent.id}/dependency-override`, { reason: "Coleman is unavailable today" }, asActor(f.owner.principal_id, key));
+    const replayed = await call("POST", `${f.base}/tasks/${dependent.id}/dependency-override`, { reason: "Agent A is unavailable today" }, asActor(f.owner.principal_id, key));
     expect(replayed.json().room_seq).toBe(granted.json().room_seq);
 
     const events = await pool.query(`SELECT event_type,actor_principal_id,payload FROM room_events WHERE room_id=$1 AND event_type='task.dependency_override_granted'`, [f.room.id]);
     expect(events.rowCount).toBe(1);
     expect(events.rows[0].actor_principal_id).toBe(f.owner.principal_id);
-    expect(events.rows[0].payload.reason).toBe("Coleman is unavailable today");
+    expect(events.rows[0].payload.reason).toBe("Agent A is unavailable today");
 
     expect((await call("PATCH", `${f.base}/tasks/${dependent.id}/status`, { status: "in_progress", expected_version: 1 }, asActor(f.worker.principal_id))).statusCode).toBe(200);
   });

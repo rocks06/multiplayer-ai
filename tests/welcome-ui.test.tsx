@@ -38,19 +38,19 @@ describe('corrected onboarding order and durable resume',()=>{
   it('derives every partial-completion step from persisted workspace state',()=>{
     expect(resumeAt(null,[],[])).toBe('workspace');
     expect(resumeAt(workspace,[],[])).toBe('agents');
-    expect(resumeAt(workspace,[agent('Coleman')],[])).toBe('room');
-    expect(resumeAt(workspace,[agent('Coleman')],[room()])).toBe('connect');
-    expect(resumeAt(workspace,[agent('Coleman','connected'),agent('JJ')],[room()])).toBe('connect');
-    expect(resumeAt(workspace,[agent('Coleman','connected'),agent('JJ','offline')],[room()])).toBe('objective');
-    expect(resumeAt(workspace,[agent('Coleman')],[room('Ship the API')])).toBe('ready');
+    expect(resumeAt(workspace,[agent('Agent A')],[])).toBe('room');
+    expect(resumeAt(workspace,[agent('Agent A')],[room()])).toBe('connect');
+    expect(resumeAt(workspace,[agent('Agent A','connected'),agent('Agent B')],[room()])).toBe('connect');
+    expect(resumeAt(workspace,[agent('Agent A','connected'),agent('Agent B','offline')],[room()])).toBe('objective');
+    expect(resumeAt(workspace,[agent('Agent A')],[room('Ship the API')])).toBe('ready');
   });
 
   it('adds agents without offering enrollment before a room exists',async()=>{
     arrive(withWorkspace);
-    vi.mocked(api.addWorkspaceAgent).mockResolvedValue({agent_id:'a-Coleman',principal_id:'p-Coleman'});
-    vi.mocked(api.listWorkspaceAgents).mockResolvedValueOnce([]).mockResolvedValue([agent('Coleman')]);
+    vi.mocked(api.addWorkspaceAgent).mockResolvedValue({agent_id:'a-Agent A',principal_id:'p-Agent A'});
+    vi.mocked(api.listWorkspaceAgents).mockResolvedValueOnce([]).mockResolvedValue([agent('Agent A')]);
     show();
-    fireEvent.change(await screen.findByLabelText('What do you call this agent?'),{target:{value:'Coleman'}});
+    fireEvent.change(await screen.findByLabelText('Agent name'),{target:{value:'Agent A'}});
     await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Add agent'})));
     expect(await screen.findByText('Not connected yet')).toBeVisible();
     expect(screen.queryByRole('button',{name:'Connect this agent'})).not.toBeInTheDocument();
@@ -58,8 +58,8 @@ describe('corrected onboarding order and durable resume',()=>{
   });
 
   it('creates the project, room, and memberships before exposing the existing enrollment component',async()=>{
-    const coleman=agent('Coleman'),jj=agent('JJ');
-    arrive(withWorkspace,[coleman,jj],[]);
+    const agentA=agent('Agent A'),agentB=agent('Agent B');
+    arrive(withWorkspace,[agentA,agentB],[]);
     vi.mocked(api.createProject).mockResolvedValue({id:'j1',name:'Developer API',objective:UNSET_OBJECTIVE});
     vi.mocked(api.createRoom).mockResolvedValue({id:'r1',name:'Developer API'});
     vi.mocked(api.addRoomMember).mockResolvedValue({});
@@ -69,14 +69,14 @@ describe('corrected onboarding order and durable resume',()=>{
     await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Create the room'})));
     await waitFor(()=>expect(api.addRoomMember).toHaveBeenCalledTimes(2));
     expect(api.createProject).toHaveBeenCalledWith('c1','Developer API',UNSET_OBJECTIVE);
-    expect(api.addRoomMember).toHaveBeenCalledWith('c1','r1','p-Coleman','');
-    expect(api.addRoomMember).toHaveBeenCalledWith('c1','r1','p-JJ','');
+    expect(api.addRoomMember).toHaveBeenCalledWith('c1','r1','p-Agent A','');
+    expect(api.addRoomMember).toHaveBeenCalledWith('c1','r1','p-Agent B','');
     expect(await screen.findAllByRole('button',{name:'Connect this agent'})).toHaveLength(2);
     expect(screen.getByRole('button',{name:'Next: set the first objective'})).toBeDisabled();
   });
 
   it('remains at Connect while any required agent is Never connected',async()=>{
-    arrive(withWorkspace,[agent('Coleman','connected'),agent('JJ')],[room()]);
+    arrive(withWorkspace,[agent('Agent A','connected'),agent('Agent B')],[room()]);
     show();
     expect(await screen.findByRole('heading',{name:'Connect your agents'})).toBeVisible();
     expect(screen.getByRole('button',{name:'Next: set the first objective'})).toBeDisabled();
@@ -84,7 +84,7 @@ describe('corrected onboarding order and durable resume',()=>{
   });
 
   it('moves to First Objective once every required agent has genuinely appeared',async()=>{
-    arrive(withWorkspace,[agent('Coleman','connected'),agent('JJ','stale')],[room()]);
+    arrive(withWorkspace,[agent('Agent A','connected'),agent('Agent B','stale')],[room()]);
     show();
     expect(await screen.findByRole('heading',{name:'Set the first objective'})).toBeVisible();
     fireEvent.change(screen.getByLabelText('What are they trying to achieve?'),{target:{value:'Ship the API'}});
@@ -95,7 +95,7 @@ describe('corrected onboarding order and durable resume',()=>{
   });
 
   it('an existing real objective enters the ready-room path instead of restarting onboarding',async()=>{
-    arrive(withWorkspace,[agent('Coleman')],[room('Ship the API')]);
+    arrive(withWorkspace,[agent('Agent A')],[room('Ship the API')]);
     show();
     expect(await screen.findByRole('heading',{name:'Northwind is ready'})).toBeVisible();
     expect(screen.queryByRole('heading',{name:'Connect your agents'})).not.toBeInTheDocument();
@@ -106,7 +106,7 @@ describe('corrected onboarding order and durable resume',()=>{
 
 describe('the reused enrollment component',()=>{
   it('shows a real single-use code only after the room exists',async()=>{
-    arrive(withWorkspace,[agent('Coleman')],[room()]);
+    arrive(withWorkspace,[agent('Agent A')],[room()]);
     vi.mocked(api.createEnrollmentCode).mockResolvedValue({enrollment_code:'MPAI-82HT-KT87-BZ74',expires_at:new Date(Date.now()+900_000).toISOString()});
     show();
     fireEvent.click(await screen.findByRole('button',{name:'Connect this agent'}));
@@ -121,7 +121,7 @@ describe('the reused enrollment component',()=>{
   });
 
   it('reports enrollment-code failures rather than appearing to succeed',async()=>{
-    arrive(withWorkspace,[agent('Coleman')],[room()]);
+    arrive(withWorkspace,[agent('Agent A')],[room()]);
     vi.mocked(api.createEnrollmentCode).mockRejectedValue(new api.ApiError('Agent not found','agent_not_found',404));
     show();
     fireEvent.click(await screen.findByRole('button',{name:'Connect this agent'}));

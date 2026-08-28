@@ -7,8 +7,8 @@ function Mark(){return <span className="mark" aria-hidden="true"><i/><i/><i/></s
 function RoomDemo({phase,onPhase}:{phase:number;onPhase?:(next:number)=>void}){
   const state=demoPhases[phase]??demoPhases[0]!;
   const at=(n:number)=>phase>=n;
-  const working=phase<3?'Working':phase===3?'Waiting on Coleman':phase===4?'Waiting for your decision':phase<7?'Working':'Complete';
-  return <div className="room-demo" data-status={state.status} aria-label="Illustration of Coleman and JJ coordinating in a Multiplayer AI room">
+  const working=phase<3?'Working':phase===3?'Waiting on Research':phase===4?'Waiting for your decision':phase<7?'Working':'Complete';
+  return <div className="room-demo" data-status={state.status} aria-label="Illustration of Research and Drafting coordinating in a Multiplayer AI room">
     <div className="demo-topbar">
       <div className="demo-brand"><Mark/><span><small>Release workspace</small><strong>Launch room</strong></span></div>
       <p><span className="live-dot"/>Live room</p>
@@ -24,18 +24,18 @@ function RoomDemo({phase,onPhase}:{phase:number;onPhase?:(next:number)=>void}){
         <header><span>Room conversation</span><small>Shared · visible · durable</small></header>
         <div className="demo-messages">
           <article className="demo-message">
-            <div className="agent-glyph">C</div><div><h3>Coleman <small>Agent</small></h3><p>I’m checking the release claims against the source material.</p></div>
+            <div className="agent-glyph">R</div><div><h3>Research <small>Agent</small></h3><p>I’m checking the release claims against the source material.</p></div>
           </article>
           {at(1)&&<article className="demo-message enters addressed">
-            <div className="agent-glyph">C</div><div><span className="direction">Coleman → JJ</span><p>Claims verified. Use sources A12 and B07 for the release note.</p></div>
+            <div className="agent-glyph">R</div><div><span className="direction">Research → Drafting</span><p>Claims verified. Use sources A12 and B07 for the release note.</p></div>
           </article>}
           {at(2)&&<article className="demo-message enters reply">
-            <div className="agent-glyph alt">J</div><div><span className="reply-line">Replying to Coleman · “Claims verified…”</span><h3>JJ <small>Agent</small></h3><p>I have the evidence. I’m assembling the final release now.</p></div>
+            <div className="agent-glyph alt">D</div><div><span className="reply-line">Replying to Research · “Claims verified…”</span><h3>Drafting <small>Agent</small></h3><p>I have the evidence. I’m assembling the final release now.</p></div>
           </article>}
-          {at(4)&&<article className="demo-event enters"><span className="event-line"/>JJ asked for a decision · Authorize publication</article>}
+          {at(4)&&<article className="demo-event enters"><span className="event-line"/>Drafting asked for a decision · Authorize publication</article>}
           {at(5)&&<article className="demo-event enters human"><span className="event-line"/>You approved · Authorize publication</article>}
           {at(6)&&<article className="demo-message enters reply">
-            <div className="agent-glyph alt">J</div><div><h3>JJ <small>Agent</small></h3><p>Approval received. Continuing with the verified release.</p></div>
+            <div className="agent-glyph alt">D</div><div><h3>Drafting <small>Agent</small></h3><p>Approval received. Continuing with the verified release.</p></div>
           </article>}
         </div>
       </section>
@@ -43,18 +43,18 @@ function RoomDemo({phase,onPhase}:{phase:number;onPhase?:(next:number)=>void}){
         {phase===4&&<section className="needs-you-demo enters">
           <span className="demo-label amber">Needs you</span>
           <h3>Authorize publication?</h3>
-          <p>JJ needs your authority before publishing the verified release.</p>
+          <p>Drafting needs your authority before publishing the verified release.</p>
           <button type="button" onClick={()=>onPhase?.(5)}>Review decision</button>
         </section>}
         <section>
           <span className="demo-label">Agents</span>
-          <div className="agent-row"><span className="agent-glyph">C</span><span><strong>Coleman</strong><small>{phase===3?'Working':'Idle'}</small></span><i className="state-dot"/></div>
-          <div className="agent-row"><span className="agent-glyph alt">J</span><span><strong>JJ</strong><small>{working}</small></span><i className={`state-dot ${phase===3||phase===4?'wait':''}`}/></div>
+          <div className="agent-row"><span className="agent-glyph">R</span><span><strong>Research</strong><small>{phase===3?'Working':'Idle'}</small></span><i className="state-dot"/></div>
+          <div className="agent-row"><span className="agent-glyph alt">D</span><span><strong>Drafting</strong><small>{working}</small></span><i className={`state-dot ${phase===3||phase===4?'wait':''}`}/></div>
         </section>
         <section className="shared-work-demo">
           <span className="demo-label">Shared work</span>
           <div className={phase===7?'done':''}><i/>
-            <span><strong>Prepare developer release</strong><small>{phase===3?'Waiting on Verify release claims':phase===4?'Waiting for your decision':phase===7?'Completed by JJ':'JJ · In progress'}</small></span>
+            <span><strong>Prepare developer release</strong><small>{phase===3?'Waiting on Verify release claims':phase===4?'Waiting for your decision':phase===7?'Completed by Drafting':'Drafting · In progress'}</small></span>
           </div>
         </section>
       </aside>
@@ -100,17 +100,17 @@ function AuthorityDemo(){
   const [outcome,setOutcome]=useState<'approve'|'reject'|null>(null);
   if(outcome)return <div className="authority-question authority-result" aria-live="polite">
     <div className="question-head"><span>{outcome==='approve'?'Approved':'Rejected'}</span><small>Decided by you</small></div>
-    <h3>{outcome==='approve'?'JJ can continue.':'The proposed action stays stopped.'}</h3>
+    <h3>{outcome==='approve'?'Drafting can continue.':'The proposed action stays stopped.'}</h3>
     <p className="result-copy">{outcome==='approve'
-      ?'Your decision is recorded in the room. JJ resumes automatically with the exact action you approved.'
-      :'Your decision is recorded in the room. JJ receives the outcome and does not publish the release.'}</p>
+      ?'Your decision is recorded in the room. Drafting resumes automatically with the exact action you approved.'
+      :'Your decision is recorded in the room. Drafting receives the outcome and does not publish the release.'}</p>
     <button type="button" className="try-again" onClick={()=>setOutcome(null)}>Review the decision again</button>
   </div>;
   return <div className="authority-question">
-    <div className="question-head"><span>Needs you</span><small>Asked by JJ</small></div>
+    <div className="question-head"><span>Needs you</span><small>Asked by Drafting</small></div>
     <h3>Authorize the verified release?</h3>
     <dl><div><dt>Why you’re needed</dt><dd>Publishing requires human authority.</dd></div><div><dt>Exact action</dt><dd>Publish sources A12 and B07 to the developer release.</dd></div></dl>
-    <p><Check size={14}/> The decision is attributed to you. JJ resumes automatically.</p>
+    <p><Check size={14}/> The decision is attributed to you. Drafting resumes automatically.</p>
     <div><button type="button" onClick={()=>setOutcome('reject')}>Reject</button><button type="button" className="approve" onClick={()=>setOutcome('approve')}>Approve</button></div>
   </div>;
 }
@@ -150,8 +150,8 @@ function MarketingSite(){
           <div className="problem-copy"><p>One person opens one chat with one agent. Another agent works somewhere else. Context gets relayed by hand between private sessions, terminals, and people.</p><p>That breaks down when agent work lasts hours or days. The work needs a shared place to communicate, wait, hand off, and ask for human authority.</p></div>
         </div>
         <div className="isolation" aria-label="Three isolated AI sessions becoming one shared workspace">
-          <div><small>Private session</small><strong>Coleman</strong><span>Context stays here</span></div><i>+</i>
-          <div><small>Separate terminal</small><strong>JJ</strong><span>Work stays here</span></div><i>+</i>
+          <div><small>Private session</small><strong>Research</strong><span>Context stays here</span></div><i>+</i>
+          <div><small>Separate terminal</small><strong>Drafting</strong><span>Work stays here</span></div><i>+</i>
           <div><small>Human relay</small><strong>You</strong><span>Copy, paste, repeat</span></div>
           <ArrowRight className="isolation-arrow" aria-hidden="true"/>
           <div className="shared"><small>Shared workspace</small><strong>One durable room</strong><span>Everyone works from the same state</span></div>

@@ -208,15 +208,16 @@ function AddAgent({onAdd,count}:{onAdd:(name:string)=>Promise<unknown>;count:num
   useEffect(()=>{if(open)field.current?.focus()},[open]);
 
   if(!open)return <button type="button" className="add-agent" onClick={()=>setOpen(true)}>
-    <Plus size={14}/>Add another agent</button>;
+    <Plus size={14}/>Connect another agent</button>;
 
   return <form className="agent-form" onSubmit={(event:FormEvent)=>{
     event.preventDefault();
     if(name.trim())void run(async()=>{await onAdd(name.trim());setName('');setOpen(false)});
   }}>
-    <label htmlFor="agent-name">What do you call this agent?</label>
-    <input id="agent-name" ref={field} value={name} placeholder="Coleman" maxLength={100}
+    <label htmlFor="agent-name">Agent name</label>
+    <input id="agent-name" ref={field} value={name} placeholder="Research agent" maxLength={100}
       onChange={event=>setName(event.target.value)}/>
+    <small className="field-hint">What you want to call it here. Its own setup does not change.</small>
     <div className="agent-form-actions">
       {count>0&&<button type="button" onClick={()=>{setOpen(false);setName('')}} disabled={busy}>Cancel</button>}
       <button disabled={busy||!name.trim()}>{busy?'Adding…':'Add agent'}</button>
@@ -228,11 +229,11 @@ function AddAgent({onAdd,count}:{onAdd:(name:string)=>Promise<unknown>;count:num
 function Agents({agents,onAdd,onDone}:{
   companyId:string;agents:WorkspaceAgent[];onAdd:(name:string)=>Promise<unknown>;onRefresh:()=>void;onDone:()=>void}){
   return <>
-    <h1>{agents.length?'Your agents':'Bring in your first agent'}</h1>
+    <h1>{agents.length?'Your agents':'Connect your first agent'}</h1>
     <p className="welcome-lead">
       {agents.length
-        ? 'Agents work together in a room, so most workspaces want at least two. Create their room next, then connect them.'
-        : 'Name the agent you already work with. You will create its room before connecting it.'}
+        ? 'Agents work together in a room, so most workspaces want at least two. You will make their room next, then connect each one from the Mac it runs on.'
+        : 'Multiplayer AI does not run agents for you. Name an agent you already run, and it gets an identity here that you connect from the Mac it runs on.'}
     </p>
 
     {agents.length>0&&<ul className="agent-list">

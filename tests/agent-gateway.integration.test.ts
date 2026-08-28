@@ -142,8 +142,8 @@ describe("Agent Gateway v1",()=>{
 
  it("does not consume a valid enrollment until a usable room binding can be returned, and redeems atomically once",async()=>{
   const f=await companyFixture("Atomic Enrollment");
-  const unroomed=(await post(`/v1/companies/${f.company.id}/agents`,{name:"Coleman"},{"x-principal-id":f.owner.principal_id})).json();
-  const issued=await post(`/v1/companies/${f.company.id}/agents/${unroomed.principal_id}/enrollments`,{label:"Coleman runtime"},{"x-principal-id":f.owner.principal_id});
+  const unroomed=(await post(`/v1/companies/${f.company.id}/agents`,{name:"Agent A"},{"x-principal-id":f.owner.principal_id})).json();
+  const issued=await post(`/v1/companies/${f.company.id}/agents/${unroomed.principal_id}/enrollments`,{label:"Agent A runtime"},{"x-principal-id":f.owner.principal_id});
   const code=issued.json().enrollment_code as string;
 
   const before=await pool.query(`SELECT count(*)::int count FROM external_agent_credentials WHERE company_id=$1 AND agent_principal_id=$2`,[f.company.id,unroomed.principal_id]);
@@ -212,20 +212,20 @@ describe("Agent Gateway v1",()=>{
  });
 
  it("lets one agent reply explicitly to another agent's message",async()=>{
-  const f=await companyFixture(),a=await agent(f,"Coleman","coleman"),b=await agent(f,"JJ","jj");
-  const coleman=await external(a,f.room.id),jj=await external(b,f.room.id);
-  const findings=await coleman.message("Findings: the constraint is in the authorization boundary.","coleman-findings",b.principal_id);
+  const f=await companyFixture(),a=await agent(f,"Agent A","agentA"),b=await agent(f,"Agent B","agentB");
+  const agentA=await external(a,f.room.id),agentB=await external(b,f.room.id);
+  const findings=await agentA.message("Findings: the constraint is in the authorization boundary.","agentA-findings",b.principal_id);
   expect(findings.status).toBe(200);
 
   // Agent-to-agent coordination is a stated relationship, not adjacency in the transcript.
-  const reply=await jj.message("Agreed. Testing option two against the Gateway.","jj-reply",a.principal_id,findings.body.id);
+  const reply=await agentB.message("Agreed. Testing option two against the Gateway.","agentB-reply",a.principal_id,findings.body.id);
   expect(reply.status).toBe(200);
   expect(reply.body.in_reply_to_message_id).toBe(findings.body.id);
 
   const stored=await pool.query(`SELECT sender_principal_id,in_reply_to_message_id FROM messages WHERE id=$1`,[reply.body.id]);
   expect(stored.rows[0]).toEqual({sender_principal_id:b.principal_id,in_reply_to_message_id:findings.body.id});
 
-  const snapshot=await jj.snapshot();
+  const snapshot=await agentB.snapshot();
   expect(snapshot.body.messages.at(-1).in_reply_to_message_id).toBe(findings.body.id);
  });
 

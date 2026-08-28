@@ -7,21 +7,21 @@ import {ApiError} from '../apps/web/src/api';
 import type {CompanyAgent,Member,Task} from '../apps/web/src/types';
 
 const HUMAN='00000000-0000-4000-8000-0000000000f1';
-const COLEMAN='00000000-0000-4000-8000-0000000000c1';
-const JJ='00000000-0000-4000-8000-0000000000c2';
+const AGENT_A='00000000-0000-4000-8000-0000000000c1';
+const AGENT_B='00000000-0000-4000-8000-0000000000c2';
 
 const members:Member[]=[
   {principal_id:HUMAN,display_name:'Rocco',kind:'human',role:'manager',responsibilities:''},
-  {principal_id:COLEMAN,display_name:'Coleman',kind:'agent',role:'worker_agent',responsibilities:''},
-  {principal_id:JJ,display_name:'JJ',kind:'agent',role:'worker_agent',responsibilities:''},
+  {principal_id:AGENT_A,display_name:'Agent A',kind:'agent',role:'worker_agent',responsibilities:''},
+  {principal_id:AGENT_B,display_name:'Agent B',kind:'agent',role:'worker_agent',responsibilities:''},
 ];
 const agents=members.filter(m=>m.kind==='agent');
 
 const task=(o:Partial<Task>&{id:string}):Task=>({
   title:'Publish the developer documentation',description:'',status:'open',
-  assignee_principal_id:COLEMAN,version:2,updated_at:new Date().toISOString(),...o});
-const design=task({id:'design',title:'Design the published quota contract',assignee_principal_id:JJ});
-const blocked=task({id:'docs',blocked_by:[{task_id:'design',title:'Design the published quota contract',status:'open',assignee_principal_id:JJ}]});
+  assignee_principal_id:AGENT_A,version:2,updated_at:new Date().toISOString(),...o});
+const design=task({id:'design',title:'Design the published quota contract',assignee_principal_id:AGENT_B});
+const blocked=task({id:'docs',blocked_by:[{task_id:'design',title:'Design the published quota contract',status:'open',assignee_principal_id:AGENT_B}]});
 
 function stubActions(over:Partial<WorkActions>={}):WorkActions{
   const noop=vi.fn(async()=>({}));
@@ -38,22 +38,22 @@ describe('Stage 6 shared work',()=>{
     work();
     const row=screen.getByText('Publish the developer documentation').closest('li')!;
     // The peer is named because the blocking work belongs to someone else.
-    expect(within(row).getByText(/Coleman · Waiting on JJ/)).toBeVisible();
+    expect(within(row).getByText(/Agent A · Waiting on Agent B/)).toBeVisible();
     // And the blocking work itself is named, from the recorded dependency.
-    expect(within(row).getByText('Design the published quota contract — JJ · Open')).toBeVisible();
+    expect(within(row).getByText('Design the published quota contract — Agent B · Open')).toBeVisible();
   });
 
   it('names the work rather than the person when the blocker has the same owner',()=>{
-    const own=task({id:'docs',blocked_by:[{task_id:'design',title:'Earlier step',status:'open',assignee_principal_id:COLEMAN}]});
+    const own=task({id:'docs',blocked_by:[{task_id:'design',title:'Earlier step',status:'open',assignee_principal_id:AGENT_A}]});
     work({tasks:[own]});
-    expect(screen.getByText(/Coleman · Waiting on earlier work/)).toBeVisible();
+    expect(screen.getByText(/Agent A · Waiting on earlier work/)).toBeVisible();
   });
 
   it('stops calling work blocked once its dependency has been overridden',()=>{
     const overridden=task({id:'docs',status:'in_progress',dependency_override_at:new Date().toISOString(),
-      blocked_by:[{task_id:'design',title:'Design the published quota contract',status:'open',assignee_principal_id:JJ}]});
+      blocked_by:[{task_id:'design',title:'Design the published quota contract',status:'open',assignee_principal_id:AGENT_B}]});
     work({tasks:[overridden]});
-    expect(screen.getByText(/Coleman · In progress/)).toBeVisible();
+    expect(screen.getByText(/Agent A · In progress/)).toBeVisible();
     expect(screen.queryByText(/Waiting on/)).not.toBeInTheDocument();
     expect(screen.getByText(/Overridden by a manager and recorded/)).toBeVisible();
   });
@@ -78,7 +78,7 @@ describe('Stage 6 shared work',()=>{
     expect(screen.getByText(/recorded in the room as your decision, with the reason you give/)).toBeVisible();
     // The unfinished work being set aside is named there, not summarised as a count.
     const panel=screen.getByRole('region',{name:'Override dependency'});
-    expect(within(panel).getByText('Design the published quota contract — JJ · Open')).toBeVisible();
+    expect(within(panel).getByText('Design the published quota contract — Agent B · Open')).toBeVisible();
     // Nothing here reads as an ordinary "continue anyway" affordance.
     const commit=screen.getByRole('button',{name:'Override and record'});
     expect(screen.queryByRole('button',{name:/continue/i})).not.toBeInTheDocument();
@@ -109,7 +109,7 @@ describe('Stage 6 shared work',()=>{
 
   it('gives a contributor their own work without a manager’s authority',()=>{
     const mine=task({id:'docs',assignee_principal_id:HUMAN,
-      blocked_by:[{task_id:'design',title:'Design the published quota contract',status:'open',assignee_principal_id:JJ}]});
+      blocked_by:[{task_id:'design',title:'Design the published quota contract',status:'open',assignee_principal_id:AGENT_B}]});
     work({tasks:[mine],canManage:false});
     fireEvent.click(screen.getByRole('button',{name:'Manage Publish the developer documentation'}));
     // Their own work can be moved…
@@ -127,25 +127,25 @@ describe('Stage 6 shared work',()=>{
 });
 
 describe('Stage 6 agent supervision',()=>{
-  const coleman=members[1]!;
-  const record:CompanyAgent={agent_id:'agent-1',principal_id:COLEMAN,display_name:'Coleman',status:'active'};
+  const agentA=members[1]!;
+  const record:CompanyAgent={agent_id:'agent-1',principal_id:AGENT_A,display_name:'Agent A',status:'active'};
   const controls=(props:Partial<Parameters<typeof AgentControls>[0]>={})=>render(
-    <AgentControls member={coleman} agent={record} canManage actions={stubActions()} onMessage={vi.fn()} {...props}/>);
+    <AgentControls member={agentA} agent={record} canManage actions={stubActions()} onMessage={vi.fn()} {...props}/>);
 
   it('stays out of the way until it is asked for',()=>{
     controls();
     expect(screen.queryByRole('button',{name:/^Pause/})).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button',{name:'Supervise Coleman'}));
-    expect(screen.getByRole('button',{name:'Pause Coleman'})).toBeVisible();
+    fireEvent.click(screen.getByRole('button',{name:'Supervise Agent A'}));
+    expect(screen.getByRole('button',{name:'Pause Agent A'})).toBeVisible();
   });
 
   it('claims only what the engine can guarantee about pausing',()=>{
     controls();
-    fireEvent.click(screen.getByRole('button',{name:'Supervise Coleman'}));
-    fireEvent.click(screen.getByRole('button',{name:'Pause Coleman'}));
+    fireEvent.click(screen.getByRole('button',{name:'Supervise Agent A'}));
+    fireEvent.click(screen.getByRole('button',{name:'Pause Agent A'}));
     const note=screen.getByText(/New work stops now/);
     // What is guaranteed: nothing it sends back is accepted.
-    expect(note).toHaveTextContent('nothing Coleman sends back will be accepted');
+    expect(note).toHaveTextContent('nothing Agent A sends back will be accepted');
     // What is not: that a process on another machine stopped on command.
     expect(note).toHaveTextContent('may still be finishing the step it started');
     expect(note.textContent).not.toMatch(/stopped immediately|has stopped|halted/i);
@@ -153,14 +153,14 @@ describe('Stage 6 agent supervision',()=>{
 
   it('offers resume for a paused agent, without implying cancelled work returns',()=>{
     controls({agent:{...record,status:'paused'}});
-    fireEvent.click(screen.getByRole('button',{name:'Supervise Coleman'}));
-    expect(screen.getByRole('button',{name:'Resume Coleman'})).toBeVisible();
+    fireEvent.click(screen.getByRole('button',{name:'Supervise Agent A'}));
+    expect(screen.getByRole('button',{name:'Resume Agent A'})).toBeVisible();
     expect(screen.getByText(/Resuming does not restart what was cancelled/)).toBeVisible();
   });
 
   it('says plainly when an agent cannot be paused from here',()=>{
     controls({agent:undefined});
-    fireEvent.click(screen.getByRole('button',{name:'Supervise Coleman'}));
+    fireEvent.click(screen.getByRole('button',{name:'Supervise Agent A'}));
     expect(screen.getByText(/not registered to the workspace/)).toBeVisible();
     expect(screen.queryByRole('button',{name:/^Pause/})).not.toBeInTheDocument();
   });

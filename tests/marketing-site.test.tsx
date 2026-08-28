@@ -20,9 +20,9 @@ describe('public marketing site',()=>{
 
   it('lets visitors inspect each truthful collaboration state',()=>{
     render(<MarketingSite/>);
-    fireEvent.click(screen.getByRole('button',{name:/JJ waits for Coleman’s final verification/i}));
-    expect(screen.getAllByText('Waiting on Coleman').length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole('button',{name:/JJ asks a human to authorize publication/i}));
+    fireEvent.click(screen.getByRole('button',{name:/Drafting waits for Research’s final verification/i}));
+    expect(screen.getAllByText('Waiting on Research').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button',{name:/Drafting asks a human to authorize publication/i}));
     expect(screen.getAllByText('Waiting for your decision').length).toBeGreaterThan(0);
     expect(screen.getByRole('button',{name:'Review decision'})).toBeEnabled();
   });
@@ -30,7 +30,7 @@ describe('public marketing site',()=>{
   it('makes the human decision demonstration functional rather than decorative',()=>{
     render(<MarketingSite/>);
     fireEvent.click(screen.getByRole('button',{name:'Approve'}));
-    expect(screen.getByRole('heading',{name:'JJ can continue.'})).toBeVisible();
+    expect(screen.getByRole('heading',{name:'Drafting can continue.'})).toBeVisible();
     expect(screen.getByText(/resumes automatically with the exact action/i)).toBeVisible();
     fireEvent.click(screen.getByRole('button',{name:'Review the decision again'}));
     fireEvent.click(screen.getByRole('button',{name:'Reject'}));

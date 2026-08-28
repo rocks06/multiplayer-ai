@@ -49,7 +49,7 @@ describe("Explicit human actions", () => {
   describe("resume agent", () => {
     it("restores a paused agent's authority and its Gateway access", async () => {
       const f = await fixture();
-      const agent = await f.makeAgent("Coleman");
+      const agent = await f.makeAgent("Agent A");
 
       const client = new FakeExternalAgentClient(baseUrl); clients.add(client);
       client.credentialToken = agent.credential.credential_token; client.roomId = f.room.id;
@@ -74,7 +74,7 @@ describe("Explicit human actions", () => {
 
     it("is idempotent, manager-only, and refuses an agent that is not paused", async () => {
       const f = await fixture();
-      const agent = await f.makeAgent("Coleman");
+      const agent = await f.makeAgent("Agent A");
       await call("POST", `${f.base}/agents/${agent.agent_id}/pause`, {}, asActor(f.owner.principal_id));
 
       // A contributor cannot restore an agent a manager withdrew.
@@ -102,19 +102,19 @@ describe("Explicit human actions", () => {
   describe("reassign task", () => {
     it("hands work to another principal and records both ends of the move", async () => {
       const f = await fixture();
-      const coleman = await f.makeAgent("Coleman"), jj = await f.makeAgent("JJ");
-      const task = (await call("POST", `${f.base}/tasks`, { title: "Authentication investigation", description: "", assignee_principal_id: coleman.principal_id }, asActor(f.owner.principal_id))).json();
+      const agentA = await f.makeAgent("Agent A"), agentB = await f.makeAgent("Agent B");
+      const task = (await call("POST", `${f.base}/tasks`, { title: "Authentication investigation", description: "", assignee_principal_id: agentA.principal_id }, asActor(f.owner.principal_id))).json();
 
-      const moved = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: jj.principal_id, expected_version: 1 }, asActor(f.owner.principal_id));
+      const moved = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: agentB.principal_id, expected_version: 1 }, asActor(f.owner.principal_id));
       expect(moved.statusCode).toBe(200);
-      expect(moved.json()).toEqual(expect.objectContaining({ assignee_principal_id: jj.principal_id, previous_assignee_principal_id: coleman.principal_id, version: 2 }));
+      expect(moved.json()).toEqual(expect.objectContaining({ assignee_principal_id: agentB.principal_id, previous_assignee_principal_id: agentA.principal_id, version: 2 }));
 
       const stored = await pool.query(`SELECT assignee_principal_id,version,status FROM tasks WHERE id=$1`, [task.id]);
-      expect(stored.rows[0]).toEqual({ assignee_principal_id: jj.principal_id, version: 2, status: "open" });
+      expect(stored.rows[0]).toEqual({ assignee_principal_id: agentB.principal_id, version: 2, status: "open" });
 
       const event = await pool.query(`SELECT event_type,entity_version,payload FROM room_events WHERE entity_id=$1 AND event_type='task.reassigned'`, [task.id]);
       expect(event.rows[0].entity_version).toBe(2);
-      expect(event.rows[0].payload.previous_assignee_principal_id).toBe(coleman.principal_id);
+      expect(event.rows[0].payload.previous_assignee_principal_id).toBe(agentA.principal_id);
 
       // Unassigning is the same command with no principal.
       const cleared = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: null, expected_version: 2 }, asActor(f.owner.principal_id));
@@ -123,9 +123,9 @@ describe("Explicit human actions", () => {
 
     it("keeps optimistic concurrency, membership, and terminal states", async () => {
       const f = await fixture();
-      const coleman = await f.makeAgent("Coleman");
+      const agentA = await f.makeAgent("Agent A");
       const outsider = (await call("POST", `/v1/companies/${f.company.id}/humans`, { email: `out-${crypto.randomUUID()}@example.com`, display_name: "Outsider" })).json();
-      const task = (await call("POST", `${f.base}/tasks`, { title: "Work", description: "", assignee_principal_id: coleman.principal_id }, asActor(f.owner.principal_id))).json();
+      const task = (await call("POST", `${f.base}/tasks`, { title: "Work", description: "", assignee_principal_id: agentA.principal_id }, asActor(f.owner.principal_id))).json();
 
       const stale = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: f.worker.principal_id, expected_version: 99 }, asActor(f.owner.principal_id));
       expect(stale.json().error.code).toBe("version_conflict");
@@ -144,12 +144,12 @@ describe("Explicit human actions", () => {
 
     it("replays a reassignment under the same key without moving the task twice", async () => {
       const f = await fixture();
-      const coleman = await f.makeAgent("Coleman"), jj = await f.makeAgent("JJ");
-      const task = (await call("POST", `${f.base}/tasks`, { title: "Work", description: "", assignee_principal_id: coleman.principal_id }, asActor(f.owner.principal_id))).json();
+      const agentA = await f.makeAgent("Agent A"), agentB = await f.makeAgent("Agent B");
+      const task = (await call("POST", `${f.base}/tasks`, { title: "Work", description: "", assignee_principal_id: agentA.principal_id }, asActor(f.owner.principal_id))).json();
 
       const key = crypto.randomUUID();
-      const first = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: jj.principal_id, expected_version: 1 }, asActor(f.owner.principal_id, key));
-      const replay = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: jj.principal_id, expected_version: 1 }, asActor(f.owner.principal_id, key));
+      const first = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: agentB.principal_id, expected_version: 1 }, asActor(f.owner.principal_id, key));
+      const replay = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: agentB.principal_id, expected_version: 1 }, asActor(f.owner.principal_id, key));
       expect(replay.json()).toEqual(first.json());
 
       expect((await pool.query(`SELECT version FROM tasks WHERE id=$1`, [task.id])).rows[0].version).toBe(2);
