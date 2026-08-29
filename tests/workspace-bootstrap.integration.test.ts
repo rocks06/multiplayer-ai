@@ -4,6 +4,7 @@ import { buildApp } from "../apps/api/src/app.js";
 import { FakeExternalAgentClient } from "./fake-external-agent.js";
 import { truncateAll } from "./support/database.js";
 import type { SignInLink, SignInLinkDelivery } from "../apps/api/src/auth/auth-service.js";
+import { seedCompany, seedHuman } from "./support/bootstrap.js";
 
 const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
@@ -24,8 +25,8 @@ describe("Workspace bootstrap and agent listing", () => {
   async function signedInUser(displayName = "Rocco") {
     const email = `user-${crypto.randomUUID()}@example.com`;
     // The unauthenticated developer bootstrap still exists; a user record is all that is needed.
-    const seed = (await call("POST", "/v1/companies", { name: "seed" })).json();
-    const human = (await call("POST", `/v1/companies/${seed.id}/humans`, { email, display_name: displayName })).json();
+    const seed = (await seedCompany(pool, ({ name: "seed" }).name));
+    const human = (await seedHuman(pool, seed.id, ({ email, display_name: displayName }).email, ({ email, display_name: displayName }).display_name));
     await call("POST", "/v1/auth/sign-in-links", { email });
     const session = await call("POST", "/v1/auth/sessions", { token: delivery.delivered.at(-1)!.token });
     const raw = session.headers["set-cookie"];

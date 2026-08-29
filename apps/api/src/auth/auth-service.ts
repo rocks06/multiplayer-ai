@@ -70,6 +70,40 @@ export class AuthService {
   }
 
   /**
+   * Creating an account, which is the only way a person can arrive here without already existing.
+   *
+   * A brand-new address gets a user record; a known one gets nothing new. Either way a sign-in
+   * link is delivered and the caller is told exactly the same thing, so this cannot be used to
+   * discover whether an address has an account. No company is created — naming a workspace is an
+   * authenticated act that belongs to onboarding, after the link is redeemed.
+   */
+  async signUp(input: { name: string; email: string }) {
+    const email = input.email.trim().toLowerCase();
+    const name = input.name.trim();
+    const existing = await this.pool.query<{ id: string; email: string }>(
+      `SELECT id,email FROM users WHERE lower(email)=lower($1)`, [email]);
+
+    if (existing.rowCount) {
+      // Already an account: behave exactly as asking for a sign-in link does.
+      await this.delivery.deliver(await this.mintToken(existing.rows[0]!.id, existing.rows[0]!.email));
+      return { status: "accepted" as const };
+    }
+
+    const userId = uuidv7();
+    // A race between two signups for the same address must not create two users; the unique
+    // index on email decides it, and the loser simply signs in as the winner's account.
+    const inserted = await this.pool.query<{ id: string; email: string }>(
+      `INSERT INTO users(id,email,display_name) VALUES($1,$2,$3)
+       ON CONFLICT (email) DO NOTHING RETURNING id,email`, [userId, email, name]);
+    const user = inserted.rowCount
+      ? inserted.rows[0]!
+      : (await this.pool.query<{ id: string; email: string }>(`SELECT id,email FROM users WHERE lower(email)=lower($1)`, [email])).rows[0]!;
+
+    await this.delivery.deliver(await this.mintToken(user.id, user.email));
+    return { status: "accepted" as const };
+  }
+
+  /**
    * Authorized issuance for the developer beta, where there is no email transport: an active
    * member of the company mints a link for another member of the same company and reads it
    * once from the response. The raw token is never persisted.

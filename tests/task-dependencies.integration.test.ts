@@ -3,6 +3,7 @@ import * as pg from "pg";
 import { readFile } from "node:fs/promises";
 import { buildApp } from "../apps/api/src/app.js";
 import { truncateAll } from "./support/database.js";
+import { seedCompany, seedHuman } from "./support/bootstrap.js";
 
 const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
@@ -15,9 +16,9 @@ describe("Task dependencies", () => {
   const asActor = (principalId: string, key: string = crypto.randomUUID()) => ({ "x-principal-id": principalId, "idempotency-key": key });
 
   async function fixture() {
-    const company = (await call("POST", "/v1/companies", { name: "Dep Co" })).json();
-    const owner = (await call("POST", `/v1/companies/${company.id}/humans`, { email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" })).json();
-    const worker = (await call("POST", `/v1/companies/${company.id}/humans`, { email: `worker-${crypto.randomUUID()}@example.com`, display_name: "Worker" })).json();
+    const company = (await seedCompany(pool, ({ name: "Dep Co" }).name));
+    const owner = (await seedHuman(pool, company.id, ({ email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" }).email, ({ email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" }).display_name));
+    const worker = (await seedHuman(pool, company.id, ({ email: `worker-${crypto.randomUUID()}@example.com`, display_name: "Worker" }).email, ({ email: `worker-${crypto.randomUUID()}@example.com`, display_name: "Worker" }).display_name));
     const project = (await call("POST", `/v1/companies/${company.id}/projects`, { name: "P", objective: "O" }, { "x-principal-id": owner.principal_id })).json();
     const room = (await call("POST", `/v1/companies/${company.id}/projects/${project.id}/rooms`, { name: "R", responsibilities: "Own it" }, { "x-principal-id": owner.principal_id })).json();
     await call("POST", `/v1/companies/${company.id}/rooms/${room.id}/members`, { principal_id: worker.principal_id, role: "contributor", responsibilities: "Do it" }, asActor(owner.principal_id, `join-${worker.principal_id}`));

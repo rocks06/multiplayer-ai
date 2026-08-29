@@ -5,6 +5,7 @@ import {buildApp} from "../apps/api/src/app.js";
 import {FakeExternalAgentClient} from "./fake-external-agent.js";
 import type {RealtimeOptions} from "../apps/api/src/realtime/realtime-hub.js";
 import { truncateAll } from "./support/database.js";
+import { seedCompany, seedHuman } from "./support/bootstrap.js";
 
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL;
@@ -18,8 +19,8 @@ describe("Agent Gateway v1",()=>{
  async function request(method:string,url:string,payload?:unknown,headers:Record<string,string>={}){return await app.inject({method:method as any,url,payload:payload as any,headers})}
  async function post(url:string,payload:unknown,headers:Record<string,string>={}){return request("POST",url,payload,headers)}
  async function companyFixture(name="Gateway Co"){
-  const company=(await post("/v1/companies",{name})).json();
-  const owner=(await post(`/v1/companies/${company.id}/humans`,{email:`${crypto.randomUUID()}@example.com`,display_name:`${name} Owner`})).json();
+  const company=(await seedCompany(pool, ({name}).name));
+  const owner=(await seedHuman(pool, company.id, ({email:`${crypto.randomUUID()}@example.com`,display_name:`${name} Owner`}).email, ({email:`${crypto.randomUUID()}@example.com`,display_name:`${name} Owner`}).display_name));
   const project=(await post(`/v1/companies/${company.id}/projects`,{name:"Project",objective:"Coordinate external agents"},{"x-principal-id":owner.principal_id})).json();
   const room=(await post(`/v1/companies/${company.id}/projects/${project.id}/rooms`,{name:"Gateway Room",responsibilities:"Ship work"},{"x-principal-id":owner.principal_id})).json();
   return {company,owner,project,room};

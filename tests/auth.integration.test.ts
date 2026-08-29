@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { buildApp } from "../apps/api/src/app.js";
 import { SilentSignInLinkDelivery, type SignInLink, type SignInLinkDelivery } from "../apps/api/src/auth/auth-service.js";
 import { truncateAll } from "./support/database.js";
+import { seedCompany, seedHuman } from "./support/bootstrap.js";
 
 const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
@@ -28,8 +29,8 @@ describe("Human authentication", () => {
   };
 
   async function company(name = "Auth Co") {
-    const created = (await call("POST", "/v1/companies", { name })).json();
-    const owner = (await call("POST", `/v1/companies/${created.id}/humans`, { email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" })).json();
+    const created = (await seedCompany(pool, ({ name }).name));
+    const owner = (await seedHuman(pool, created.id, ({ email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" }).email, ({ email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" }).display_name));
     return { id: created.id, owner };
   }
   async function signIn(userId: string, email: string) {
@@ -144,7 +145,7 @@ describe("Human authentication", () => {
     const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
     const { cookie } = await signIn(f.owner.user_id, email);
 
-    const colleague = (await call("POST", `/v1/companies/${f.id}/humans`, { email: `mate-${crypto.randomUUID()}@example.com`, display_name: "Mate" })).json();
+    const colleague = (await seedHuman(pool, f.id, ({ email: `mate-${crypto.randomUUID()}@example.com`, display_name: "Mate" }).email, ({ email: `mate-${crypto.randomUUID()}@example.com`, display_name: "Mate" }).display_name));
     const issued = await call("POST", `/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, {}, { cookie });
     expect(issued.statusCode).toBe(200);
     expect(issued.json().token).toMatch(/^mpsi_/);

@@ -5,6 +5,7 @@ import { buildApp } from "../apps/api/src/app.js";
 import { SequenceTracker } from "../apps/api/src/realtime/protocol.js";
 import type { RealtimeOptions } from "../apps/api/src/realtime/realtime-hub.js";
 import { truncateAll } from "./support/database.js";
+import { seedCompany, seedHuman } from "./support/bootstrap.js";
 
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL??"postgres://postgres:postgres@127.0.0.1:55432/multiplayer_ai";
@@ -73,9 +74,9 @@ describe("Phase 1A realtime room synchronization",()=>{
   }
 
   async function setup() {
-    const company=(await post("/v1/companies",{name:"Realtime Co"})).json();
-    const alex=(await post(`/v1/companies/${company.id}/humans`,{email:`alex-${crypto.randomUUID()}@example.com`,display_name:"Alex"})).json();
-    const sarah=(await post(`/v1/companies/${company.id}/humans`,{email:`sarah-${crypto.randomUUID()}@example.com`,display_name:"Sarah"})).json();
+    const company=(await seedCompany(pool, ({name:"Realtime Co"}).name));
+    const alex=(await seedHuman(pool, company.id, ({email:`alex-${crypto.randomUUID()}@example.com`,display_name:"Alex"}).email, ({email:`alex-${crypto.randomUUID()}@example.com`,display_name:"Alex"}).display_name));
+    const sarah=(await seedHuman(pool, company.id, ({email:`sarah-${crypto.randomUUID()}@example.com`,display_name:"Sarah"}).email, ({email:`sarah-${crypto.randomUUID()}@example.com`,display_name:"Sarah"}).display_name));
     const project=(await post(`/v1/companies/${company.id}/projects`,{name:"Realtime",objective:"Stay synchronized"},{"x-principal-id":alex.principal_id})).json();
     const room=(await post(`/v1/companies/${company.id}/projects/${project.id}/rooms`,{name:"Room One"},{"x-principal-id":alex.principal_id})).json();
     await post(`/v1/companies/${company.id}/rooms/${room.id}/members`,{principal_id:sarah.principal_id,role:"contributor"},{"x-principal-id":alex.principal_id,"idempotency-key":"add-sarah"});
@@ -185,8 +186,8 @@ describe("Phase 1A realtime room synchronization",()=>{
     expect(await missing.waitFor(f=>f.type==="protocol_error")).toMatchObject({code:"unauthenticated"});
     const unknown=await connect(s.company.id,s.room.id,crypto.randomUUID());
     expect(await unknown.waitFor(f=>f.type==="protocol_error")).toMatchObject({code:"room_access_denied"});
-    const other=(await post("/v1/companies",{name:"Other"})).json();
-    const outsider=(await post(`/v1/companies/${other.id}/humans`,{email:`other-${crypto.randomUUID()}@example.com`,display_name:"Other"})).json();
+    const other=(await seedCompany(pool, ({name:"Other"}).name));
+    const outsider=(await seedHuman(pool, other.id, ({email:`other-${crypto.randomUUID()}@example.com`,display_name:"Other"}).email, ({email:`other-${crypto.randomUUID()}@example.com`,display_name:"Other"}).display_name));
     const cross=await connect(s.company.id,s.room.id,outsider.principal_id);
     expect(await cross.waitFor(f=>f.type==="protocol_error")).toMatchObject({code:"room_access_denied"});
     expect(cross.frames.some(f=>f.type==="snapshot"||f.type==="event")).toBe(false);

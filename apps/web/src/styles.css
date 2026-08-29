@@ -502,3 +502,98 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .add-agent-actions button:last-child{border-color:var(--ink);background:var(--ink);color:var(--on-ink)}
 .add-agent-actions button:disabled{opacity:.45;cursor:default}
 }
+
+/* Product shell — the frame around signed-in pages, and the screens that are not the room.
+   One restrained bar, warm neutrals, semantic colour only on agent state. The room keeps the
+   width and the weight; everything here is navigation. */
+@layer components{
+.shell{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--paper)}
+.shell-bar{display:flex;align-items:center;gap:var(--s3);padding:0 var(--s4);height:52px;flex:0 0 auto;
+  border-bottom:1px solid var(--line);background:var(--surface)}
+.shell-home{display:flex;align-items:center;gap:9px;padding:5px 7px;margin-left:-7px;border-radius:var(--r-control)}
+.shell-home:hover{background:var(--soft)}
+.shell-workspace{font:600 13px/1 var(--sans);color:var(--ink)}
+.shell-spacer{flex:1 1 auto}
+.shell-rooms,.shell-account{position:relative}
+.shell-rooms>button,.shell-account>button{display:flex;align-items:center;gap:5px;padding:6px 9px;border-radius:var(--r-control);
+  color:var(--ink-2);font-size:12px;font-weight:550}
+.shell-rooms>button:hover,.shell-account>button:hover,.shell-rooms>button[aria-expanded="true"],.shell-account>button[aria-expanded="true"]{background:var(--soft);color:var(--ink)}
+.shell-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:20;display:grid;gap:2px;min-width:210px;padding:6px;
+  border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);box-shadow:var(--shadow-float)}
+.shell-menu.right{left:auto;right:0}
+.shell-menu button{display:grid;gap:1px;padding:7px 9px;border-radius:var(--r-control);text-align:left;font-size:12px;color:var(--ink-2)}
+.shell-menu button:hover{background:var(--soft);color:var(--ink)}
+.shell-menu small{font-size:10px;color:var(--muted)}
+.shell-body{flex:1 1 auto;min-height:0;overflow:auto}
+
+.home{max-width:720px;margin:0 auto;padding:var(--s6) var(--s4) var(--s7)}
+.home-head h1{font:500 30px/1.1 var(--serif);letter-spacing:-.02em;margin:0;color:var(--ink);text-wrap:balance}
+.home-lead{margin:var(--s2) 0 0;font-size:var(--t-body);line-height:1.55;color:var(--muted)}
+.home-section{margin-top:var(--s6)}
+.home-section-head{display:flex;align-items:baseline;gap:var(--s3);margin-bottom:var(--s3);
+  padding-bottom:var(--s2);border-bottom:1px solid var(--line)}
+.home-section-head h2{margin:0;font-size:10px;font-weight:750;letter-spacing:.11em;text-transform:uppercase;color:var(--muted)}
+.home-action{margin-left:auto;display:flex;align-items:center;gap:5px;color:var(--moss);font-size:11px;font-weight:700}
+.home-action:hover{text-decoration:underline}
+.home-empty{display:grid;gap:var(--s3);justify-items:start;padding:var(--s4);border:1px dashed var(--line-strong);border-radius:var(--r-surface)}
+.home-empty p{margin:0;font-size:var(--t-small);line-height:1.55;color:var(--muted);text-wrap:pretty}
+.home-primary{display:flex;align-items:center;gap:7px;padding:9px 13px;border-radius:var(--r-control);
+  background:var(--ink);color:var(--on-ink);font-size:12px;font-weight:600}
+
+.home-rooms,.home-agents{display:grid;gap:var(--s2);margin:0}
+.home-rooms button{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);width:100%;
+  padding:13px 15px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);text-align:left;color:var(--ink)}
+.home-rooms button:hover{border-color:var(--line-strong);background:var(--soft)}
+.home-rooms span{display:grid;gap:2px;min-width:0}
+.home-rooms strong{font-size:13px;font-weight:600}
+.home-rooms small,.home-agent-rooms{font-size:10px;color:var(--muted)}
+.home-agents li{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface)}
+.home-agent-copy{display:grid;gap:2px;min-width:0;flex:1 1 auto}
+.home-agent-copy strong{font-size:12px;font-weight:600}
+.home-agent-rooms{flex:0 0 auto;text-align:right;overflow-wrap:anywhere}
+
+.home-form{display:grid;gap:var(--s3);padding:var(--s4);border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface)}
+.home-form .field{display:grid;gap:5px}
+.home-form input,.home-form textarea{width:100%;padding:9px 11px;border:1px solid var(--line-strong);border-radius:var(--r-control);
+  background:var(--paper);color:var(--ink);font-size:13px;resize:vertical}
+.home-form input:focus-visible,.home-form textarea:focus-visible{border-color:var(--ink)}
+.home-choose{display:grid;gap:6px;border:0;padding:0;margin:0}
+.home-check{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2)}
+.home-note{font-size:10px;line-height:1.55;color:var(--faint);text-wrap:pretty}
+.home-form-actions{display:flex;gap:7px;justify-content:flex-end}
+.home-form-actions button{padding:8px 12px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--paper);font-size:12px;font-weight:600}
+.home-form-actions button:last-child{border-color:var(--ink);background:var(--ink);color:var(--on-ink)}
+.home-form-actions button:disabled{opacity:.45;cursor:default}
+
+.entry-actions{display:grid;gap:var(--s2);width:100%;margin-top:var(--s3)}
+/* Scoped under .auth so these beat the panel's default button styling, which is otherwise more
+   specific and would render both choices as the primary one. */
+.auth .entry-primary{display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 14px;border-radius:var(--r-control);
+  background:var(--ink);color:var(--on-ink);font-size:var(--t-body);font-weight:550}
+.auth .entry-secondary{padding:11px 14px;border:1px solid var(--line-strong);border-radius:var(--r-control);
+  background:var(--surface);color:var(--ink);font-size:var(--t-body);font-weight:550}
+.auth .entry-secondary:hover{border-color:var(--ink)}
+
+.settings{max-width:600px;margin:0 auto;padding:var(--s6) var(--s4) var(--s7)}
+.settings h1{font:500 26px/1.1 var(--serif);letter-spacing:-.02em;margin:0 0 var(--s5);color:var(--ink)}
+.settings section{margin-bottom:var(--s5);padding-bottom:var(--s4);border-bottom:1px solid var(--line)}
+.settings section:last-child{border-bottom:0}
+.settings h2{margin:0 0 var(--s3);font-size:10px;font-weight:750;letter-spacing:.11em;text-transform:uppercase;color:var(--muted)}
+.settings dl{display:grid;gap:9px;margin:0}
+.settings dl>div{display:flex;justify-content:space-between;gap:var(--s3);font-size:13px}
+.settings dt{color:var(--muted)}
+.settings dd{margin:0;color:var(--ink);overflow-wrap:anywhere}
+.settings-note{margin:0 0 var(--s2);font-size:var(--t-small);line-height:1.6;color:var(--muted);text-wrap:pretty}
+.settings-signout{padding:9px 13px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--surface);font-size:12px;font-weight:600}
+.settings-signout:hover{border-color:var(--stop);color:var(--red)}
+}
+
+@layer responsive{
+@media (max-width:600px){
+  .shell-bar{padding:0 var(--s3);gap:var(--s2)}
+  .shell-workspace{max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .home,.settings{padding:var(--s4) var(--s3) var(--s6)}
+  .home-agents li{flex-wrap:wrap}
+  .home-agent-rooms{text-align:left;flex-basis:100%}
+}
+}

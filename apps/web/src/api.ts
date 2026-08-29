@@ -159,3 +159,9 @@ export const addRoomMember=(companyId:string,roomId:string,principalId:string,re
   send<unknown>(`/v1/companies/${companyId}/rooms/${roomId}/members`,{method:'POST',
     headers:{'idempotency-key':`member-${roomId}-${principalId}`},
     body:JSON.stringify({principal_id:principalId,role:'worker_agent',responsibilities})});
+
+/** Creating an account: the same magic link signing in uses, for someone who has none yet. */
+export const signUp=(name:string,email:string)=>
+  send<{status:string}>('/v1/auth/sign-up',{method:'POST',body:JSON.stringify({name,email})});
+
+export const signOut=()=>send<unknown>('/v1/auth/sessions/current',{method:'DELETE'});

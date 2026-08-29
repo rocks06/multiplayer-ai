@@ -27,9 +27,8 @@ describe("Bringing your own agents", () => {
 
   async function signedInUser(displayName = "Priya") {
     const email = `user-${crypto.randomUUID()}@example.com`;
-    const seed = (await call("POST", "/v1/companies", { name: "seed" })).json();
-    await call("POST", `/v1/companies/${seed.id}/humans`, { email, display_name: displayName });
-    await call("POST", "/v1/auth/sign-in-links", { email });
+    // The real thing a new person does: sign up, then redeem the link they are sent.
+    await call("POST", "/v1/auth/sign-up", { name: displayName, email });
     const session = await call("POST", "/v1/auth/sessions", { token: delivery.delivered.at(-1)!.token });
     const raw = session.headers["set-cookie"];
     return String(Array.isArray(raw) ? raw[0] : raw).split(";")[0] ?? "";

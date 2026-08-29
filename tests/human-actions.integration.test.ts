@@ -3,6 +3,7 @@ import * as pg from "pg";
 import { buildApp } from "../apps/api/src/app.js";
 import { FakeExternalAgentClient } from "./fake-external-agent.js";
 import { truncateAll } from "./support/database.js";
+import { seedCompany, seedHuman } from "./support/bootstrap.js";
 
 const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
@@ -20,9 +21,9 @@ describe("Explicit human actions", () => {
   const asActor = (principalId: string, key: string = crypto.randomUUID()) => ({ "x-principal-id": principalId, "idempotency-key": key });
 
   async function fixture() {
-    const company = (await call("POST", "/v1/companies", { name: "Actions Co" })).json();
-    const owner = (await call("POST", `/v1/companies/${company.id}/humans`, { email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" })).json();
-    const worker = (await call("POST", `/v1/companies/${company.id}/humans`, { email: `worker-${crypto.randomUUID()}@example.com`, display_name: "Worker" })).json();
+    const company = (await seedCompany(pool, ({ name: "Actions Co" }).name));
+    const owner = (await seedHuman(pool, company.id, ({ email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" }).email, ({ email: `owner-${crypto.randomUUID()}@example.com`, display_name: "Owner" }).display_name));
+    const worker = (await seedHuman(pool, company.id, ({ email: `worker-${crypto.randomUUID()}@example.com`, display_name: "Worker" }).email, ({ email: `worker-${crypto.randomUUID()}@example.com`, display_name: "Worker" }).display_name));
     const project = (await call("POST", `/v1/companies/${company.id}/projects`, { name: "P", objective: "O" }, { "x-principal-id": owner.principal_id })).json();
     const room = (await call("POST", `/v1/companies/${company.id}/projects/${project.id}/rooms`, { name: "R", responsibilities: "Own it" }, { "x-principal-id": owner.principal_id })).json();
     await call("POST", `/v1/companies/${company.id}/rooms/${room.id}/members`, { principal_id: worker.principal_id, role: "contributor", responsibilities: "Do it" }, asActor(owner.principal_id));
@@ -124,7 +125,7 @@ describe("Explicit human actions", () => {
     it("keeps optimistic concurrency, membership, and terminal states", async () => {
       const f = await fixture();
       const agentA = await f.makeAgent("Agent A");
-      const outsider = (await call("POST", `/v1/companies/${f.company.id}/humans`, { email: `out-${crypto.randomUUID()}@example.com`, display_name: "Outsider" })).json();
+      const outsider = (await seedHuman(pool, f.company.id, ({ email: `out-${crypto.randomUUID()}@example.com`, display_name: "Outsider" }).email, ({ email: `out-${crypto.randomUUID()}@example.com`, display_name: "Outsider" }).display_name));
       const task = (await call("POST", `${f.base}/tasks`, { title: "Work", description: "", assignee_principal_id: agentA.principal_id }, asActor(f.owner.principal_id))).json();
 
       const stale = await call("PATCH", `${f.base}/tasks/${task.id}/assignee`, { assignee_principal_id: f.worker.principal_id, expected_version: 99 }, asActor(f.owner.principal_id));

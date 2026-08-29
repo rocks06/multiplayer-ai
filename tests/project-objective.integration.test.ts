@@ -2,6 +2,7 @@ import {afterEach,beforeEach,describe,expect,it} from 'vitest';
 import * as pg from 'pg';
 import {buildApp} from '../apps/api/src/app.js';
 import {truncateAll} from './support/database.js';
+import { seedCompany, seedHuman } from "./support/bootstrap.js";
 
 const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL;
@@ -13,9 +14,9 @@ describe('Project objective mutation',()=>{
  const call=(method:string,url:string,payload?:unknown,headers:Record<string,string>={})=>app.inject({method:method as any,url,payload:payload as any,headers});
  const asActor=(principalId:string,key=crypto.randomUUID())=>({'x-principal-id':principalId,'idempotency-key':key});
  async function fixture(){
-  const company=(await call('POST','/v1/companies',{name:'Objective Co'})).json();
-  const owner=(await call('POST',`/v1/companies/${company.id}/humans`,{email:`owner-${crypto.randomUUID()}@example.com`,display_name:'Owner'})).json();
-  const member=(await call('POST',`/v1/companies/${company.id}/humans`,{email:`member-${crypto.randomUUID()}@example.com`,display_name:'Member'})).json();
+  const company=(await seedCompany(pool, ({name:'Objective Co'}).name));
+  const owner=(await seedHuman(pool, company.id, ({email:`owner-${crypto.randomUUID()}@example.com`,display_name:'Owner'}).email, ({email:`owner-${crypto.randomUUID()}@example.com`,display_name:'Owner'}).display_name));
+  const member=(await seedHuman(pool, company.id, ({email:`member-${crypto.randomUUID()}@example.com`,display_name:'Member'}).email, ({email:`member-${crypto.randomUUID()}@example.com`,display_name:'Member'}).display_name));
   const project=(await call('POST',`/v1/companies/${company.id}/projects`,{name:'P',objective:UNSET},{'x-principal-id':owner.principal_id})).json();
   const room=(await call('POST',`/v1/companies/${company.id}/projects/${project.id}/rooms`,{name:'R',responsibilities:'Own it'},{'x-principal-id':owner.principal_id})).json();
   await call('POST',`/v1/companies/${company.id}/rooms/${room.id}/members`,{principal_id:member.principal_id,role:'contributor',responsibilities:'Contribute'},asActor(owner.principal_id));
@@ -60,8 +61,8 @@ describe('Project objective mutation',()=>{
 
  it('cannot update a project through another company or another company principal',async()=>{
   const f=await fixture();
-  const otherCompany=(await call('POST','/v1/companies',{name:'Other Co'})).json();
-  const outsider=(await call('POST',`/v1/companies/${otherCompany.id}/humans`,{email:`outsider-${crypto.randomUUID()}@example.com`,display_name:'Outsider'})).json();
+  const otherCompany=(await seedCompany(pool, ({name:'Other Co'}).name));
+  const outsider=(await seedHuman(pool, otherCompany.id, ({email:`outsider-${crypto.randomUUID()}@example.com`,display_name:'Outsider'}).email, ({email:`outsider-${crypto.randomUUID()}@example.com`,display_name:'Outsider'}).display_name));
   const wrongCompanyPath=`/v1/companies/${otherCompany.id}/projects/${f.project.id}/objective`;
   expect((await call('PATCH',wrongCompanyPath,{objective:'Hijack',expected_objective:UNSET},asActor(outsider.principal_id))).statusCode).toBe(404);
   expect((await call('PATCH',f.path,{objective:'Hijack',expected_objective:UNSET},asActor(outsider.principal_id))).statusCode).toBe(403);

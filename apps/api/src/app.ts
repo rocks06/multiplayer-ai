@@ -62,6 +62,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.register(websocket);
   app.setErrorHandler((error,request,reply)=>{ if(error instanceof DomainError) return reply.status(error.statusCode).send({error:{code:error.code,message:error.message,request_id:request.id,details:error.details}}); if(error instanceof z.ZodError) return reply.status(400).send({error:{code:"validation_error",message:"Invalid request",request_id:request.id,details:error.issues}}); request.log.error(error); return reply.status(500).send({error:{code:"internal_error",message:"Internal server error",request_id:request.id}}); });
   app.get('/health',async()=>({status:'ok'}));
+  app.post('/v1/auth/sign-up',async req=>{const x=body(z.object({name:z.string().min(1).max(100),email:z.string().email()}),req.body);return auth.signUp(x)});
   app.post('/v1/auth/sign-in-links',async req=>{const x=body(z.object({email:z.string().email()}),req.body);return auth.requestSignInLink(x.email)});
   app.post('/v1/auth/sessions',async(req,reply)=>{const x=body(z.object({token:z.string().min(8)}),req.body);const created=await auth.createSession(x.token);writeSessionCookie(reply,created.session_token,SESSION_MAX_AGE,cookieSecure);return auth.identity(created.user_id)});
   app.delete('/v1/auth/sessions/current',async(req,reply)=>{const result=await auth.revokeSession(readSessionCookie(req));writeSessionCookie(reply,'',0,cookieSecure);return result});
@@ -74,8 +75,14 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.post('/v1/workspaces',async req=>{const x=body(z.object({name:z.string().min(1).max(100)}),req.body);const session=await auth.resolveSession(readSessionCookie(req));return service.createWorkspaceForUser(session.userId,x.name)});
   app.get('/v1/companies/:companyId/rooms',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);return service.listRoomsForPrincipal(p.companyId,await principal(req,p.companyId))});
   app.get('/v1/companies/:companyId/agents',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);return service.listCompanyAgents(p.companyId,await principal(req,p.companyId))});
-  app.post('/v1/companies',async req=>{const x=body(z.object({name:z.string().min(1)}),req.body);return service.createCompany(x.name)});
+  /* Creating a company and a person used to be possible with no credentials at all, which was
+     how the developer beta bootstrapped itself. Signing up is a product route now, so these are
+     available only where a deployment has explicitly asked for a bootstrap escape hatch — the
+     same flag the header-principal escape hatch uses. In normal configuration they do not exist. */
+  if(allowHeaderPrincipal){
+    app.post('/v1/companies',async req=>{const x=body(z.object({name:z.string().min(1)}),req.body);return service.createCompany(x.name)});
   app.post('/v1/companies/:companyId/humans',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({email:z.string().email(),display_name:z.string().min(1)}),req.body);return service.createHuman(p.companyId,x.email,x.display_name)});
+  }
   /* Adding an agent is an authenticated act by a person in the addressed company; the owner is
      resolved from who is acting, so it can never be chosen by the caller. */
   app.post('/v1/companies/:companyId/agents',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({name:z.string().min(1).max(100)}),req.body);return service.createAgentForPrincipal(p.companyId,await principal(req,p.companyId),x.name)});
@@ -125,7 +132,9 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const webRoot=resolve(process.cwd(),'dist/web');
   if(existsSync(webRoot)){
     app.register(fastifyStatic,{root:webRoot,wildcard:false});
-    for(const route of ['/rooms/*','/signin','/welcome','/welcome/*','/fixtures/*'])app.get(route,async(_request,reply)=>reply.sendFile('index.html'));
+    // '/' is already served by the static handler; these are the deep links a refresh must survive.
+    for(const route of ['/home','/signup','/signin','/settings','/welcome','/welcome/*','/rooms/*','/fixtures/*'])
+      app.get(route,async(_request,reply)=>reply.sendFile('index.html'));
   }
   app.addHook('onReady',async()=>{await realtime.start()});
   app.addHook('onClose',async()=>{await realtime.stop();await pool.end()});

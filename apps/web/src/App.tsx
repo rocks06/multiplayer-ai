@@ -1,10 +1,14 @@
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert,Users,X} from 'lucide-react';
-import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,roomFromLocation} from './api';
+import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
 import Welcome,{ConnectAgent} from './Welcome';
+import {Entry,SignUp} from './Entry';
+import {Home} from './Home';
+import {Settings} from './Settings';
+import {Shell} from './Shell';
 import {AgentControls,SharedWork,type WorkActions} from './Work';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
@@ -415,6 +419,13 @@ function RoomRoute({navigate}:{navigate:(to:string)=>void}){
   return <Room identity={state.identity} workspace={state.workspace}/>;
 }
 
+/**
+ * Where a URL takes you.
+ *
+ * The root is a real entry point rather than a room link that failed to parse: signed out it is
+ * the front door, signed in it is either onboarding or Home, decided by what the account actually
+ * has. Every path here is registered with the server too, so a refresh never lands on a 404.
+ */
 function RoomApp(){
   const [path,setPath]=useState(()=>location.pathname);
   useEffect(()=>{
@@ -423,11 +434,61 @@ function RoomApp(){
     return()=>removeEventListener('popstate',sync);
   },[]);
   const navigate=useCallback((to:string)=>{history.pushState({},'',to);setPath(new URL(to,location.origin).pathname)},[]);
+
   if(path==='/signin')return <SignIn/>;
+  if(path==='/signup')return <SignUp onNavigate={navigate}/>;
   if(path==='/welcome')return <Welcome navigate={navigate}/>;
   if(path==='/fixtures/presence')return <PresenceFixture/>;
   if(path==='/fixtures/decisions')return <DecisionFixture/>;
+  if(path==='/'||path==='/home'||path==='/settings')return <Authenticated path={path} navigate={navigate}/>;
   return <RoomRoute navigate={navigate}/>;
+}
+
+/**
+ * The signed-in pages, and the decision the root has to make. Which one you get is read from the
+ * account itself — no workspace means there is still setting up to do, and a workspace means
+ * there is somewhere to go.
+ */
+function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void}){
+  const [state,setState]=useState<
+    |{status:'loading'}
+    |{status:'anonymous'}
+    |{status:'ready';identity:SignedInIdentity;workspace:{companyId:string;name:string}|null;rooms:WorkspaceRoom[]}>(
+    {status:'loading'});
+
+  useEffect(()=>{
+    let alive=true;
+    void (async()=>{
+      const me=await currentIdentity().catch(()=>null);
+      if(!alive)return;
+      if(!me)return setState({status:'anonymous'});
+      const company=me.companies[0];
+      const workspace=company?{companyId:company.company_id,name:company.company_name}:null;
+      const rooms=workspace?await listWorkspaceRooms(workspace.companyId).catch(()=>[]):[];
+      if(!alive)return;
+      setState({status:'ready',identity:me,workspace,rooms});
+    })();
+    return()=>{alive=false};
+  },[path]);
+
+  useEffect(()=>{
+    if(state.status==='anonymous'&&path!=='/')navigate('/');
+  },[state.status,path,navigate]);
+
+  if(state.status==='loading')return <main className="loading-room"><div className="brand-mark">M</div><div className="loading-line"/><p>Loading…</p></main>;
+  if(state.status==='anonymous')return <Entry onNavigate={navigate}/>;
+
+  // Signed in with nothing set up yet: onboarding is the honest destination.
+  if(!state.workspace){
+    if(path!=='/welcome')navigate('/welcome');
+    return <Welcome navigate={navigate}/>;
+  }
+
+  const inner=path==='/settings'
+    ? <Settings identity={state.identity} workspace={state.workspace}/>
+    : <Home workspace={state.workspace} onNavigate={navigate}/>;
+
+  return <Shell workspace={state.workspace} rooms={state.rooms} onNavigate={navigate}>{inner}</Shell>;
 }
 
 
