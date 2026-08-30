@@ -79,7 +79,10 @@ try {
   fs.rmSync(path.join(SUPPORT, 'connector-state.json'), { force: true });
 
   const room = (await pool.query(`SELECT r.id,r.company_id FROM rooms r JOIN companies c ON c.id=r.company_id WHERE c.name='Northwind' LIMIT 1`)).rows[0];
-  const agent = (await pool.query(`SELECT p.id FROM principals p WHERE p.company_id=$1 AND p.display_name='Agent B' AND p.kind='agent'`, [room.company_id])).rows[0];
+  // Any agent in the fixture company will do. Pinning a display name meant a rename elsewhere
+  // silently broke the harness with a null-dereference rather than a readable failure.
+  const agent = (await pool.query(`SELECT p.id,p.display_name FROM principals p WHERE p.company_id=$1 AND p.kind='agent' ORDER BY p.display_name LIMIT 1`, [room.company_id])).rows[0];
+  if (!agent) { console.error('No agent in the fixture company; seed one before verifying.'); process.exit(1) }
   const manager = (await pool.query(`SELECT p.id,u.id user_id FROM principals p JOIN users u ON u.id=p.user_id WHERE p.company_id=$1 AND p.kind='human' LIMIT 1`, [room.company_id])).rows[0];
 
   const { AuthService, SilentSignInLinkDelivery } = await import(`${process.cwd()}/dist/apps/api/src/auth/auth-service.js`);

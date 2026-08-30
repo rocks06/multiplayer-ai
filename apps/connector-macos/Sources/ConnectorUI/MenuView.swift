@@ -41,7 +41,8 @@ public struct MenuView: View {
             StatusLine(health: model.health)
 
             VStack(spacing: 7) {
-                DetailRow(label: "Workspace", value: Diagnosis.workspaceDetail(model.sidecar.state))
+                DetailRow(label: "Workspace",
+                          value: Diagnosis.workspaceDetail(model.sidecar.state, credential: model.sidecar.credentialProblem))
                 DetailRow(label: model.sidecar.state.runtime.name,
                           value: Diagnosis.runtimeDetail(model.sidecar.state),
                           warning: !model.sidecar.state.runtime.available)
@@ -56,7 +57,14 @@ public struct MenuView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if model.health == .authRequired {
+            // Three different reasons a sign-in is needed, and the remedy differs, so the text
+            // is chosen by cause rather than by the headline they happen to share.
+            if let problem = model.sidecar.credentialProblem {
+                Text(problem.recovery)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if model.health == .authRequired {
                 Text("This Mac's access was removed or expired. Sign out and enter a new code from your workspace.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)

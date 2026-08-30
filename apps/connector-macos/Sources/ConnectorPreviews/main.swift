@@ -41,19 +41,25 @@ let enrolment = Keychain.Enrolment(
 let out = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "./previews")
 try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 
-let cases: [(String, SidecarState, Keychain.Enrolment?)] = [
-    ("01-not-set-up", state(gateway: "not_started", running: false, enrolled: false, hermes: true), nil),
-    ("02-not-set-up-no-hermes", state(gateway: "not_started", running: false, enrolled: false, hermes: false), nil),
-    ("03-connected", state(gateway: "live"), enrolment),
-    ("04-reconnecting", state(gateway: "reconnecting"), enrolment),
-    ("05-offline", state(gateway: "offline", running: false), enrolment),
-    ("06-runtime-unavailable", state(gateway: "live", hermes: false), enrolment),
-    ("07-auth-required", state(gateway: "auth_required", error: "Gateway HTTP 401"), enrolment),
-    ("08-catching-up", state(gateway: "live", pending: 3), enrolment),
+let cases: [(String, SidecarState, Keychain.Enrolment?, CredentialProblem?)] = [
+    ("01-not-set-up", state(gateway: "not_started", running: false, enrolled: false, hermes: true), nil, nil),
+    ("02-not-set-up-no-hermes", state(gateway: "not_started", running: false, enrolled: false, hermes: false), nil, nil),
+    ("03-connected", state(gateway: "live"), enrolment, nil),
+    ("04-reconnecting", state(gateway: "reconnecting"), enrolment, nil),
+    ("05-offline", state(gateway: "offline", running: false), enrolment, nil),
+    ("06-runtime-unavailable", state(gateway: "live", hermes: false), enrolment, nil),
+    ("07-auth-required", state(gateway: "auth_required", error: "Gateway HTTP 401"), enrolment, nil),
+    ("08-catching-up", state(gateway: "live", pending: 3), enrolment, nil),
+    // The two the sidecar cannot report, because it is never configured in either. Both used to
+    // render as "Not set up" — an enrolled Mac being told it was a stranger.
+    ("09-credential-unreadable", state(gateway: "not_started", running: false, enrolled: false),
+     enrolment, .unreadable(-34018)),
+    ("10-credential-missing", state(gateway: "not_started", running: false, enrolled: false),
+     enrolment, .missing),
 ]
 
-for (name, sidecarState, boundEnrolment) in cases {
-    let model = ConnectorModel(live: false, state: sidecarState, enrolment: boundEnrolment)
+for (name, sidecarState, boundEnrolment, problem) in cases {
+    let model = ConnectorModel(live: false, state: sidecarState, enrolment: boundEnrolment, credentialProblem: problem)
     render(MenuView(model: model), to: out.appending(path: "\(name).png"))
 }
 

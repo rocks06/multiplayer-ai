@@ -18,6 +18,9 @@ public final class SidecarClient {
     public private(set) var processStartedAt: Date?
     public private(set) var lastLaunchFailure: String?
     public private(set) var restarts = 0
+    /// Set when this Mac is enrolled but cannot present its credential. Nil at every other time,
+    /// including before the first resume attempt.
+    public var credentialProblem: CredentialProblem?
 
     private var process: Process?
     private var stdin: FileHandle?
@@ -136,9 +139,50 @@ public final class SidecarClient {
         return (try? JSONSerialization.jsonObject(with: reply) as? [String: Any]) ?? [:]
     }
 
+    /// What resuming should do, decided without touching a Keychain so it can be tested.
+    ///
+    /// The distinction that matters is between the first and the third case. Both leave the
+    /// sidecar unconfigured; only one of them means the person has nothing set up.
+    public enum ResumeDecision: Equatable, Sendable {
+        case nothingToResume                       // this Mac was never enrolled
+        case resume(String)                        // enrolled, and the credential is in hand
+        case cannotPresent(CredentialProblem)      // enrolled, and it is not
+    }
+
+    nonisolated public static func resumeDecision(enrolled: Bool, lookup: Keychain.CredentialLookup?) -> ResumeDecision {
+        guard enrolled else { return .nothingToResume }
+        switch lookup {
+        case .found(let value): return .resume(value)
+        case .missing: return .cannotPresent(.missing)
+        case .unreadable(let status): return .cannotPresent(.unreadable(status))
+        // Enrolled with nothing looked up should never happen; treating it as "never set up"
+        // is precisely the silence this exists to remove, so it is a problem rather than a shrug.
+        case nil: return .cannotPresent(.missing)
+        }
+    }
+
     /// Hand the sidecar what it needs to be this agent again, after a launch or a crash.
+    ///
+    /// A Mac that was never set up has nothing to resume and says nothing. A Mac that *was* set up
+    /// and cannot produce its credential is a different matter entirely: it used to return here in
+    /// silence, leaving an enrolled Mac looking untouched and permanently disconnected with no
+    /// explanation anywhere in the app. That case now has a state of its own.
     public func resumeSession() async {
-        guard let enrolment = Keychain.enrolment(), let credential = Keychain.credential() else { return }
+        let enrolment = Keychain.enrolment()
+        let credential: String
+        switch SidecarClient.resumeDecision(enrolled: enrolment != nil,
+                                            lookup: enrolment == nil ? nil : Keychain.readCredential()) {
+        case .nothingToResume:
+            credentialProblem = nil
+            return
+        case .cannotPresent(let problem):
+            credentialProblem = problem
+            return
+        case .resume(let value):
+            credential = value
+            credentialProblem = nil
+        }
+        guard let enrolment else { return }
         do {
             try await send("configure", [
                 "baseUrl": enrolment.baseURL, "roomId": enrolment.roomId,

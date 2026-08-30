@@ -20,7 +20,7 @@ public final class ConnectorModel {
     public var busy = false
     public var notice: String?
 
-    public var health: Health { Diagnosis.health(of: sidecar.state) }
+    public var health: Health { Diagnosis.health(of: sidecar.state, credential: sidecar.credentialProblem) }
 
     /// A code can only be spent against somewhere real, so both are required before connecting.
     public var addressLooksUsable: Bool { ConnectorModel.usableAddress(workspaceAddress) }
@@ -32,8 +32,10 @@ public final class ConnectorModel {
 
     /// `live: false` builds a model that touches nothing — no helper spawned, no Keychain read —
     /// so the views can be rendered and reasoned about on their own.
-    public init(live: Bool = true, state: SidecarState? = nil, enrolment: Keychain.Enrolment? = nil) {
+    public init(live: Bool = true, state: SidecarState? = nil, enrolment: Keychain.Enrolment? = nil,
+                credentialProblem: CredentialProblem? = nil) {
         self.sidecar = SidecarClient(preview: state)
+        self.sidecar.credentialProblem = credentialProblem
         self.enrolment = live ? Keychain.enrolment() : enrolment
         guard live else { return }
         sidecar.start()
@@ -84,6 +86,11 @@ public final class ConnectorModel {
         busy = true
         defer { busy = false }
         if sidecar.state.running == false { sidecar.start() }
+        // When the credential could not be read, the helper was never configured and has nothing
+        // to reconnect — asking it to would be a button that does nothing. Retry the read instead,
+        // which is the thing that actually might have changed (a Keychain that was locked, an
+        // unlock that has since happened).
+        if sidecar.credentialProblem != nil { await sidecar.resumeSession(); return }
         _ = try? await sidecar.send("reconnect")
     }
 
@@ -93,6 +100,7 @@ public final class ConnectorModel {
         busy = true
         defer { busy = false }
         _ = try? await sidecar.send("signout")
+        sidecar.credentialProblem = nil
         Keychain.removeCredential()
         Keychain.removeEnrolment()
         enrolment = nil

@@ -43,7 +43,33 @@ public enum Keychain {
         guard status == errSecSuccess else { throw KeychainError(status: status) }
     }
 
-    public static func credential() -> String? {
+    /// The three genuinely different answers to "can this Mac present its credential?".
+    ///
+    /// Collapsing these into an optional is what let a re-signed build look like a Mac that had
+    /// never been set up: the app was enrolled, the item was right there, and macOS simply would
+    /// not hand it over — which is a different problem, with a different remedy, from having
+    /// nothing stored at all.
+    public enum CredentialLookup: Equatable, Sendable {
+        case found(String)
+        case missing                 // nothing is stored under this service and account
+        case unreadable(OSStatus)    // something is stored, and this build cannot read it
+    }
+
+    /// Turning what the Keychain returned into one of those three. Split out from the lookup
+    /// itself so the classification can be tested without a Keychain, a login session, or a
+    /// signed binary — none of which a test host is guaranteed to have.
+    public static func classify(status: OSStatus, data: Data?) -> CredentialLookup {
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess else { return .unreadable(status) }
+        // Success with nothing usable in it is still something the person has to be told about;
+        // silently treating it as "not set up" is the bug this exists to prevent.
+        guard let data, let value = String(data: data, encoding: .utf8), !value.isEmpty else {
+            return .unreadable(errSecDecode)
+        }
+        return .found(value)
+    }
+
+    public static func readCredential() -> CredentialLookup {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -52,9 +78,13 @@ public enum Keychain {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        return classify(status: status, data: item as? Data)
+    }
+
+    public static func credential() -> String? {
+        guard case .found(let value) = readCredential() else { return nil }
+        return value
     }
 
     public static func removeCredential() {

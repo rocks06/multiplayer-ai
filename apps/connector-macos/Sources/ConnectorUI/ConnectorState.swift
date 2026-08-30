@@ -86,11 +86,36 @@ public enum Health: Equatable, Sendable {
     public enum Tone: Sendable { case good, working, idle, stopped }
 }
 
+/// Why an enrolled Mac cannot present its credential at all.
+///
+/// This is a *local* problem, and it is invisible to the sidecar: the helper is never configured,
+/// so it truthfully reports itself as not enrolled. Without this the app rendered that as
+/// "Not set up" and offered the enrolment screen — telling a person who had set this Mac up that
+/// they had not, and asking them for a code they had no reason to have.
+public enum CredentialProblem: Equatable, Sendable {
+    case missing                 // enrolled, but nothing is stored any more
+    case unreadable(OSStatus)    // stored, but macOS will not release it to this build
+
+    /// What to actually do about it. Both roads end at the same place — a new code from the
+    /// workspace — which is the point: one clear action, not a diagnosis to interpret.
+    public var recovery: String {
+        switch self {
+        case .missing:
+            return "This Mac's saved sign-in is gone. Open your workspace, choose Connect beside this agent, and enter the new code."
+        case .unreadable:
+            return "macOS will not release this Mac's saved sign-in. This usually happens after the app is replaced with a different build. Choose Sign out this Mac, then connect again with a new code from your workspace."
+        }
+    }
+}
+
 public enum Diagnosis {
     /// A connection that has been refused is not the same problem as one that has dropped, and
     /// neither is the same as a runtime that was never installed. Whichever most stops the agent
     /// from working is the one named, and the rows underneath still state all four.
-    public static func health(of state: SidecarState) -> Health {
+    public static func health(of state: SidecarState, credential problem: CredentialProblem? = nil) -> Health {
+        // Nothing below can proceed without a credential, and the sidecar cannot report this
+        // because it was never configured — so it is checked before anything the sidecar says.
+        if problem != nil { return .authRequired }
         guard state.enrolled else { return .notConnected }
         if state.gateway == "auth_required" { return .authRequired }
         if !state.running { return .offline }
@@ -107,7 +132,8 @@ public enum Diagnosis {
     }
 
     /// The workspace row on its own, which stays true even when the headline is about Hermes.
-    public static func workspaceDetail(_ state: SidecarState) -> String {
+    public static func workspaceDetail(_ state: SidecarState, credential problem: CredentialProblem? = nil) -> String {
+        if problem != nil { return "Sign-in needed" }
         if !state.enrolled { return "Not set up" }
         if state.gateway == "auth_required" { return "Sign-in needed" }
         if !state.running { return "Not running" }

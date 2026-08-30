@@ -40,14 +40,22 @@ try {
   if (!fs.existsSync(BINARY)) { console.error('Build the helper first: scripts/build-app.sh'); process.exit(1) }
 
   // ---- a workspace, an agent, a room: all through the product's own routes ----------
-  const { AuthService, SilentSignInLinkDelivery } = await import(`${repo}/dist/apps/api/src/auth/auth-service.js`);
+  const { AuthService } = await import(`${repo}/dist/apps/api/src/auth/auth-service.js`);
   const email = `verbs-${randomUUID()}@example.com`;
-  const seed = await (await fetch(`${API}/v1/companies`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'seed' }) })).json();
-  await fetch(`${API}/v1/companies/${seed.id}/humans`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, display_name: 'Verb Check' }) });
-  await fetch(`${API}/v1/auth/sign-in-links`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) });
-  const auth = new AuthService(pool, new SilentSignInLinkDelivery());
-  const user = (await pool.query('SELECT id FROM users WHERE email=$1', [email])).rows[0];
-  const link = await auth.issueSignInLinkFor({ companyId: seed.id, actorUserId: user.id, userId: user.id });
+  // Signing up the way a person does. This used to POST /v1/companies and /humans, two routes
+  // that needed no credentials at all — they are gone from normal configuration now, and a
+  // harness that still reached for them was quietly checking a door that no longer exists.
+  const created = await fetch(`${API}/v1/auth/sign-up`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Verb Check', email }) });
+  if (!created.ok) { console.error(`sign-up failed: ${created.status}`); process.exit(1) }
+  const user = (await pool.query('SELECT id FROM users WHERE lower(email)=lower($1)', [email])).rows[0];
+  if (!user) { console.error('sign-up did not create a user'); process.exit(1) }
+  // A brand-new account belongs to no company yet, so the member-to-member issuing route does
+  // not apply. This is the same single-use link the product mails, captured rather than sent.
+  const mailbox = [];
+  const auth = new AuthService(pool, { deliver: async delivered => { mailbox.push(delivered) } });
+  await auth.requestSignInLink(email);
+  const link = mailbox.at(-1);
+  if (!link) { console.error('no sign-in link was issued'); process.exit(1) }
   const session0 = await fetch(`${API}/v1/auth/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: link.token }) });
   const cookie = session0.headers.getSetCookie().map(c => c.split(';')[0]).join('; ');
   const post = (url, body, extra = {}) => fetch(`${API}${url}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', ...extra }, body: JSON.stringify(body) }).then(r => r.json());
