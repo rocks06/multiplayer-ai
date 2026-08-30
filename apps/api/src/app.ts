@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import {existsSync} from "node:fs";
-import {resolve} from "node:path";
+import {join,resolve} from "node:path";
 import { z } from "zod";
 import { DomainError } from "../../../packages/domain/src/index.js";
 import { createPool, type DbPool } from "./db.js";
@@ -132,6 +132,11 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const webRoot=resolve(process.cwd(),'dist/web');
   if(existsSync(webRoot)){
     app.register(fastifyStatic,{root:webRoot,wildcard:false});
+    // wildcard:false registers a route per file found at boot, so a web build that lands after the
+    // server starts is invisible and every hashed asset 404s into a blank page. Assets are resolved
+    // per request instead; sendFile refuses anything that escapes the root.
+    app.get('/assets/*',async(request,reply)=>
+      reply.sendFile(join('assets',(request.params as {'*':string})['*'])));
     // '/' is already served by the static handler; these are the deep links a refresh must survive.
     for(const route of ['/home','/signup','/signin','/settings','/welcome','/welcome/*','/rooms/*','/fixtures/*'])
       app.get(route,async(_request,reply)=>reply.sendFile('index.html'));
