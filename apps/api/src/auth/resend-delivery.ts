@@ -56,7 +56,11 @@ export class ResendSignInLinkDelivery implements SignInLinkDelivery {
       log(`[auth] sign-in email to ${link.email} was not accepted (${response.status}): ${redactLink(detail).slice(0, 300)}`);
       throw new Error(`Sign-in email was not accepted (${response.status})`);
     }
-    log(`[auth] sign-in email accepted for delivery to ${link.email}`);
+    /* The provider's own id for the message. Not a secret, and the only thing that makes a
+       delivery answerable afterwards: without it "we sent it" is a claim nobody can check
+       against the provider's own record of what happened to it. */
+    const accepted = (await response.json().catch(() => ({}))) as { id?: string };
+    log(`[auth] sign-in email accepted for delivery to ${link.email}${accepted.id ? ` (${accepted.id})` : ""}`);
   }
 }
 

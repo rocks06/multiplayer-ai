@@ -30,6 +30,7 @@ function recorder(response: { ok: boolean; status?: number; body?: string } = { 
       ok: response.ok,
       status: response.status ?? (response.ok ? 200 : 422),
       text: async () => response.body ?? "",
+      json: async () => JSON.parse(response.body || "{}"),
     } as Response;
   }) as unknown as typeof globalThis.fetch;
   return { calls, fetch };
@@ -165,6 +166,22 @@ describe("sending through Resend", () => {
       expect(line).not.toContain(KEY);
       expect(line).not.toContain("#token=");
     }
+  });
+
+  /** A send nobody can look up afterwards is a claim, not a record. */
+  it("records the provider's message id so a delivery can be checked later", async () => {
+    const lines: string[] = [];
+    const fetch = (async () => ({
+      ok: true, status: 200,
+      json: async () => ({ id: "3f1e-message-id" }),
+      text: async () => "",
+    })) as unknown as typeof globalThis.fetch;
+    await new ResendSignInLinkDelivery({
+      apiKey: KEY, from: "a@b.c", publicAppUrl: "https://app.example.com",
+      fetch, log: line => lines.push(line),
+    }).deliver(link());
+    expect(lines.join("\n")).toContain("3f1e-message-id");
+    expect(lines.join("\n")).not.toContain(TOKEN);
   });
 
   it("reports a refusal as a failure rather than pretending it was sent", async () => {
