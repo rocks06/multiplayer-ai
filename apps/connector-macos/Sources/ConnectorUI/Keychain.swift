@@ -45,7 +45,7 @@ public enum Keychain {
         // Available after the Mac has been unlocked once, so the Connector can start at login
         // without asking anybody for anything, and never leaves this device.
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        let status = SecItemAdd(attributes as CFDictionary, nil)
+        let status = withoutDialogs { SecItemAdd(attributes as CFDictionary, nil) }
         guard status == errSecSuccess else { throw KeychainError(status: status) }
     }
 
@@ -76,6 +76,25 @@ public enum Keychain {
     }
 
     /**
+     Run a keychain lookup with the system's own dialogs turned off for its duration.
+
+     This Mac's credential lives in the file-based keychain, so a build macOS does not recognise
+     as the one that stored it triggers the classic authorisation dialog — and the lookup blocks
+     inside `SecKeychainItemCopyContent` until somebody answers. `kSecUseAuthenticationUI` does
+     not govern that dialog; it covers LocalAuthentication. This deprecated call is the one that
+     does, and there is no replacement for the keychain this item is in.
+
+     With interaction off the lookup returns `errSecInteractionNotAllowed` instead, which is
+     already what this app means by a credential it cannot present — a state with a screen and a
+     one-click remedy. Interaction is restored immediately, so nothing else is affected.
+     */
+    private static func withoutDialogs<T>(_ work: () -> T) -> T {
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(true) }
+        return work()
+    }
+
+    /**
      Read the credential, and never ask anybody anything to do it.
 
      A build macOS does not recognise as the one that stored this item makes the Keychain put up
@@ -99,7 +118,7 @@ public enum Keychain {
             kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
         ]
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let status = withoutDialogs { SecItemCopyMatching(query as CFDictionary, &item) }
         return classify(status: status, data: item as? Data)
     }
 
@@ -137,7 +156,7 @@ public enum Keychain {
         var attributes = query
         attributes[kSecValueData as String] = Data(expected.utf8)
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        let wrote = SecItemAdd(attributes as CFDictionary, nil)
+        let wrote = withoutDialogs { SecItemAdd(attributes as CFDictionary, nil) }
         guard wrote == errSecSuccess else { return .unreadable(wrote) }
 
         var read = query
@@ -146,7 +165,7 @@ public enum Keychain {
         // Same rule as reading the real credential: never block setup behind a system dialog.
         read[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(read as CFDictionary, &item)
+        let status = withoutDialogs { SecItemCopyMatching(read as CFDictionary, &item) }
         switch classify(status: status, data: item as? Data) {
         case .found(let value) where value == expected: return .found(value)
         case .found: return .unreadable(errSecDecode)

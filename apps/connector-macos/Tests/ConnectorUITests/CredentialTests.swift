@@ -140,10 +140,16 @@ struct CredentialTests {
         #expect(Diagnosis.health(of: .unknown, credential: .unreadable(errSecInteractionNotAllowed)) == .authRequired)
     }
 
-    /// The lookups that run on the main thread must both carry the flag that prevents the prompt.
-    @Test func bothKeychainReadsRefuseToPrompt() throws {
+    /// Every keychain call the app makes on the main thread must be inside the no-dialogs wrapper.
+    /// `kSecUseAuthenticationUI` does not cover the dialog this item produces; the legacy call does.
+    @Test func everyKeychainCallRefusesToPutUpADialog() throws {
         let source = try String(contentsOfFile: "Sources/ConnectorUI/Keychain.swift", encoding: .utf8)
-        let occurrences = source.components(separatedBy: "kSecUseAuthenticationUISkip").count - 1
-        #expect(occurrences >= 2, "readCredential and probe must both skip interaction")
+        for line in source.split(separator: "\n") {
+            let text = String(line)
+            guard text.contains("SecItemCopyMatching(") || text.contains("SecItemAdd(") else { continue }
+            #expect(text.contains("withoutDialogs"),
+                    "a keychain call that can block the app is not wrapped: \(text.trimmingCharacters(in: .whitespaces))")
+        }
+        #expect(source.contains("SecKeychainSetUserInteractionAllowed(false)"))
     }
 }
