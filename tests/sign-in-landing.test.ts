@@ -90,4 +90,32 @@ describe("the sign-in landing page", () => {
     expect(page).toContain('id="open"');
     expect(page).toContain('id="fallback"');
   });
+
+  /**
+   * The dead end this exists to remove.
+   *
+   * A browser cannot be asked whether a scheme has a handler, only watched. When nothing opens,
+   * Safari says the address is invalid and the page is left telling someone to paste the link
+   * into an app they do not have. Staying visible and focused is the only available evidence
+   * that nothing handled it.
+   */
+  it("notices when no app took the link, and offers the download", () => {
+    expect(page).toContain('id="missing"');
+    expect(page).toMatch(/isn.t installed on this Mac/);
+    expect(page).toContain('href="/download"');
+    // Watches all three ways a handoff shows up, not just one.
+    for (const signal of ["blur", "pagehide", "visibilitychange"]) {
+      expect(page).toContain(signal);
+    }
+    expect(page).toMatch(/document\.hasFocus\(\)/);
+  });
+
+  /** The paste route has to survive: it is how a link opened on the wrong Mac still works. */
+  it("keeps the token fallback in the not-installed state too", () => {
+    expect(page).toContain('id="missing-fallback"');
+  });
+
+  it("never sends someone to the old standalone Connector", () => {
+    expect(page).not.toMatch(/Connector/i);
+  });
 });

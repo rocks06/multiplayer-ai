@@ -137,3 +137,34 @@ import Foundation
                 == SidecarClient.supportDirectory(for: "com.multiplayerai.connector"))
     }
 }
+
+/// The app this one replaces, and the link claim it can take with it.
+@Suite struct LegacyAppTests {
+    /// The identifier cannot tell them apart — they share it. What separates them is that the old
+    /// one is a menu bar accessory that claims no URL scheme, and this one is neither.
+    @Test func theOldConnectorIsRecognisedByWhatItIsNotByItsName() {
+        #expect(LegacyApp.isLegacy(bundleIdentifier: "com.multiplayerai.connector",
+                                   isAccessory: true, claimsScheme: false))
+    }
+
+    @Test func theUnifiedAppIsNeverMistakenForIt() {
+        // A window, and a scheme: this app.
+        #expect(!LegacyApp.isLegacy(bundleIdentifier: "com.multiplayerai.connector",
+                                    isAccessory: false, claimsScheme: true))
+        // Half-matching is not matching.
+        #expect(!LegacyApp.isLegacy(bundleIdentifier: "com.multiplayerai.connector",
+                                    isAccessory: true, claimsScheme: true))
+        #expect(!LegacyApp.isLegacy(bundleIdentifier: "com.multiplayerai.connector",
+                                    isAccessory: false, claimsScheme: false))
+    }
+
+    @Test func somethingElseEntirelyIsLeftAlone() {
+        #expect(!LegacyApp.isLegacy(bundleIdentifier: "com.example.other",
+                                    isAccessory: true, claimsScheme: false))
+        #expect(!LegacyApp.isLegacy(bundleIdentifier: nil, isAccessory: true, claimsScheme: false))
+    }
+
+    @Test func theSchemeIsTheOneTheEmailLinkUses() {
+        #expect(URLScheme.name == "multiplayerai")
+    }
+}

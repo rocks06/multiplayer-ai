@@ -44,7 +44,7 @@ export function resumeAt(workspace:Workspace|null,agents:WorkspaceAgent[],rooms:
  * enrolled agent with nowhere to go is described as set up and waiting on the room instead.
  *
  * `arrived` means the Gateway has actually seen it. `ready` means the person has finished their
- * part — the Connector has been given its code — which is as far as this screen can take them.
+ * part — the code has been handed over — which is as far as this screen can take them.
  */
 export function connectionOf(agent:WorkspaceAgent):{
   label:string;tone:'live'|'wait'|'idle'|'gone';arrived:boolean;ready:boolean}{
@@ -124,10 +124,12 @@ function NameWorkspace({onCreated}:{onCreated:(workspace:Workspace)=>void}){
 }
 
 /**
- * The honest part of the beta. An agent added here is a name the workspace knows; it can only
- * take part once the Multiplayer AI Connector is running on the machine where the agent lives.
- * The code below is what joins the two, and nothing on this screen reports a connection that
- * the Gateway has not actually seen.
+ * Connecting an agent that runs somewhere else.
+ *
+ * On the Mac the agent runs on, Multiplayer AI connects it directly — you are signed in there,
+ * so there is nobody to carry anything between. A code exists for the case where that is not
+ * true: a machine you are not signed in on. That is what this screen is for, and it is the
+ * exception rather than the way in. Nothing here reports a connection the Gateway has not seen.
  */
 export function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent:WorkspaceAgent;onChanged:()=>void}){
   const [code,setCode]=useState<{value:string;expiresAt:string}|null>(null);
@@ -172,7 +174,7 @@ export function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent
               <RefreshCw size={13}/>{busy?'Preparing…':'Get a new code'}</button>
           </>
         : <>
-            <p className="code-note">Enter this in the Connector on the machine where {agent.display_name} runs.</p>
+            <p className="code-note">Enter this in Multiplayer AI on the machine where {agent.display_name} runs.</p>
             <div className="code-value">
               <code>{code.value}</code>
               <button type="button" aria-label="Copy code" onClick={()=>{
@@ -190,11 +192,12 @@ export function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent
 
     {!connection.ready&&<details className="connect-help" open={helpOpen}
       onToggle={event=>setHelpOpen((event.currentTarget as HTMLDetailsElement).open)}>
-      <summary>Don’t have the Connector yet?</summary>
+      <summary>When do I need a code?</summary>
       <p>
-        During the developer beta, an agent joins through the Multiplayer AI Connector, which runs
-        on the same machine as the agent and needs a supported runtime such as Hermes installed
-        there. Install the Connector on that machine, sign in, and it will ask for the code above.
+        Only for a machine you are not signed in on. On the Mac where the agent runs, install
+        Multiplayer AI, sign in, and it connects the agent directly — no code involved. The code
+        above is for the other case: hand it to Multiplayer AI on that machine and it will join
+        the same agent. Either way, the agent’s own runtime must already be installed there.
       </p>
     </details>}
   </div>;
@@ -276,7 +279,7 @@ function CreateFirstRoom({companyId,agents,onCreated}:{
   return <>
     <h1>Create their room</h1>
     <p className="welcome-lead">
-      {agents.map(a=>a.display_name).join(' and ')} need a room before the Connector can join them.
+      {agents.map(a=>a.display_name).join(' and ')} need a room before they can join.
       Name it now; you will connect them before setting the first objective.
     </p>
     <form onSubmit={submit}>
@@ -293,7 +296,7 @@ function ConnectAgents({companyId,agents,onRefresh,onDone}:{companyId:string;age
   const waiting=agents.filter(agent=>!connectionOf(agent).arrived);
   return <>
     <h1>Connect your agents</h1>
-    <p className="welcome-lead">Their room is ready. Use the Connector enrollment flow on each machine. The first objective unlocks after every agent has appeared.</p>
+    <p className="welcome-lead">Their room is ready. Open Multiplayer AI on the Mac each agent runs on. The first objective unlocks after every agent has appeared.</p>
     <ul className="agent-list">{agents.map(agent=><li key={agent.principal_id}>
       <div className="agent-head"><span className="identity-mark agent" aria-hidden="true">{agent.display_name.slice(0,1).toUpperCase()}</span><strong>{agent.display_name}</strong></div>
       <ConnectAgent companyId={companyId} agent={agent} onChanged={onRefresh}/>

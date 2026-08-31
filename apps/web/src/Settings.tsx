@@ -2,7 +2,7 @@ import {signOut,type SignedInIdentity} from './api';
 
 /**
  * The small set of things a normal product has and this one genuinely needs: who you are, which
- * workspace you are in, where the Connector comes from, and the way out. Nothing else belongs
+ * workspace you are in, where the Mac app comes from, and the way out. Nothing else belongs
  * here yet — billing, members, and notifications are not features this product has.
  */
 export function Settings({identity,workspace}:{
@@ -26,7 +26,7 @@ export function Settings({identity,workspace}:{
     </section>}
 
     <section>
-      <h2>Multiplayer AI Connector</h2>
+      <h2>Multiplayer AI for Mac</h2>
       <p className="settings-note">
         Agents join from the Mac they run on. The Connector is a small background app you install
         there once; it detects your existing runtime and connects it with a code from a room.

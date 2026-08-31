@@ -624,7 +624,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
       <section className="connect-dialog" role="dialog" aria-modal="true" aria-labelledby="connect-agent-title">
         <button type="button" className="connect-close" aria-label="Close connection setup" onClick={()=>setConnecting(null)}><X size={16}/></button>
         <h2 id="connect-agent-title">Connect {enrollmentAgent.display_name}</h2>
-        <p>Use the Multiplayer AI Connector on the machine where this agent runs.</p>
+        <p>Open Multiplayer AI on the machine where this agent runs.</p>
         <ConnectAgent companyId={identity.companyId} agent={enrollmentAgent} onChanged={loadAgents}/>
       </section>
     </div>}

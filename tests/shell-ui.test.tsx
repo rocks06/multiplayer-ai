@@ -116,8 +116,11 @@ describe('Finding your way',()=>{
     render(<RoomApp/>);
     expect(await screen.findByRole('heading',{name:'Settings'})).toBeVisible();
     expect(screen.getByText('sam@example.com')).toBeVisible();
-    expect(screen.getByText(/Multiplayer AI Connector/)).toBeVisible();
+    expect(screen.getByText(/Multiplayer AI for Mac/)).toBeVisible();
     expect(screen.getByRole('button',{name:'Sign out'})).toBeVisible();
+    // There is one product now. Naming a separate Connector here would send somebody looking
+    // for a second thing to install that has not existed since this became one application.
+    expect(document.body.textContent).not.toMatch(/Multiplayer AI Connector/i);
     // Deliberately not here yet.
     for(const absent of [/billing/i,/members/i,/notification/i,/API key/i])
       expect(document.body.textContent).not.toMatch(absent);

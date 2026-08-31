@@ -151,3 +151,42 @@ import Foundation
         #expect(AppModel.adopting(current, from: enrolment) == current)
     }
 }
+
+/// A sign-in link that arrives before the app knows where it is.
+///
+/// Being opened *by* a link is the ordinary way in, so the link lands before anything is settled.
+/// The first version of this waited for the root view's task to call back — and on a cold launch
+/// that call never came, so every link was queued and silently never spent. Initialization is the
+/// model's own business now.
+@MainActor
+@Suite struct QueuedAuthURLTests {
+    private func model() -> AppModel {
+        // Points nowhere reachable on purpose: this is about what is held, not what is redeemed.
+        var start = Progress()
+        start.workspaceAddress = "http://127.0.0.1:1"
+        return AppModel(store: MemoryProgressStore(start),
+                        connector: ConnectorModel(live: false, state: .unknown))
+    }
+
+    @Test func aLinkArrivingBeforeTheAppIsReadyIsKeptRatherThanLost() async {
+        let app = model()
+        #expect(app.initialized == false)
+        await app.receive(authURL: "multiplayerai://auth?token=mpsi_waiting")
+        #expect(app.queuedAuthURL == "multiplayerai://auth?token=mpsi_waiting")
+    }
+
+    @Test func theFirstLookAtTheWorldIsWhatMakesTheAppReady() async {
+        let app = model()
+        await app.refresh()
+        #expect(app.initialized)
+    }
+
+    /// Once ready, the queue is empty — the link was taken up rather than left sitting there.
+    @Test func aQueuedLinkIsSpentAsSoonAsThereIsSomewhereToTakeIt() async {
+        let app = model()
+        await app.receive(authURL: "multiplayerai://auth?token=mpsi_waiting")
+        #expect(app.queuedAuthURL != nil)
+        await app.refresh()
+        #expect(app.queuedAuthURL == nil)
+    }
+}

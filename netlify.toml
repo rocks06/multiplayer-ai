@@ -12,3 +12,10 @@
   from = "/signin"
   to = "/signin.html"
   status = 200
+
+# Where the app is downloaded from. Same reason as /signin: served explicitly rather than relying
+# on pretty URLs, because a 404 here is somebody who cannot install the product at all.
+[[redirects]]
+  from = "/download"
+  to = "/download.html"
+  status = 200

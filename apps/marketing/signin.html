@@ -34,7 +34,10 @@
       summary{cursor:pointer;color:var(--muted);font-size:13px}
       code{display:block;margin-top:10px;padding:11px;background:var(--surface);border:1px solid var(--line);
         border-radius:7px;font:12px/1.45 var(--mono);word-break:break-all;color:var(--ink)}
+      a.button{display:inline-block;margin:6px 0 0;padding:11px 20px;border-radius:7px;
+        background:var(--ink);color:var(--paper);text-decoration:none;font-size:14px;font-weight:500}
       .quiet{color:var(--faint);font-size:13px}
+      .quiet a{color:var(--muted)}
       [hidden]{display:none !important}
     </style>
     <script>
@@ -70,6 +73,20 @@
           <summary>It didn’t open</summary>
           <p class="quiet">Copy this and paste it into Multiplayer AI on the Mac where your agent runs.</p>
           <code id="fallback"></code>
+          <p class="quiet" style="margin-top:12px">Don’t have the app on this Mac?
+            <a href="/download">Download Multiplayer AI</a>.</p>
+        </details>
+      </div>
+      <div id="missing" hidden>
+        <h1>Multiplayer AI isn’t installed on this Mac</h1>
+        <p>Your sign-in link is fine. It opens the Multiplayer AI app, and this Mac doesn’t have it
+          yet — so there was nothing for the link to open.</p>
+        <p><a class="button" href="/download">Download Multiplayer AI</a></p>
+        <details open>
+          <summary>Already installed, or signing in on a different Mac?</summary>
+          <p class="quiet">Copy this and paste it into Multiplayer AI on the Mac where your agent
+            runs. It works from any Mac, and can be used once.</p>
+          <code id="missing-fallback"></code>
         </details>
       </div>
       <div id="nothing" hidden>
@@ -109,7 +126,32 @@
         }
         document.getElementById('open').href = target;
         document.getElementById('fallback').textContent = target;
+        document.getElementById('missing-fallback').textContent = target;
+
+        /*
+          Ask the Mac to open the app, then find out whether anything did.
+
+          A browser cannot be asked whether a scheme has a handler; it can only be watched. If the
+          app opens, this page loses focus or is hidden within moments. If it does not, Safari
+          says the address is invalid and the person is left staring at a page that assumes the
+          app exists — which is exactly the dead end this replaces. Staying visible and focused is
+          the only evidence available that nothing handled it, so that is what is used.
+        */
+        var handedOver = false;
+        var noteHandoff = function () { handedOver = true; };
+        window.addEventListener('blur', noteHandoff);
+        window.addEventListener('pagehide', noteHandoff);
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'hidden') handedOver = true;
+        });
+
         window.location.href = target;
+
+        setTimeout(function () {
+          if (handedOver || document.visibilityState === 'hidden' || !document.hasFocus()) return;
+          document.getElementById('opening').hidden = true;
+          document.getElementById('missing').hidden = false;
+        }, 1800);
       })();
     </script>
   </body>

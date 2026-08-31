@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#f7f8f6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#171a17" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Download Multiplayer AI</title>
+    <style>
+      :root{
+        --paper:#f7f8f6; --surface:#fff; --ink:#171a17; --ink2:#3f4842; --muted:#667069;
+        --faint:#8a938c; --line:#dfe3de; --wait:#9c6218; --wait-soft:#f7eddd;
+        --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","Helvetica Neue",sans-serif;
+        --serif:"Iowan Old Style","Palatino Linotype",Charter,Georgia,"Times New Roman",serif;
+        --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+      }
+      @media (prefers-color-scheme: dark){
+        :root{--paper:#171a17;--surface:#202421;--ink:#f0f3ef;--ink2:#cbd1ca;--muted:#969e97;
+              --faint:#767e77;--line:#393f3a;--wait:#ce9c54;--wait-soft:#2b2418}
+      }
+      *{box-sizing:border-box}
+      body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);
+        padding:56px 24px 96px}
+      main{max-width:560px;margin:0 auto}
+      .mark{width:30px;height:30px;border-radius:9px;background:var(--ink);color:var(--paper);
+        display:grid;place-items:center;font:500 17px/1 var(--serif);margin-bottom:20px}
+      .wordmark{font-size:11px;letter-spacing:1.6px;font-weight:600;color:var(--faint);margin:0 0 26px}
+      h1{margin:0 0 10px;font:400 30px/1.18 var(--serif);letter-spacing:-.5px}
+      h2{margin:38px 0 12px;font:600 12px/1 var(--sans);letter-spacing:.7px;text-transform:uppercase;color:var(--faint)}
+      p{margin:0 0 14px;color:var(--muted);font-size:15px}
+      .lead{font-size:16px;color:var(--muted);margin-bottom:26px}
+      a.button{display:inline-block;padding:13px 24px;border-radius:8px;background:var(--ink);
+        color:var(--paper);text-decoration:none;font-size:15px;font-weight:500}
+      a.button[aria-disabled="true"]{opacity:.4;pointer-events:none}
+      .meta{margin-top:10px;font-size:13px;color:var(--faint)}
+      ol{margin:0;padding-left:20px;color:var(--muted);font-size:15px}
+      ol li{margin-bottom:10px}
+      ol li strong{color:var(--ink);font-weight:500}
+      .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+      .note{background:var(--wait-soft);border:1px solid var(--wait);border-radius:10px;padding:14px 16px}
+      .note p{color:var(--ink2);margin:0}
+      .note strong{color:var(--ink)}
+      code{font:12px/1.5 var(--mono);word-break:break-all;color:var(--ink2)}
+      dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:7px 18px;font-size:14px}
+      dt{color:var(--faint)} dd{margin:0;color:var(--ink2)}
+      footer{margin-top:44px;font-size:13px;color:var(--faint)}
+      footer a{color:var(--muted)}
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">M</div>
+      <p class="wordmark">MULTIPLAYER AI</p>
+      <h1>Download Multiplayer AI</h1>
+      <p class="lead">
+        One application. It brings the agent already running on your Mac into a shared workspace,
+        and keeps it connected. There is nothing else to install.
+      </p>
+
+      <p>
+        <a class="button" id="download" href="/app/Multiplayer AI.dmg" download>Download for macOS</a>
+      </p>
+      <p class="meta" id="meta">Preparing…</p>
+
+      <div class="note" role="note">
+        <p>
+          <strong>This is a private beta.</strong> The app connects to a workspace you have been
+          given the address of. It is not usable on its own yet, and it is not ready to be shared
+          outside the group testing it.
+        </p>
+      </div>
+
+      <h2>Installing</h2>
+      <ol>
+        <li>Open the downloaded disk image and drag <strong>Multiplayer AI</strong> into
+          <strong>Applications</strong>.</li>
+        <li>Open it. macOS will say it <strong>“cannot be verified”</strong>, because this beta is
+          not yet signed with an Apple Developer ID. Go to <strong>System Settings → Privacy &amp;
+          Security</strong>, scroll to Security, and choose <strong>Open Anyway</strong> beside
+          Multiplayer AI. Confirm once, and macOS will not ask again.</li>
+        <li>The app sets itself up and asks you to sign in. Nothing needs to be configured, and
+          you will never be asked to use Terminal.</li>
+      </ol>
+
+      <h2>Requirements</h2>
+      <div class="card">
+        <dl>
+          <dt>macOS</dt><dd id="minimum">—</dd>
+          <dt>Processor</dt><dd id="arch">—</dd>
+          <dt>Agent runtime</dt><dd>Hermes, already installed and working on this Mac. Multiplayer AI does not run agents for you.</dd>
+        </dl>
+      </div>
+
+      <h2>Verifying the download</h2>
+      <div class="card">
+        <p style="margin:0 0 8px;font-size:14px;">SHA-256 of the disk image:</p>
+        <code id="sha">—</code>
+      </div>
+
+      <footer>
+        <p>Sign-in links open this app directly. If you have one and nothing happens, install the
+          app first and open the link again — <a href="/signin">the sign-in page</a> will help.</p>
+      </footer>
+    </main>
+
+    <script>
+      /*
+        Every number on this page is read from the file that was actually built and staged beside
+        it. A version or a digest typed into the page by hand is right once and wrong from the
+        next build onwards, and a digest nobody can rely on is worse than none at all.
+      */
+      (function () {
+        var button = document.getElementById('download');
+        fetch('/app/manifest.json', { cache: 'no-store' })
+          .then(function (r) { if (!r.ok) throw new Error('no manifest'); return r.json() })
+          .then(function (m) {
+            document.getElementById('meta').textContent =
+              'Version ' + m.version + ' · ' + (m.bytes / 1e6).toFixed(0) + ' MB · built ' +
+              new Date(m.built_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+            document.getElementById('minimum').textContent = m.minimum_macos + ' or later';
+            document.getElementById('arch').textContent =
+              m.architectures.indexOf('arm64') >= 0 && m.architectures.length === 1
+                ? 'Apple silicon only (M1 or later)'
+                : m.architectures.join(', ');
+            document.getElementById('sha').textContent = m.sha256;
+            button.setAttribute('href', '/app/' + m.file);
+          })
+          .catch(function () {
+            // Say so rather than offering a button that downloads a 404.
+            document.getElementById('meta').textContent =
+              'No build is published right now. Ask whoever invited you for the app.';
+            button.setAttribute('aria-disabled', 'true');
+          });
+      })();
+    </script>
+  </body>
+</html>

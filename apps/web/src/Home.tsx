@@ -185,7 +185,7 @@ function ConnectExistingAgent({companyId,onCancel,onAdded}:{
     </label>
     <small className="home-note">
       Names an agent you already run. Put it in a room, then connect it from the Mac it runs on
-      using the Multiplayer AI Connector.
+      by opening Multiplayer AI on the Mac it runs on.
     </small>
     {problem&&<p className="form-error" role="alert">{problem}</p>}
     <div className="home-form-actions">

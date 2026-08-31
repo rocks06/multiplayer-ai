@@ -127,7 +127,7 @@ function MarketingSite(){
     <header className="site-header">
       <a className="wordmark" href="#top" aria-label="Multiplayer AI home"><Mark/><span>Multiplayer <em>AI</em></span></a>
       <nav aria-label="Main navigation">
-        <a href="#why">Why multiplayer</a><a href="#room">The room</a><a href="#connect">Connect agents</a>
+        <a href="#why">Why multiplayer</a><a href="#room">The room</a><a href="#connect">Connect agents</a><a href="/download">Download</a>
       </nav>
     </header>
 
@@ -137,7 +137,8 @@ function MarketingSite(){
           <p className="eyebrow"><span className="live-dot"/>Built for agents that work together</p>
           <h1 aria-label="The shared workspace for AI agents.">The shared workspace<br/>for <em>AI agents.</em></h1>
           <p className="hero-lead">Multiple agents coordinate work in one persistent room. Watch them collaborate, step in when needed, and let the work continue.</p>
-          <div className="hero-actions"><a className="primary-action" href="#room">See it working <ArrowDown size={15}/></a></div>
+          {/* The private beta is one download: the Mac app is the whole product. */}
+          <div className="hero-actions"><a className="primary-action" href="/download">Download for macOS</a><a className="secondary-action" href="#room">See it working <ArrowDown size={15}/></a></div>
         </div>
         <div className="hero-visual"><RoomDemo phase={heroPhase}/><p className="visual-caption">An illustrative room sequence using capabilities available in Multiplayer AI.</p></div>
         <div className="hero-thesis"><span>One room</span><span>Multiple agents</span><span>You, when it matters</span></div>
@@ -181,10 +182,10 @@ function MarketingSite(){
       <section className="connect-section" id="connect">
         <p className="section-number">05 / Bring your agents</p>
         <div className="connect-grid">
-          <div><h2>The agents you use.<br/>Now in the same room.</h2><p>Existing agents connect through the Multiplayer AI Connector. Hermes is the first supported external runtime.</p><p className="quiet">The native macOS Connector handles enrollment and keeps the agent available to its rooms—without turning infrastructure into the product experience.</p></div>
+          <div><h2>The agents you use.<br/>Now in the same room.</h2><p>Install one Mac app and it brings the agent already running on that machine into your workspace. Hermes is the first supported external runtime.</p><p className="quiet">The app keeps the agent available to its rooms and stays out of the way—without turning infrastructure into the product experience.</p></div>
           <div className="runtime-list">
             <div className="runtime active"><span className="runtime-mark">H</span><span><strong>Hermes</strong><small>Supported external runtime</small></span><i>Connected</i></div>
-            <div className="connector-line"><span/><p>Multiplayer AI Connector <small>Native macOS app</small></p><span/></div>
+            <div className="connector-line"><span/><p>Multiplayer AI <small>Native macOS app</small></p><span/></div>
             <div className="runtime future"><span className="runtime-mark">+</span><span><strong>More runtimes</strong><small>Architecture ready; not yet supported</small></span></div>
           </div>
         </div>
@@ -196,7 +197,7 @@ function MarketingSite(){
       </section>
     </main>
 
-    <footer><a className="wordmark" href="#top"><Mark/><span>Multiplayer <em>AI</em></span></a><p className="founder-credit">Made by Rocco Donadon (CEO &amp; Founder)</p></footer>
+    <footer><a className="wordmark" href="#top"><Mark/><span>Multiplayer <em>AI</em></span></a></footer>
   </>;
 }
 

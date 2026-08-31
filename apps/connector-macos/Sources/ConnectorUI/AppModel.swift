@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -31,6 +32,23 @@ public final class AppModel {
     public var busy = false
     /// The address someone was sent a sign-in link at, so the account screen can say so.
     public var awaitingLinkFor: String?
+
+    /// The standalone Connector, if it is still installed. Offered for removal, never removed.
+    public private(set) var legacyApp: URL?
+    /// Whether sign-in links will actually reach this build.
+    public private(set) var handlesSignInLinks = true
+
+    public func removeLegacyApp() async {
+        guard let legacyApp else { return }
+        if await LegacyApp.moveToTrash(legacyApp) {
+            self.legacyApp = nil
+            // It shared this app's identifier, so the claim is worth re-asserting once it is gone.
+            URLScheme.claim()
+            handlesSignInLinks = URLScheme.claimedByThisApp()
+        }
+    }
+
+    public func dismissLegacyApp() { legacyApp = nil }
 
     public var workspaceAddress: String { progress.workspaceAddress ?? AppModel.defaultAddress }
 
@@ -79,6 +97,12 @@ public final class AppModel {
         // A Mac that has been set up wants its background half running before anything is drawn;
         // one that has not is started by the setup screen, where a failure can be reported.
         if loaded.setupComplete, !(connector ?? self.connector).sidecar.isPreview { self.connector.begin() }
+
+        /* Look at the world without waiting to be asked.
+           A sign-in link can arrive before any window exists — on a cold launch it always does —
+           and a model that only finds out where it is when a view appears would hold that link
+           forever. Initialization is this object's own business. */
+        if connector == nil { Task { await self.refresh() } }
     }
 
     private func write(_ change: (inout Progress) -> Void) {
@@ -114,7 +138,12 @@ public final class AppModel {
         progress = store.load()
         var situation = Situation(setupComplete: progress.setupComplete)
 
-        guard progress.setupComplete else { step = Onboarding.step(for: situation); return }
+        guard progress.setupComplete else {
+            step = Onboarding.step(for: situation)
+            initialized = true
+            await spendQueuedAuthURL()
+            return
+        }
 
         let found = try? await client.currentIdentity()
         identity = found
@@ -138,7 +167,11 @@ public final class AppModel {
         situation.bound = connector.enrolment != nil
         situation.credentialProblem = connector.sidecar.credentialProblem
         step = Onboarding.step(for: situation)
+        legacyApp = LegacyApp.found()
+        handlesSignInLinks = URLScheme.claimedByThisApp()
         if step == .account { await readDeliveryMode() }
+        initialized = true
+        await spendQueuedAuthURL()
     }
 
     /// Confirm against the workspace that the agent and room this Mac remembers still exist.
@@ -254,6 +287,39 @@ public final class AppModel {
             try await client.requestSignInLink(email: email)
             awaitingLinkFor = email
         }
+    }
+
+    /* An auth link can arrive before the app knows anything about itself — being opened *by* a
+       link is the ordinary way in, and macOS delivers it as the first scene appears. Redeeming
+       against a half-built model raced the first refresh and could be answered by whichever
+       finished last. The link waits instead, and is spent the moment the app is ready. */
+    public private(set) var initialized = false
+    public private(set) var queuedAuthURL: String?
+
+    /// A link the app was opened by. Held if the app is still working out where it is.
+    ///
+    /// Whether it is held is the model's own business, decided by whether the model has finished
+    /// its first look at the world. It deliberately does not depend on a view having run: the
+    /// first version of this waited for `RootView`'s task to call back, and a link that arrived
+    /// on a cold launch was queued and then never spent, because that call never came.
+    public func receive(authURL raw: String) async {
+        /* Recorded because the alternative is guessing. When a sign-in link does not work, the
+           first question is whether the app was ever handed it, and that is otherwise invisible
+           from outside. The token is never written — only that something arrived. */
+        AppModel.log.info("sign-in link received (\(self.initialized ? "handling now" : "queued", privacy: .public))")
+        guard initialized else { queuedAuthURL = raw; return }
+        await redeem(raw)
+    }
+
+    static let log = Logger(subsystem: "com.multiplayerai.connector", category: "auth")
+
+
+    /// Spend anything that arrived before the app knew where it was. Called at the end of every
+    /// refresh, so a queued link is taken up the moment there is somewhere to take it.
+    private func spendQueuedAuthURL() async {
+        guard let waiting = queuedAuthURL else { return }
+        queuedAuthURL = nil
+        await redeem(waiting)
     }
 
     /// Redeem whatever the person arrived with — a link the app was opened by, or a token they

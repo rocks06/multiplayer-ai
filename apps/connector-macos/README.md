@@ -118,23 +118,37 @@ is signed locally so it runs on this Mac. Notarisation remains gated on that cer
 
 ## Private technical beta installation
 
-Private beta builds may be distributed with ad-hoc signing and without Apple notarisation. This is
-a known distribution limitation, not a reason to weaken the Connector's credential, enrollment, or
-Gateway security behavior.
+One download. There is no separate Connector to install, and there has not been since this became
+one application — anything that still says otherwise is stale.
 
-1. Move **Multiplayer AI.app** to `/Applications`.
-2. On first launch, macOS may say the app “cannot be verified.” Right-click the app and choose
-   **Open**, then confirm **Open**. If macOS still blocks it, open **System Settings → Privacy &
-   Security** and choose **Open Anyway** for Multiplayer AI.
-3. Follow the setup the app runs. Do not copy credentials into files or bypass its Keychain
-   storage.
-4. An ad-hoc signed upgrade can have a different signing identity. If Keychain no longer recognizes
-   the upgraded app as the same client, sign out if the previous build is still accessible, request
-   a fresh one-time enrollment code, and enroll again. Do not migrate or export the stored
-   credential manually.
+1. Open the disk image and drag **Multiplayer AI** into **Applications**.
+2. Open it. macOS will say it **“cannot be verified”**, because these builds are ad-hoc signed and
+   not notarised. Go to **System Settings → Privacy & Security**, scroll to Security, and choose
+   **Open Anyway**. Confirm once; macOS will not ask again.
+   *Control-clicking the app and choosing Open no longer works — Apple removed that route in
+   macOS 15.*
+3. The app sets itself up, registers `multiplayerai://` so sign-in links reach it, and asks you to
+   sign in. Nothing is configured by hand and Terminal is never involved.
 
-Developer ID signing and notarisation remain required before public distribution, but they do not
-block this private technical beta.
+Upgrading from the old standalone Connector: the app carries across which agent this Mac is and
+which room it works in, then offers to move the old app to the Trash. The credential itself does
+not survive a re-signed build, so it will ask you to reconnect once — one click, no code.
+
+**Ad-hoc signing is the reason for both the Gatekeeper warning and the reconnect.** Developer ID
+signing and notarisation remove them, and remain required before anything is distributed publicly.
+
+## Publishing a build
+
+```
+apps/connector-macos/scripts/build-app.sh   # the app and its disk image
+pnpm build:marketing                        # the site (this empties dist/marketing)
+node tools/stage-download.mjs               # copy the image in, record its digest
+```
+
+`stage-download.mjs` puts the image at `/app/` in the deploy and writes a manifest beside it with
+the version, size, architecture and SHA-256 read out of the image itself. The download page states
+those rather than numbers typed by hand. The image is never committed: it is 40 MB and rebuilt on
+every change, so it belongs in the artifact that is deployed.
 
 ## Checking it
 
