@@ -116,3 +116,34 @@ struct CredentialTests {
         }
     }
 }
+
+/// Reading a credential must never put a dialog in front of somebody.
+///
+/// A build macOS does not recognise as the one that stored the item makes the Keychain prompt,
+/// and `SecItemCopyMatching` blocks its caller until that is answered. On the main thread it took
+/// the whole application with it: an upgraded Mac launched, froze, and could not accept a sign-in
+/// link, behind a system password dialog. `errSecInteractionNotAllowed` is the answer the app
+/// wants instead — it already means "this Mac cannot present its credential", which has a screen
+/// and a one-click remedy.
+@Suite struct NonInteractiveKeychainTests {
+    @Test func aRefusedInteractionIsTreatedAsAnUnreadableCredential() {
+        guard case .unreadable(let status) = Keychain.classify(status: errSecInteractionNotAllowed, data: nil) else {
+            return #expect(Bool(false), "expected unreadable")
+        }
+        #expect(status == errSecInteractionNotAllowed)
+    }
+
+    @Test func andSoRoutesToReconnectRatherThanLookingLikeAStranger() {
+        let decision = SidecarClient.resumeDecision(
+            enrolled: true, lookup: .unreadable(errSecInteractionNotAllowed))
+        #expect(decision == .cannotPresent(.unreadable(errSecInteractionNotAllowed)))
+        #expect(Diagnosis.health(of: .unknown, credential: .unreadable(errSecInteractionNotAllowed)) == .authRequired)
+    }
+
+    /// The lookups that run on the main thread must both carry the flag that prevents the prompt.
+    @Test func bothKeychainReadsRefuseToPrompt() throws {
+        let source = try String(contentsOfFile: "Sources/ConnectorUI/Keychain.swift", encoding: .utf8)
+        let occurrences = source.components(separatedBy: "kSecUseAuthenticationUISkip").count - 1
+        #expect(occurrences >= 2, "readCredential and probe must both skip interaction")
+    }
+}

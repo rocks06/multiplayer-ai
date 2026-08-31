@@ -75,6 +75,20 @@ public enum Keychain {
         return .found(value)
     }
 
+    /**
+     Read the credential, and never ask anybody anything to do it.
+
+     A build macOS does not recognise as the one that stored this item makes the Keychain put up
+     an authorisation dialog — and `SecItemCopyMatching` blocks the calling thread until it is
+     answered. On the main thread that is the whole application: it launched, stopped, and could
+     not draw, respond, or accept a sign-in link, behind a system dialog asking for a password.
+     An upgraded Mac hit this on first launch every time.
+
+     Skipping the interaction turns that into `errSecInteractionNotAllowed`, which is already
+     exactly what this app means by `unreadable` — a state it has a screen and a one-click remedy
+     for. A dialog demanding a login password is a worse answer than the app's own, and this one
+     could not even be reached.
+     */
     public static func readCredential() -> CredentialLookup {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -82,6 +96,7 @@ public enum Keychain {
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
@@ -128,6 +143,8 @@ public enum Keychain {
         var read = query
         read[kSecReturnData as String] = true
         read[kSecMatchLimit as String] = kSecMatchLimitOne
+        // Same rule as reading the real credential: never block setup behind a system dialog.
+        read[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
         var item: CFTypeRef?
         let status = SecItemCopyMatching(read as CFDictionary, &item)
         switch classify(status: status, data: item as? Data) {
