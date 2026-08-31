@@ -15,22 +15,33 @@ import { describe, expect, it } from "vitest";
  */
 const page = readFileSync(resolve(process.cwd(), "apps/marketing/signin.html"), "utf8");
 
-/** Run the page's inline script the way a browser would, without a DOM to draw into. */
-function targetFor(hash: string): string | null {
-  const script = page.slice(page.indexOf("<script>") + 8, page.lastIndexOf("</script>"));
-  const scope: Record<string, unknown> = {
-    window: { location: { hash: "" } } as Record<string, unknown>,
-    document: undefined,
-    URLSearchParams,
-    history: undefined,
+/**
+ * Run the page's two scripts the way a browser would: the head script first, which is what takes
+ * the token out of the URL, then the body script that hands it on. Running them in that order is
+ * the point — the head one has to work before anything else on the page exists.
+ */
+function run(hash: string): { target: string | null; urlAfter: string } {
+  const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]!);
+  if (scripts.length !== 2) throw new Error(`expected a head and a body script, found ${scripts.length}`);
+
+  const location = { hash, pathname: "/signin", href: `https://app.example.com/signin${hash}` };
+  const win: Record<string, unknown> = { location };
+  const history = {
+    replaceState: (_s: unknown, _t: unknown, url: string) => { location.hash = ""; location.href = url; },
   };
-  // eslint-disable-next-line no-new-func
-  new Function("window", "document", "URLSearchParams", "history", script)(
-    scope.window, undefined, URLSearchParams, undefined);
-  const fn = (scope.window as { __signInTarget?: (h: string) => string | null }).__signInTarget;
+  const call = (body: string) =>
+    // eslint-disable-next-line no-new-func
+    new Function("window", "document", "URLSearchParams", "history", body)(
+      win, undefined, URLSearchParams, history);
+
+  call(scripts[0]!);   // head
+  call(scripts[1]!);   // body
+  const fn = win.__signInTarget as ((t: unknown) => string | null) | undefined;
   if (!fn) throw new Error("the page no longer exposes its decision");
-  return fn(hash);
+  return { target: fn(win.__mpaiToken), urlAfter: location.href };
 }
+
+const targetFor = (hash: string) => run(hash).target;
 
 describe("the sign-in landing page", () => {
   it("hands a fragment-carried token to the app over its own scheme", () => {
@@ -58,8 +69,16 @@ describe("the sign-in landing page", () => {
     expect(page).not.toMatch(/<form\b/i);
   });
 
-  it("takes the token out of the address bar once it has been used", () => {
-    expect(page).toContain("history.replaceState");
+  /**
+   * The host injects its own scripts into this page — Netlify adds one. The token must be out of
+   * the URL before any of them can run, which means during head parsing, not at the end of the
+   * body where execution order is somebody else's decision.
+   */
+  it("erases the token from the URL in the head, before any other script exists", () => {
+    const head = page.slice(0, page.indexOf("</head>"));
+    expect(head).toContain("history.replaceState");
+    expect(run("#token=mpsi_abc123").urlAfter).toBe("/signin");
+    expect(run("#token=mpsi_abc123").urlAfter).not.toContain("mpsi_abc123");
   });
 
   it("asks not to be indexed and not to leak a referrer", () => {

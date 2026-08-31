@@ -1,0 +1,4 @@
+# Kept in the publish directory, not only in netlify.toml: a deploy of this folder is read from
+# here, and a 404 on /signin is a person who cannot sign in while the token in their link quietly
+# expires. Pretty URLs would usually cover it; this does not depend on that being switched on.
+/signin    /signin.html    200

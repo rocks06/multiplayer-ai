@@ -37,6 +37,27 @@
       .quiet{color:var(--faint);font-size:13px}
       [hidden]{display:none !important}
     </style>
+    <script>
+      /*
+        First thing on the page, before anything else can run.
+
+        The host injects its own scripts into this document — Netlify adds one — and the token is
+        sitting in location.hash while they load. Nothing here depends on being lucky with
+        execution order: the fragment is read and erased during head parsing, so by the time any
+        other script exists there is nothing in the URL for it to find, and nothing left in
+        history or in a screenshot either.
+      */
+      window.__mpaiToken = (function () {
+        try {
+          var raw = String(window.location.hash || '').replace(/^#/, '');
+          if (!raw) return null;
+          var token = new URLSearchParams(raw).get('token');
+          if (!token) return null;
+          history.replaceState(null, '', window.location.pathname);
+          return token;
+        } catch (e) { return null; }
+      })();
+    </script>
   </head>
   <body>
     <main>
@@ -63,20 +84,16 @@
       /*
         A courier, not an authenticator.
 
-        The token arrives in the fragment, which browsers never send to a server — so it is not in
-        this page's request, not in Netlify's logs, and not visible to a corporate link scanner
+        The token arrived in the fragment, which browsers never send to a server — so it is not in
+        this page's request, not in the host's logs, and not visible to a corporate link scanner
         that fetches the URL before its owner clicks it. A scanner that follows a query-string
         magic link spends it; there is nothing here for one to spend.
 
-        Nothing is transmitted from this page. It reads the fragment, hands the token to the app
-        over the scheme the app registered, and then removes the fragment from the address bar so
-        it is not left in history or in a screenshot.
+        By this point the head script has already taken it out of the URL. All that is left is to
+        hand it to the app. Nothing is transmitted from this page.
       */
       (function () {
-        function targetFor(hash) {
-          var raw = String(hash || '').replace(/^#/, '');
-          if (!raw) return null;
-          var token = new URLSearchParams(raw).get('token');
+        function targetFor(token) {
           if (!token) return null;
           return 'multiplayerai://auth?token=' + encodeURIComponent(token);
         }
@@ -84,7 +101,7 @@
         window.__signInTarget = targetFor;
 
         if (typeof document === 'undefined') return;
-        var target = targetFor(window.location.hash);
+        var target = targetFor(window.__mpaiToken);
         if (!target) {
           document.getElementById('opening').hidden = true;
           document.getElementById('nothing').hidden = false;
@@ -92,8 +109,6 @@
         }
         document.getElementById('open').href = target;
         document.getElementById('fallback').textContent = target;
-        // Out of the address bar, out of history. The button still works: it already has it.
-        try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
         window.location.href = target;
       })();
     </script>
