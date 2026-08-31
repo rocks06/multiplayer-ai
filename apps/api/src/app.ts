@@ -13,6 +13,9 @@ import { AgentGatewayService } from "./agent-gateway/gateway-service.js";
 import { registerAgentGatewayRoutes } from "./agent-gateway/gateway-routes.js";
 import { AuthService, type SignInLinkDelivery } from "./auth/auth-service.js";
 import { deliveryMode, resolveSignInDelivery, type DeliveryEnvironment } from "./auth/delivery-config.js";
+import { assertProductionSafe, isProduction } from "./production-guard.js";
+import { AUTH_LIMITS, PostgresRateLimitStore, clientBucket, emailBucket, overLimit,
+  type RateLimitStore } from "./auth/rate-limit.js";
 
 const fakeStep=z.discriminatedUnion('kind',[
   z.object({kind:z.literal('tool'),id:z.string().min(1),name:z.enum(['room.send_message','task.get','task.list_eligible','task.update_status','task.complete','decision.request','decision.get']),arguments:z.record(z.string(),z.unknown())}),
@@ -43,11 +46,19 @@ export interface AppOptions {
   signInDelivery?: SignInLinkDelivery;
   /** Where delivery is configured from. Defaults to the process environment. */
   environment?: DeliveryEnvironment;
+  /** Counts the public authentication routes. Defaults to one backed by this database. */
+  rateLimits?: RateLimitStore;
 }
 const idem = (request:any) => { const key=request.headers["idempotency-key"]; if(typeof key!=="string") throw new DomainError("idempotency_key_required","Idempotency-Key is required",400); return key; };
 
 export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptions={}, options:AppOptions={}) {
-  const app=Fastify({logger:false});
+  const environmentForGuard=(options.environment ?? process.env) as Record<string,string|undefined>;
+  /* Refuse to start rather than serve a public origin with a development setting on. */
+  assertProductionSafe(environmentForGuard);
+  const production=isProduction(environmentForGuard);
+  /* Behind Render's proxy the socket address is the proxy's. Without this every caller shares one
+     address, and a per-caller limit would lock out everybody at once instead of one abuser. */
+  const app=Fastify({logger:false,trustProxy:production});
   const allowHeaderPrincipal=options.allowHeaderPrincipal ?? process.env.ALLOW_HEADER_PRINCIPAL==="1";
   const cookieSecure=options.cookieSecure ?? process.env.AUTH_COOKIE_SECURE!=="0";
   /* Delivery is settled at startup, not on the first sign-in. A deployment that asked for real
@@ -57,6 +68,18 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const delivery=options.signInDelivery ?? resolveSignInDelivery(environment);
   const mode=options.signInDelivery ? 'custom' : deliveryMode(environment);
   const auth=new AuthService(pool,delivery);
+  const rateLimits=options.rateLimits ?? new PostgresRateLimitStore(pool);
+
+  /* The two routes that send mail to an address the caller chose. Counted before anything looks
+     the address up, so the answer cannot depend on whether it has an account. */
+  const withinAuthLimits=async(request:any,email:string)=>{
+    const [byEmail,byClient]=await Promise.all([
+      rateLimits.hit(emailBucket(email),AUTH_LIMITS.perEmail.windowSeconds),
+      rateLimits.hit(clientBucket(String(request.ip??"unknown")),AUTH_LIMITS.perClient.windowSeconds),
+    ]);
+    if(overLimit(byEmail,AUTH_LIMITS.perEmail)||overLimit(byClient,AUTH_LIMITS.perClient))
+      throw new DomainError("rate_limited","Too many sign-in requests. Try again later.",429);
+  };
   // The acting principal is resolved from the session and the addressed company. A client can
   // never name it, so knowing a principal id grants nothing.
   const principal=async(request:any,companyId:string)=>{
@@ -75,8 +98,8 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
      person: it exists so "check your email" is only shown when an email is actually sent, and the
      developer wording about a workspace operator only when that is genuinely what happens. */
   app.get('/v1/app-config',async()=>({sign_in_delivery:mode}));
-  app.post('/v1/auth/sign-up',async req=>{const x=body(z.object({name:z.string().min(1).max(100),email:z.string().email()}),req.body);return auth.signUp(x)});
-  app.post('/v1/auth/sign-in-links',async req=>{const x=body(z.object({email:z.string().email()}),req.body);return auth.requestSignInLink(x.email)});
+  app.post('/v1/auth/sign-up',async req=>{const x=body(z.object({name:z.string().min(1).max(100),email:z.string().email()}),req.body);await withinAuthLimits(req,x.email);return auth.signUp(x)});
+  app.post('/v1/auth/sign-in-links',async req=>{const x=body(z.object({email:z.string().email()}),req.body);await withinAuthLimits(req,x.email);return auth.requestSignInLink(x.email)});
   app.post('/v1/auth/sessions',async(req,reply)=>{const x=body(z.object({token:z.string().min(8)}),req.body);const created=await auth.createSession(x.token);writeSessionCookie(reply,created.session_token,SESSION_MAX_AGE,cookieSecure);return auth.identity(created.user_id)});
   app.delete('/v1/auth/sessions/current',async(req,reply)=>{const result=await auth.revokeSession(readSessionCookie(req));writeSessionCookie(reply,'',0,cookieSecure);return result});
   app.get('/v1/auth/me',async req=>{const session=await auth.resolveSession(readSessionCookie(req));return auth.identity(session.userId)});

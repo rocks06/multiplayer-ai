@@ -204,6 +204,34 @@ describe("Human authentication", () => {
     await configured.close();
   });
 
+  /**
+   * The limit has to hold on the live route, not only in the counter. And it has to stay silent
+   * about accounts: a 429 for a known address and a 200 for an unknown one would answer the
+   * question these routes exist to refuse.
+   */
+  it("stops the sign-in route being used as an email relay, without saying who has an account", async () => {
+    const limited = buildApp(new Pool({ connectionString }), { pollIntervalMs: 50 },
+      { allowHeaderPrincipal: false, cookieSecure: true, signInDelivery: new SilentSignInLinkDelivery() });
+    const ask = (email: string) =>
+      limited.inject({ method: "POST", url: "/v1/auth/sign-in-links", payload: { email } });
+
+    const f = await company("Relay Co");
+    const known = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
+    const unknown = `nobody-${crypto.randomUUID()}@example.com`;
+
+    const knownCodes: number[] = [];
+    const unknownCodes: number[] = [];
+    for (let i = 0; i < 7; i++) knownCodes.push((await ask(known)).statusCode);
+    for (let i = 0; i < 7; i++) unknownCodes.push((await ask(unknown)).statusCode);
+
+    // Somewhere in there the door closes...
+    expect(knownCodes).toContain(429);
+    // ...and it closes at exactly the same point for an address that does not exist.
+    expect(knownCodes).toEqual(unknownCodes);
+    expect(knownCodes[0]).toBe(200);
+    await limited.close();
+  });
+
   it("lets an authorized company member issue a link for a colleague, and no one else", async () => {
     const f = await company();
     const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
