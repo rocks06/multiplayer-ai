@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {ArrowRight} from 'lucide-react';
-import {ApiError,signUp} from './api';
+import {ApiError,signInDelivery,signUp,type SignInDelivery} from './api';
 import {rememberIntent} from './SignIn';
 
 /**
@@ -36,8 +36,10 @@ export function SignUp({onNavigate}:{onNavigate:(to:string)=>void}){
   const [busy,setBusy]=useState(false);
   const [problem,setProblem]=useState('');
   const [sent,setSent]=useState(false);
+  const [delivery,setDelivery]=useState<SignInDelivery>('resend');
   const field=useRef<HTMLInputElement>(null);
   useEffect(()=>{field.current?.focus()},[]);
+  useEffect(()=>{void signInDelivery().then(setDelivery)},[]);
 
   const submit=async(event:FormEvent)=>{
     event.preventDefault();
@@ -62,7 +64,8 @@ export function SignUp({onNavigate}:{onNavigate:(to:string)=>void}){
         If <strong>{email.trim()}</strong> can be signed in, a link is waiting. It can be used once,
         within fifteen minutes.
       </p>
-      <p className="auth-note">During the developer beta, links are issued to your workspace operator rather than sent by email.</p>
+      {delivery==='logging'&&
+        <p className="auth-note">No email provider is configured, so links are issued to your workspace operator rather than sent.</p>}
       <button className="auth-secondary" onClick={()=>onNavigate('/signin')}>Back to sign in</button>
     </div>
   </main>;

@@ -111,6 +111,7 @@ public final class AppModel {
         situation.bound = connector.enrolment != nil
         situation.credentialProblem = connector.sidecar.credentialProblem
         step = Onboarding.step(for: situation)
+        if step == .account { await readDeliveryMode() }
     }
 
     /// Confirm against the workspace that the agent and room this Mac remembers still exist.
@@ -248,12 +249,41 @@ public final class AppModel {
     }
 
     /// The token out of whatever was handed over: a `multiplayerai://` link the app was opened
-    /// by, an https link from an email, or the bare token pasted on its own.
+    /// by, an https link out of an email, or the bare token pasted on its own.
+    ///
+    /// The fragment is checked as well as the query, because that is where an emailed link keeps
+    /// it. A token in a query string is read by the web host that serves the page and by every
+    /// link scanner that fetches the URL ahead of its owner — and a scanner that follows one
+    /// spends it. In the fragment there is nothing for either to see, which means the link a
+    /// person pastes here looks different from the one the app is opened by, and both have to work.
     nonisolated public static func token(from raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.contains("://") || trimmed.contains("?") else { return trimmed }
+        guard trimmed.contains("://") || trimmed.contains("?") || trimmed.contains("#") else { return trimmed }
         guard let components = URLComponents(string: trimmed) else { return trimmed }
-        return components.queryItems?.first { $0.name == "token" }?.value ?? trimmed
+        if let queried = components.queryItems?.first(where: { $0.name == "token" })?.value, !queried.isEmpty {
+            return queried
+        }
+        if let fragment = components.fragment,
+           let fromFragment = URLComponents(string: "?\(fragment)")?
+               .queryItems?.first(where: { $0.name == "token" })?.value,
+           !fromFragment.isEmpty {
+            return fromFragment
+        }
+        return trimmed
+    }
+
+    /// How this workspace delivers sign-in links, so the app only says "check your email" when an
+    /// email is genuinely sent. Unknown means assume it is: promising an email that never arrives
+    /// is worse than omitting a developer note.
+    public private(set) var delivery: String = "resend"
+
+    private func readDeliveryMode() async {
+        guard let request = try? WorkspaceEndpoint.request(base: client.base, method: "GET", path: "/v1/app-config"),
+              let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let mode = payload["sign_in_delivery"] as? String else { return }
+        delivery = mode
     }
 
     public func signOutOfAccount() async {

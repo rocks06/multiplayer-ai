@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
-import {currentIdentity,redeemSignInToken,requestSignInLink,type SignedInIdentity} from './api';
+import {currentIdentity,redeemSignInToken,requestSignInLink,signInDelivery,type SignInDelivery,type SignedInIdentity} from './api';
 
 const INTENT_KEY='mpai:after-sign-in';
 
@@ -37,7 +37,11 @@ export default function SignIn({onAuthenticated=hardNavigate}:{onAuthenticated?:
   const [email,setEmail]=useState('');
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
+  // Assume real delivery until told otherwise: claiming an email was sent when none was is the
+  // worse of the two mistakes, and the developer note is the one that has to be earned.
+  const [delivery,setDelivery]=useState<SignInDelivery>('resend');
   const emailField=useRef<HTMLInputElement>(null);
+  useEffect(()=>{void signInDelivery().then(setDelivery)},[]);
 
   // A link in the address bar is redeemed immediately; otherwise an existing session is
   // honoured rather than asking someone to sign in twice.
@@ -103,10 +107,11 @@ export default function SignIn({onAuthenticated=hardNavigate}:{onAuthenticated?:
       </>}
 
       {phase.step==='issued'&&<>
-        <h1>Link issued</h1>
+        <h1>{delivery==='logging'?'Link issued':'Check your email'}</h1>
         {/* Never confirms whether the address has an account. */}
         <p className="auth-lead">If <strong>{phase.email}</strong> has an account, a sign-in link is waiting. It can be used once, within fifteen minutes.</p>
-        <p className="auth-note">During the developer beta, links are issued to your workspace operator rather than sent by email.</p>
+        {delivery==='logging'&&
+          <p className="auth-note">No email provider is configured, so links are issued to your workspace operator rather than sent.</p>}
         <button className="auth-secondary" onClick={()=>{setPhase({step:'email'});setEmail('')}}>Use a different address</button>
       </>}
 

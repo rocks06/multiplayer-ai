@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="theme-color" content="#f7f8f6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#171a17" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Sign in to Multiplayer AI</title>
+    <style>
+      :root{
+        --paper:#f7f8f6; --surface:#fff; --ink:#171a17; --muted:#667069; --faint:#8a938c; --line:#dfe3de;
+        --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","Helvetica Neue",sans-serif;
+        --serif:"Iowan Old Style","Palatino Linotype",Charter,Georgia,"Times New Roman",serif;
+        --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+      }
+      @media (prefers-color-scheme: dark){
+        :root{--paper:#171a17;--surface:#202421;--ink:#f0f3ef;--muted:#969e97;--faint:#767e77;--line:#393f3a}
+      }
+      *{box-sizing:border-box}
+      html,body{height:100%}
+      body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 var(--sans);
+        display:grid;place-items:center;padding:24px}
+      main{width:100%;max-width:440px}
+      .mark{width:30px;height:30px;border-radius:9px;background:var(--ink);color:var(--paper);
+        display:grid;place-items:center;font:500 17px/1 var(--serif);margin-bottom:18px}
+      h1{margin:0 0 8px;font:400 26px/1.2 var(--serif);letter-spacing:-.4px}
+      p{margin:0 0 14px;color:var(--muted);font-size:14px}
+      a.button{display:inline-block;margin:6px 0 0;padding:11px 20px;border-radius:7px;
+        background:var(--ink);color:var(--paper);text-decoration:none;font-size:14px;font-weight:500}
+      details{margin-top:22px}
+      summary{cursor:pointer;color:var(--muted);font-size:13px}
+      code{display:block;margin-top:10px;padding:11px;background:var(--surface);border:1px solid var(--line);
+        border-radius:7px;font:12px/1.45 var(--mono);word-break:break-all;color:var(--ink)}
+      .quiet{color:var(--faint);font-size:13px}
+      [hidden]{display:none !important}
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">M</div>
+      <div id="opening">
+        <h1>Opening Multiplayer AI</h1>
+        <p>Your Mac should be asking to open Multiplayer AI. If nothing happens, use the button below.</p>
+        <a class="button" id="open" href="#">Open Multiplayer AI</a>
+        <details>
+          <summary>It didn’t open</summary>
+          <p class="quiet">Copy this and paste it into Multiplayer AI on the Mac where your agent runs.</p>
+          <code id="fallback"></code>
+        </details>
+      </div>
+      <div id="nothing" hidden>
+        <h1>This link is incomplete</h1>
+        <p>It is missing the part that signs you in — that can happen when a link is retyped or
+          truncated by a mail client. Request a new sign-in link from Multiplayer AI.</p>
+        <p class="quiet">Sign-in links can be used once and expire fifteen minutes after they are sent.</p>
+      </div>
+    </main>
+
+    <script>
+      /*
+        A courier, not an authenticator.
+
+        The token arrives in the fragment, which browsers never send to a server — so it is not in
+        this page's request, not in Netlify's logs, and not visible to a corporate link scanner
+        that fetches the URL before its owner clicks it. A scanner that follows a query-string
+        magic link spends it; there is nothing here for one to spend.
+
+        Nothing is transmitted from this page. It reads the fragment, hands the token to the app
+        over the scheme the app registered, and then removes the fragment from the address bar so
+        it is not left in history or in a screenshot.
+      */
+      (function () {
+        function targetFor(hash) {
+          var raw = String(hash || '').replace(/^#/, '');
+          if (!raw) return null;
+          var token = new URLSearchParams(raw).get('token');
+          if (!token) return null;
+          return 'multiplayerai://auth?token=' + encodeURIComponent(token);
+        }
+        // Exposed so the shipped page itself can be tested, rather than a copy of its logic.
+        window.__signInTarget = targetFor;
+
+        if (typeof document === 'undefined') return;
+        var target = targetFor(window.location.hash);
+        if (!target) {
+          document.getElementById('opening').hidden = true;
+          document.getElementById('nothing').hidden = false;
+          return;
+        }
+        document.getElementById('open').href = target;
+        document.getElementById('fallback').textContent = target;
+        // Out of the address bar, out of history. The button still works: it already has it.
+        try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
+        window.location.href = target;
+      })();
+    </script>
+  </body>
+</html>

@@ -4,3 +4,11 @@
 
 [build.environment]
   NODE_VERSION = "24"
+
+# The page an emailed sign-in link lands on. Serving it explicitly rather than relying on pretty
+# URLs being on: a 404 here is a person who cannot sign in, and the token in the fragment would
+# be spent by the time anyone noticed.
+[[redirects]]
+  from = "/signin"
+  to = "/signin.html"
+  status = 200

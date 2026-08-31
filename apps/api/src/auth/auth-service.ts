@@ -26,7 +26,14 @@ export interface SignInLinkDelivery {
   deliver(link: SignInLink): Promise<void>;
 }
 
-/** Developer beta: no email provider. The operator reads the link from the server log. */
+/**
+ * Development only. There is no provider, so the operator reads the link out of the server log.
+ *
+ * This writes the raw token on purpose — it is the only way the link reaches anybody in this
+ * mode — which is exactly why it must never be what a deployment falls back to. `SIGN_IN_DELIVERY`
+ * has to name it explicitly, and asking for `resend` without the configuration to send is a
+ * startup failure rather than a quiet downgrade to this.
+ */
 export class LoggingSignInLinkDelivery implements SignInLinkDelivery {
   constructor(private readonly write: (line: string) => void = line => console.log(line)) {}
   async deliver(link: SignInLink) {
@@ -48,7 +55,22 @@ export class AuthService {
   constructor(
     private readonly pool: DbPool,
     private readonly delivery: SignInLinkDelivery = new LoggingSignInLinkDelivery(),
+    private readonly onDeliveryFailure: (failure: unknown) => void = failure =>
+      console.error(`[auth] sign-in link could not be delivered: ${(failure as Error)?.message ?? failure}`),
   ) {}
+
+  /**
+   * Deliver, and never let the attempt change what the caller is told.
+   *
+   * Only a known address reaches delivery at all, so an error escaping from here would answer the
+   * one question these routes exist to refuse: whether an address has an account. A provider
+   * outage would turn every public sign-in route into an account oracle. The failure is recorded
+   * where an operator can see it and the response stays exactly as opaque as it was.
+   */
+  private async deliverQuietly(link: SignInLink) {
+    try { await this.delivery.deliver(link); }
+    catch (failure) { this.onDeliveryFailure(failure); }
+  }
 
   private async mintToken(userId: string, email: string): Promise<SignInLink> {
     const id = uuidv7(), token = secret("mpsi");
@@ -65,7 +87,7 @@ export class AuthService {
    */
   async requestSignInLink(email: string) {
     const user = await this.pool.query<{ id: string; email: string }>(`SELECT id,email FROM users WHERE lower(email)=lower($1)`, [email]);
-    if (user.rowCount) await this.delivery.deliver(await this.mintToken(user.rows[0]!.id, user.rows[0]!.email));
+    if (user.rowCount) await this.deliverQuietly(await this.mintToken(user.rows[0]!.id, user.rows[0]!.email));
     return { status: "accepted" as const };
   }
 
@@ -85,7 +107,7 @@ export class AuthService {
 
     if (existing.rowCount) {
       // Already an account: behave exactly as asking for a sign-in link does.
-      await this.delivery.deliver(await this.mintToken(existing.rows[0]!.id, existing.rows[0]!.email));
+      await this.deliverQuietly(await this.mintToken(existing.rows[0]!.id, existing.rows[0]!.email));
       return { status: "accepted" as const };
     }
 
@@ -99,7 +121,7 @@ export class AuthService {
       ? inserted.rows[0]!
       : (await this.pool.query<{ id: string; email: string }>(`SELECT id,email FROM users WHERE lower(email)=lower($1)`, [email])).rows[0]!;
 
-    await this.delivery.deliver(await this.mintToken(user.id, user.email));
+    await this.deliverQuietly(await this.mintToken(user.id, user.email));
     return { status: "accepted" as const };
   }
 
@@ -117,7 +139,9 @@ export class AuthService {
     );
     if (!target.rowCount) throw new DomainError("user_not_found", "Active company member not found", 404);
     const link = await this.mintToken(target.rows[0]!.id, target.rows[0]!.email);
-    await this.delivery.deliver(link);
+    // This route is authenticated and hands the caller the link itself, so a delivery failure
+    // costs them nothing — they already have what they asked for.
+    await this.deliverQuietly(link);
     return link;
   }
 

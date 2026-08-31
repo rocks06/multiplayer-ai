@@ -134,3 +134,31 @@ import Foundation
         #expect(error.recovery.contains("HTTPS"))
     }
 }
+
+/// The link out of an email keeps its token in the fragment, so the app has to read both halves.
+@Suite struct EmailedLinkTests {
+    private let token = "mpsi_ThIsIsNotARealToken-0123456789"
+
+    @Test func aFragmentCarriedLinkIsUnderstood() {
+        #expect(AppModel.token(from: "https://app.example.com/signin#token=\(token)") == token)
+    }
+
+    @Test func theSchemeTheAppIsOpenedByStillWorks() {
+        #expect(AppModel.token(from: "multiplayerai://auth?token=\(token)") == token)
+    }
+
+    @Test func aPercentEncodedTokenIsDecodedOnce() {
+        #expect(AppModel.token(from: "https://app.example.com/signin#token=a%2Bb%2Fc%3Dd") == "a+b/c=d")
+    }
+
+    @Test func aBareTokenIsStillAToken() {
+        #expect(AppModel.token(from: "  \(token)  ") == token)
+    }
+
+    /// A link with no token must not be mistaken for one, or the app would spend a request
+    /// redeeming a URL and report an expired link.
+    @Test func aLinkWithoutATokenIsNotOne() {
+        #expect(AppModel.token(from: "https://app.example.com/signin") == "https://app.example.com/signin")
+        #expect(AppModel.token(from: "https://app.example.com/signin#other=1") == "https://app.example.com/signin#other=1")
+    }
+}

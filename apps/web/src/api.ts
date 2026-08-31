@@ -165,3 +165,18 @@ export const signUp=(name:string,email:string)=>
   send<{status:string}>('/v1/auth/sign-up',{method:'POST',body:JSON.stringify({name,email})});
 
 export const signOut=()=>send<unknown>('/v1/auth/sessions/current',{method:'DELETE'});
+
+/**
+ * How sign-in links actually reach people, asked of the server rather than assumed.
+ *
+ * The wording on the sign-in screens depends on it: telling somebody to check their email when
+ * nothing is being sent is the developer-beta note that has to disappear the moment real
+ * delivery is on — and has to stay while it is not.
+ */
+export type SignInDelivery='resend'|'logging'|'silent'|'custom';
+export const signInDelivery=()=>
+  fetch('/v1/app-config',{credentials:'same-origin'})
+    .then(response=>response.ok?response.json() as Promise<{sign_in_delivery:SignInDelivery}>:null)
+    .then(config=>config?.sign_in_delivery??'logging')
+    .catch(()=>'logging' as SignInDelivery);
+

@@ -140,6 +140,70 @@ describe("Human authentication", () => {
     expect(delivery.delivered).toHaveLength(1);
   });
 
+  /**
+   * With a real provider, sending is the only thing that happens for a known address and does not
+   * happen for an unknown one — so a provider outage would turn this route into an account
+   * oracle: 500 for addresses that exist, 200 for addresses that do not. The failure is recorded
+   * server-side and the answer stays identical.
+   */
+  it("stays indistinguishable when the email provider is failing", async () => {
+    const failures: unknown[] = [];
+    const exploding = { async deliver() { throw new Error("provider unavailable") } };
+    const failingApp = buildApp(new Pool({ connectionString }), { pollIntervalMs: 50 },
+      { allowHeaderPrincipal: false, cookieSecure: true, signInDelivery: exploding });
+    const ask = (email: string) =>
+      failingApp.inject({ method: "POST", url: "/v1/auth/sign-in-links", payload: { email } });
+
+    const f = await company("Outage Co");
+    const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
+
+    const known = await ask(email);
+    const unknown = await ask("nobody-at-all@example.com");
+    expect(known.statusCode).toBe(200);
+    expect(known.statusCode).toBe(unknown.statusCode);
+    expect(known.json()).toEqual({ status: "accepted" });
+    expect(known.json()).toEqual(unknown.json());
+
+    // Signing up is the same route into delivery and must behave the same way.
+    const signUp = await failingApp.inject({ method: "POST", url: "/v1/auth/sign-up",
+      payload: { name: "New", email: `fresh-${crypto.randomUUID()}@example.com` } });
+    expect(signUp.statusCode).toBe(200);
+    expect(signUp.json()).toEqual({ status: "accepted" });
+    void failures;
+    await failingApp.close();
+  });
+
+  /** A link that could not be delivered is still a link that was minted, and still single-use. */
+  it("keeps a token single-use and short-lived however it was delivered", async () => {
+    const f = await company("Semantics Co");
+    const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
+    expect((await call("POST", "/v1/auth/sign-in-links", { email })).statusCode).toBe(200);
+    const link = delivery.delivered.at(-1)!;
+
+    // Fifteen minutes, decided by the server and not by whoever sends the mail.
+    const minutes = (Date.parse(link.expires_at) - Date.now()) / 60_000;
+    expect(minutes).toBeGreaterThan(13);
+    expect(minutes).toBeLessThanOrEqual(15);
+
+    const first = await call("POST", "/v1/auth/sessions", { token: link.token });
+    expect(first.statusCode).toBe(200);
+    const replay = await call("POST", "/v1/auth/sessions", { token: link.token });
+    expect(replay.statusCode).toBe(401);
+
+    // And only the digest was ever stored.
+    const stored = await pool.query(`SELECT token_hash FROM user_auth_tokens WHERE user_id=$1`, [link.user_id]);
+    for (const row of stored.rows) expect(row.token_hash).not.toContain(link.token);
+  });
+
+  it("says how sign-in links are delivered, so the product can say the right thing", async () => {
+    const configured = buildApp(new Pool({ connectionString }), { pollIntervalMs: 50 },
+      { allowHeaderPrincipal: false, environment: { SIGN_IN_DELIVERY: "logging" } });
+    const answer = await configured.inject({ method: "GET", url: "/v1/app-config" });
+    expect(answer.statusCode).toBe(200);
+    expect(answer.json()).toEqual({ sign_in_delivery: "logging" });
+    await configured.close();
+  });
+
   it("lets an authorized company member issue a link for a colleague, and no one else", async () => {
     const f = await company();
     const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;

@@ -12,6 +12,7 @@ import { AgentRuntimeService } from "./agent-runtime/runtime-service.js";
 import { AgentGatewayService } from "./agent-gateway/gateway-service.js";
 import { registerAgentGatewayRoutes } from "./agent-gateway/gateway-routes.js";
 import { AuthService, type SignInLinkDelivery } from "./auth/auth-service.js";
+import { deliveryMode, resolveSignInDelivery, type DeliveryEnvironment } from "./auth/delivery-config.js";
 
 const fakeStep=z.discriminatedUnion('kind',[
   z.object({kind:z.literal('tool'),id:z.string().min(1),name:z.enum(['room.send_message','task.get','task.list_eligible','task.update_status','task.complete','decision.request','decision.get']),arguments:z.record(z.string(),z.unknown())}),
@@ -40,6 +41,8 @@ export interface AppOptions {
   allowHeaderPrincipal?: boolean;
   cookieSecure?: boolean;
   signInDelivery?: SignInLinkDelivery;
+  /** Where delivery is configured from. Defaults to the process environment. */
+  environment?: DeliveryEnvironment;
 }
 const idem = (request:any) => { const key=request.headers["idempotency-key"]; if(typeof key!=="string") throw new DomainError("idempotency_key_required","Idempotency-Key is required",400); return key; };
 
@@ -47,7 +50,13 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const app=Fastify({logger:false});
   const allowHeaderPrincipal=options.allowHeaderPrincipal ?? process.env.ALLOW_HEADER_PRINCIPAL==="1";
   const cookieSecure=options.cookieSecure ?? process.env.AUTH_COOKIE_SECURE!=="0";
-  const auth=new AuthService(pool,options.signInDelivery);
+  /* Delivery is settled at startup, not on the first sign-in. A deployment that asked for real
+     email and cannot send it fails here, loudly, rather than accepting sign-ups and writing
+     everybody's link to a console. */
+  const environment=options.environment ?? (process.env as DeliveryEnvironment);
+  const delivery=options.signInDelivery ?? resolveSignInDelivery(environment);
+  const mode=options.signInDelivery ? 'custom' : deliveryMode(environment);
+  const auth=new AuthService(pool,delivery);
   // The acting principal is resolved from the session and the addressed company. A client can
   // never name it, so knowing a principal id grants nothing.
   const principal=async(request:any,companyId:string)=>{
@@ -62,6 +71,10 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.register(websocket);
   app.setErrorHandler((error,request,reply)=>{ if(error instanceof DomainError) return reply.status(error.statusCode).send({error:{code:error.code,message:error.message,request_id:request.id,details:error.details}}); if(error instanceof z.ZodError) return reply.status(400).send({error:{code:"validation_error",message:"Invalid request",request_id:request.id,details:error.issues}}); request.log.error(error); return reply.status(500).send({error:{code:"internal_error",message:"Internal server error",request_id:request.id}}); });
   app.get('/health',async()=>({status:'ok'}));
+  /* What the product may say about how a link arrives. Not a secret, and not about any one
+     person: it exists so "check your email" is only shown when an email is actually sent, and the
+     developer wording about a workspace operator only when that is genuinely what happens. */
+  app.get('/v1/app-config',async()=>({sign_in_delivery:mode}));
   app.post('/v1/auth/sign-up',async req=>{const x=body(z.object({name:z.string().min(1).max(100),email:z.string().email()}),req.body);return auth.signUp(x)});
   app.post('/v1/auth/sign-in-links',async req=>{const x=body(z.object({email:z.string().email()}),req.body);return auth.requestSignInLink(x.email)});
   app.post('/v1/auth/sessions',async(req,reply)=>{const x=body(z.object({token:z.string().min(8)}),req.body);const created=await auth.createSession(x.token);writeSessionCookie(reply,created.session_token,SESSION_MAX_AGE,cookieSecure);return auth.identity(created.user_id)});

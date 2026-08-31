@@ -186,16 +186,19 @@ public struct AccountScreen: View {
     }
 
     private func linkSent(to address: String) -> some View {
-        Sheet(title: "Check your email",
+        let logging = app.delivery == "logging"
+        return Sheet(title: logging ? "Link issued" : "Check your email",
               lead: "If \(address) can be signed in, a link is waiting. It can be used once, within fifteen minutes.") {
             VStack(alignment: .leading, spacing: 16) {
-                /* The honest part of the beta. Email delivery is not connected yet, so the link
-                   has to come from whoever runs the workspace — and pretending otherwise would
-                   leave someone waiting for a message that is never sent. Pasting it here does
-                   exactly what opening it would, and this whole block disappears the day
-                   delivery is real. */
-                Field("Or paste your sign-in link", placeholder: "multiplayerai://…",
-                      hint: "Email delivery is not switched on yet, so your workspace operator issues the link.",
+                /* Opening the link is the ordinary way through, and it lands back in this app.
+                   The field stays because a link can always fail to hand over — a browser that
+                   will not open the app, a message forwarded to another machine — and pasting it
+                   does exactly what opening it would. Only the explanation changes with how the
+                   link is actually sent. */
+                Field("Or paste your sign-in link", placeholder: "https://…",
+                      hint: logging
+                        ? "No email provider is configured, so your workspace operator issues the link."
+                        : "Opening the link from your email signs you in here.",
                       value: $pasted) { Task { await app.redeem(pasted) } }
                 if let problem = app.problem {
                     Problem(what: problem.message, todo: problem.recovery)
