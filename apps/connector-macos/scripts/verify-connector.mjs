@@ -18,7 +18,10 @@ import pg from 'pg';
 const API = process.env.API ?? 'http://127.0.0.1:4100';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const BINARY = path.join(here, '..', 'build', 'mpai-connector-sidecar');
-const SUPPORT = path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI');
+/* Its own directory, not the app's. These harnesses delete durable state as part of what they
+   check, and the helper's state file is where a live session's token lives — so pointed at the
+   shared directory they would sign the real app's agent out from under it. */
+const SUPPORT = path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI (verify)');
 const LOG = path.join(SUPPORT, 'connector.log');
 const HERMES_STUB = process.env.HERMES_STUB;
 
@@ -31,7 +34,7 @@ const check = (name, pass, detail) => {
 
 /** One Connector helper, spoken to exactly as the app speaks to it. */
 function helper(env = {}) {
-  const child = spawn(BINARY, [], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(BINARY, [], { env: { ...process.env, MPAI_SUPPORT_DIR: SUPPORT, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   const waiters = new Map();
   let states = [];
   let id = 0, buffer = '';

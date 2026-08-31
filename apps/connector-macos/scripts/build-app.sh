@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Multiplayer AI Connector.app and a .dmg someone can drag to Applications.
+# Builds Multiplayer AI.app and a .dmg someone can drag to Applications.
 #
 # Developer ID signing and notarisation are a separate, later gate: without that certificate this
 # produces a locally signed build, which runs on this Mac and on any Mac where the user allows it
@@ -10,22 +10,28 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 connector="$(dirname "$here")"
 repo="$(cd "$connector/../.." && pwd)"
-name="Multiplayer AI Connector"
+name="Multiplayer AI"
+# Where a build points when nobody tells it otherwise. Stamped into the bundle so nobody is ever
+# asked to type an address; override for a build aimed at a different workspace.
+workspace="${MPAI_WORKSPACE_URL:-http://127.0.0.1:4100}"
+# The shipping identity by default. A build given a different one keeps its settings and its
+# keychain entirely to itself, which is how a verification build runs beside the real app.
+bundle_id="${MPAI_BUNDLE_ID:-com.multiplayerai.connector}"
 out="$connector/build"
 # The repository may live in an iCloud-synced folder, which continuously re-applies
 # com.apple.FinderInfo to everything inside it — and codesign refuses to sign over that. The
 # bundle is therefore assembled and signed somewhere local, and only the finished disk image
 # comes back into the repository, where extended attributes on it are harmless.
-work="${TMPDIR:-/tmp}/multiplayer-ai-connector-build"
+work="${TMPDIR:-/tmp}/multiplayer-ai-app-build"
 app="$work/$name.app"
 
-echo "• building the connector helper"
+echo "• building the background helper"
 node "$here/build-sidecar.mjs"
 
 echo "• building the app"
 cd "$connector"
-swift build -c release --product MultiplayerAIConnector >/dev/null
-binary="$(swift build -c release --product MultiplayerAIConnector --show-bin-path)/MultiplayerAIConnector"
+swift build -c release --product MultiplayerAI >/dev/null
+binary="$(swift build -c release --product MultiplayerAI --show-bin-path)/MultiplayerAI"
 
 echo "• assembling the bundle"
 rm -rf "$work"
@@ -43,14 +49,29 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>$name</string>
   <key>CFBundleDisplayName</key><string>$name</string>
-  <key>CFBundleIdentifier</key><string>com.multiplayerai.connector</string>
+  <key>CFBundleIdentifier</key><string>$bundle_id</string>
   <key>CFBundleExecutable</key><string>$name</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.2.0</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
-  <!-- A menu bar app: no Dock icon, no window taking over the screen. -->
-  <key>LSUIElement</key><true/>
+  <!-- A real application now: it has a window, a Dock icon, and a place in Cmd-Tab. The menu
+       bar is still there, but as somewhere to glance rather than as the whole product. -->
+  <key>MPAIWorkspaceURL</key><string>$workspace</string>
+  <!-- Sign-in links open the app rather than a browser, so signing in stays inside it. -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>com.multiplayerai.signin</string>
+      <key>CFBundleURLSchemes</key><array><string>multiplayerai</string></array>
+    </dict>
+  </array>
+  <!-- A workspace on your own machine or your own network is reached over plain HTTP. Only
+       that is allowed; this is not a blanket exemption. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+  </dict>
 </dict>
 </plist>
 PLIST

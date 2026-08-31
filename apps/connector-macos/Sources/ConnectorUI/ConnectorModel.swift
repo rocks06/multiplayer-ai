@@ -32,12 +32,27 @@ public final class ConnectorModel {
 
     /// `live: false` builds a model that touches nothing — no helper spawned, no Keychain read —
     /// so the views can be rendered and reasoned about on their own.
-    public init(live: Bool = true, state: SidecarState? = nil, enrolment: Keychain.Enrolment? = nil,
-                credentialProblem: CredentialProblem? = nil) {
+    ///
+    /// `autostart: false` builds a live model that has not started yet. The unified app uses it
+    /// so that starting the background service is something the setup screen genuinely does and
+    /// can genuinely fail at, rather than something that has already quietly happened by the time
+    /// the person is told about it.
+    public init(live: Bool = true, autostart: Bool = true, state: SidecarState? = nil,
+                enrolment: Keychain.Enrolment? = nil, credentialProblem: CredentialProblem? = nil) {
         self.sidecar = SidecarClient(preview: state)
         self.sidecar.credentialProblem = credentialProblem
         self.enrolment = live ? Keychain.enrolment() : enrolment
-        guard live else { return }
+        guard live, autostart else { return }
+        begin()
+    }
+
+    private var started = false
+
+    /// Start the background half and keep watching it. Safe to call more than once; a second
+    /// call is what a returning launch and a retried setup step both do.
+    public func begin() {
+        guard !started else { return }
+        started = true
         sidecar.start()
         Task { [self] in
             // A returning install is already bound to an agent; it should simply come back.

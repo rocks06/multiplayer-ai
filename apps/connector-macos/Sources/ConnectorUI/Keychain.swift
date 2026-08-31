@@ -7,7 +7,13 @@ import Security
 /// never placed in a file, an argument list, an environment variable the user could read back,
 /// or anything shown on screen. Removing it is what signing out means.
 public enum Keychain {
-    private static let service = "com.multiplayerai.connector"
+    /// Keyed to the bundle, not to a literal.
+    ///
+    /// For the shipping app this is the same string it has always been, so nothing already
+    /// stored moves. What it buys is that a build with a different identity — a verification
+    /// build alongside the real one — cannot reach into, overwrite, or invalidate the
+    /// credential belonging to the app a person actually uses.
+    private static var service: String { Bundle.main.bundleIdentifier ?? "com.multiplayerai.connector" }
     private static let account = "workspace-credential"
 
     /// Everything needed to reconnect after a restart, except the credential itself.
@@ -93,6 +99,43 @@ public enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ] as CFDictionary)
+    }
+
+    /// Prove this Mac can actually keep a secret, before anything depends on it.
+    ///
+    /// A read of the real credential would not do: on a Mac that has never been set up there is
+    /// nothing stored, so a read succeeds at finding nothing and proves precisely nothing. This
+    /// writes a throwaway value, reads it back, and removes it — so a keychain that is locked or
+    /// that will not admit this build is found during setup rather than at the moment someone's
+    /// credential is being saved.
+    public static func probe() -> CredentialLookup {
+        let probeAccount = "storage-probe"
+        let expected = UUID().uuidString
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: probeAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
+        defer { SecItemDelete(query as CFDictionary) }
+
+        var attributes = query
+        attributes[kSecValueData as String] = Data(expected.utf8)
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let wrote = SecItemAdd(attributes as CFDictionary, nil)
+        guard wrote == errSecSuccess else { return .unreadable(wrote) }
+
+        var read = query
+        read[kSecReturnData as String] = true
+        read[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(read as CFDictionary, &item)
+        switch classify(status: status, data: item as? Data) {
+        case .found(let value) where value == expected: return .found(value)
+        case .found: return .unreadable(errSecDecode)
+        case .missing: return .unreadable(errSecItemNotFound)
+        case .unreadable(let status): return .unreadable(status)
+        }
     }
 
     /* Which agent and room this Mac is bound to is not secret, and is kept beside the app's own

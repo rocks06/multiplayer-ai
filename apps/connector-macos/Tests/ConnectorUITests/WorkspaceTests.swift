@@ -1,0 +1,136 @@
+import Testing
+import Foundation
+@testable import ConnectorUI
+
+/// The requests the app sends, checked without a server. Every one of these is a path a person
+/// walks through during their first five minutes, so a typo in one is a broken first run.
+@Suite struct WorkspaceEndpointTests {
+    private let base = URL(string: "http://127.0.0.1:4100")!
+
+    @Test func aPathIsResolvedAgainstTheWorkspace() throws {
+        let request = try WorkspaceEndpoint.request(base: base, method: "GET", path: "/v1/auth/me")
+        #expect(request.url?.absoluteString == "http://127.0.0.1:4100/v1/auth/me")
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "content-type") == nil)
+    }
+
+    @Test func aBodyIsSentAsJSON() throws {
+        let request = try WorkspaceEndpoint.request(base: base, method: "POST", path: "/v1/workspaces",
+                                                    body: ["name": "Acme"])
+        #expect(request.value(forHTTPHeaderField: "content-type") == "application/json")
+        let decoded = try JSONSerialization.jsonObject(with: #require(request.httpBody)) as? [String: String]
+        #expect(decoded == ["name": "Acme"])
+    }
+
+    /// Room membership is the one call a person can cause twice by pressing a button twice, so
+    /// it carries a key derived from what is being asked for rather than a fresh one each time.
+    @Test func membershipCarriesAStableIdempotencyKey() throws {
+        let first = try WorkspaceEndpoint.request(base: base, method: "POST", path: "/x",
+                                                  body: [:], idempotencyKey: "member-room-agent")
+        let second = try WorkspaceEndpoint.request(base: base, method: "POST", path: "/x",
+                                                   body: [:], idempotencyKey: "member-room-agent")
+        #expect(first.value(forHTTPHeaderField: "idempotency-key") == second.value(forHTTPHeaderField: "idempotency-key"))
+    }
+
+    @Test func aWorkspaceOnAPortKeepsIt() throws {
+        let request = try WorkspaceEndpoint.request(base: URL(string: "http://192.168.1.20:4100")!,
+                                                    method: "GET", path: "/v1/companies/abc/rooms")
+        #expect(request.url?.absoluteString == "http://192.168.1.20:4100/v1/companies/abc/rooms")
+    }
+}
+
+@Suite struct WorkspaceErrorTests {
+    /// Every error a person can hit has to answer both questions. A message with no recovery is
+    /// the failure mode this product keeps having, so it is asserted rather than hoped for.
+    @Test func namedFailuresSayWhatToDo() {
+        let cases: [(Int, String)] = [
+            (401, "sign_in_invalid"), (401, "unauthenticated"), (403, "forbidden"),
+            (404, "agent_not_found"), (409, "enrollment_room_required"), (401, "enrollment_invalid"),
+        ]
+        for (status, code) in cases {
+            let error = WorkspaceError.from(status: status, code: code, message: nil)
+            #expect(!error.message.isEmpty, "\(code) must say what happened")
+            #expect(!error.recovery.isEmpty, "\(code) must say what to do now")
+        }
+    }
+
+    @Test func anExpiredLinkIsNotTheSameAsAnExpiredSession() {
+        let link = WorkspaceError.from(status: 401, code: "sign_in_invalid", message: nil)
+        let session = WorkspaceError.from(status: 401, code: "unauthenticated", message: nil)
+        #expect(link.message != session.message)
+        #expect(session.recovery.contains("Nothing you have set up is lost"))
+    }
+
+    @Test func anUnreachableWorkspaceIsAboutTheNetworkNotTheAccount() {
+        let error = WorkspaceError.unreachable("http://127.0.0.1:4100")
+        #expect(error.status == 0)
+        #expect(error.recovery.contains("connection"))
+        // Never suggests signing in again: the session is fine, the network is not.
+        #expect(!error.recovery.contains("Sign in"))
+    }
+
+    @Test func anUnrecognisedFailureStillCarriesWhatTheServerSaid() {
+        let error = WorkspaceError.from(status: 500, code: "internal_error", message: "Internal server error")
+        #expect(error.message == "Internal server error")
+    }
+}
+
+@Suite struct IdentityDecodingTests {
+    @Test func anAccountWithNoWorkspaceDecodes() {
+        let identity = Identity.decode([
+            "user": ["id": "u1", "email": "a@b.c", "display_name": "Ada"],
+            "companies": [],
+        ])
+        #expect(identity?.displayName == "Ada")
+        #expect(identity?.companies.isEmpty == true)
+    }
+
+    @Test func aWorkspaceCarriesThePrincipalThatActsInIt() {
+        let identity = Identity.decode([
+            "user": ["id": "u1", "email": "a@b.c", "display_name": "Ada"],
+            "companies": [["company_id": "c1", "company_name": "Acme", "principal_id": "p1"]],
+        ])
+        #expect(identity?.companies.first?.companyId == "c1")
+        #expect(identity?.companies.first?.principalId == "p1")
+    }
+
+    @Test func anAnswerMissingTheUserIsRefused() {
+        #expect(Identity.decode(["companies": []]) == nil)
+    }
+}
+
+@Suite struct SignInTokenTests {
+    /// The three ways a token can arrive, all of which have to work: a link the app was opened
+    /// by, a link out of an email, and the token pasted on its own.
+    @Test func aTokenIsFoundInWhateverWasHandedOver() {
+        #expect(AppModel.token(from: "mpsi_abc123") == "mpsi_abc123")
+        #expect(AppModel.token(from: "multiplayerai://auth?token=mpsi_abc123") == "mpsi_abc123")
+        #expect(AppModel.token(from: "https://app.example.com/signin?token=mpsi_abc123") == "mpsi_abc123")
+        #expect(AppModel.token(from: "  mpsi_abc123  ") == "mpsi_abc123")
+    }
+
+    @Test func aLinkWithNoTokenIsNotMistakenForOne() {
+        #expect(AppModel.token(from: "https://app.example.com/signin") == "https://app.example.com/signin")
+    }
+}
+
+/// Being signed in and holding a session are two different things.
+///
+/// A workspace that marks its session cookie `Secure` and is reached over plain HTTP will accept
+/// a sign-in link and hand back an identity that nothing can keep. Reported as an ordinary
+/// failure it looks like a link that did not work; named, it points at the one setting that is
+/// actually wrong.
+@Suite struct SessionNotKeptTests {
+    @Test func itIsNotMistakenForAnExpiredLink() {
+        let notKept = WorkspaceError.sessionNotKept()
+        let expired = WorkspaceError.from(status: 401, code: "sign_in_invalid", message: nil)
+        #expect(notKept.message != expired.message)
+        #expect(notKept.code == "session_not_kept")
+    }
+
+    @Test func itNamesTheSettingThatWouldFixIt() {
+        let error = WorkspaceError.sessionNotKept()
+        #expect(error.recovery.contains("AUTH_COOKIE_SECURE=0"))
+        #expect(error.recovery.contains("HTTPS"))
+    }
+}

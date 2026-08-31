@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { EventStream, type EventDisposition, type StreamOptions } from "./event-stream.js";
 import { GatewayClient } from "./gateway-client.js";
 import { eventKey, isActionableCandidate, isRelevantActionable } from "./relevance.js";
+import { belongsTo, emptyState } from "./state-store.js";
 import type {
   ActionableMarker,
   AgentRuntimeAdapter,
@@ -57,7 +58,20 @@ export class ConnectorRuntime {
       }
       this.save();
     });
-    if (this.state.session_id && this.state.session_token) {
+    /* Durable state belongs to one agent in one room. State naming a different pair is left
+       over from a binding this machine no longer has, and adopting its session would put this
+       agent into the other one's room — quietly, with every indicator reading normally.
+       The check lives here rather than in the host because a host cannot win the race: an old
+       runtime being stopped can still write its state after the host has cleared it, and the
+       next runtime would read exactly what the host thought it had removed. */
+    if (!belongsTo(this.state, options.config.roomId, options.config.agentPrincipalId)) {
+      this.state = {
+        ...emptyState(),
+        room_id: options.config.roomId,
+        agent_principal_id: options.config.agentPrincipalId,
+      };
+      this.save();
+    } else if (this.state.session_id && this.state.session_token) {
       this.client.adoptSession({ sessionId: this.state.session_id, sessionToken: this.state.session_token });
     }
     this.stream = new EventStream(this.client, {

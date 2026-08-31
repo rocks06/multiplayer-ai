@@ -21,7 +21,10 @@ const API = 'http://127.0.0.1:4100';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../../..');
 const BINARY = path.join(here, '..', 'build', 'mpai-connector-sidecar');
-const SUPPORT = path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI');
+/* Its own directory, not the app's. These harnesses delete durable state as part of what they
+   check, and the helper's state file is where a live session's token lives — so pointed at the
+   shared directory they would sign the real app's agent out from under it. */
+const SUPPORT = path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI (verify)');
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const results = [];
@@ -29,7 +32,7 @@ const check = (name, pass, detail) => { results.push(pass); console.log(`${pass 
 const settle = ms => new Promise(r => setTimeout(r, ms));
 
 function helper(env = {}) {
-  const child = spawn(BINARY, [], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = spawn(BINARY, [], { env: { ...process.env, MPAI_SUPPORT_DIR: SUPPORT, ...env }, stdio: ['pipe', 'pipe', 'ignore'] });
   const waiters = new Map();
   let id = 0, buffer = '';
   child.stdout.on('data', chunk => {
@@ -65,9 +68,26 @@ const apiPid = () => {
   try { return execFileSync('/usr/sbin/lsof', ['-tPan', '-i', 'TCP:4100', '-sTCP:LISTEN'], { encoding: 'utf8' }).trim().split('\n')[0] }
   catch { return null }
 };
-const startApi = () => spawn('node', ['dist/apps/api/src/server.js'], {
+/* What the workspace was started with, read before it is killed.
+   Taking the network away means stopping the process that has :4100 — and that process is not
+   necessarily this harness's. A workspace serving other machines binds every interface; putting
+   it back on the loopback alone would leave every other Mac's agent unable to reach it, long
+   after this check had finished and reported success. So its environment is preserved. */
+const apiEnvironment = (pid) => {
+  const kept = {};
+  try {
+    const raw = execFileSync('/bin/ps', ['eww', String(pid)], { encoding: 'utf8' });
+    for (const name of ['HOST', 'AUTH_COOKIE_SECURE', 'ALLOW_HEADER_PRINCIPAL']) {
+      const found = new RegExp(`\\b${name}=(\\S*)`).exec(raw);
+      if (found) kept[name] = found[1];
+    }
+  } catch { /* nothing readable; start it with what we have */ }
+  return kept;
+};
+
+const startApi = (inherited = {}) => spawn('node', ['dist/apps/api/src/server.js'], {
   cwd: repo, detached: true, stdio: 'ignore',
-  env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL, PORT: '4100' },
+  env: { ...process.env, ...inherited, DATABASE_URL: process.env.DATABASE_URL, PORT: '4100' },
 }).unref();
 
 try {
@@ -102,13 +122,14 @@ try {
   // ---- the network goes away ------------------------------------------------------
   const pid = apiPid();
   if (!pid) throw new Error('the workspace does not appear to be running on :4100');
+  const inherited = apiEnvironment(pid);
   process.kill(Number(pid), 'SIGTERM');
   const dropped = await waitFor(app, s => s.gateway !== 'live', 20_000);
   check('stops claiming to be connected once the workspace is gone', dropped.gateway !== 'live', `gateway=${dropped.gateway}`);
   check('does not mistake a dropped connection for a refused one', dropped.gateway !== 'auth_required', `gateway=${dropped.gateway}`);
 
   // ---- and comes back -------------------------------------------------------------
-  startApi();
+  startApi(inherited);
   for (let attempt = 0; attempt < 40 && !apiPid(); attempt++) await settle(500);
   const recovered = await waitFor(app, s => s.gateway === 'live', 45_000);
   check('comes back on its own, with nobody pressing anything', recovered.gateway === 'live', `gateway=${recovered.gateway}`);

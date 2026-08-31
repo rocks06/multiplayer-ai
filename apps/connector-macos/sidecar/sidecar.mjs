@@ -33,7 +33,12 @@ const COMMAND_SURFACE = [
   'decision --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY',
   'heartbeat --runtime-status idle|working',
 ];
-const SUPPORT = path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI');
+/* Where this app keeps what it must not lose. The app names it, because only the app knows
+   which Multiplayer AI it is; the fixed path remains the default so a helper run on its own
+   behaves exactly as it always did. Two builds sharing one of these can destroy each other's
+   session, so they are kept apart. */
+const SUPPORT = process.env.MPAI_SUPPORT_DIR
+  || path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI');
 const STATE_FILE = path.join(SUPPORT, 'connector-state.json');
 const LOG_FILE = path.join(SUPPORT, 'connector.log');
 const SESSION_ENV = 'MPAI_SESSION';
@@ -166,6 +171,15 @@ class Connector {
   async publish() { emit(await this.snapshot()); }
 
   configure(payload) {
+    /* Being told to be a different agent, or to work in a different room, is not a settings
+       change — it is a different job. A runtime already running is still the old one, and
+       `connect` would leave it exactly where it is, so it is stopped here rather than left
+       working in a room this Mac has moved on from. */
+    const moved = this.config
+      && (this.config.roomId !== payload.roomId
+          || this.config.agentPrincipalId !== payload.agentPrincipalId);
+    if (moved) this.disconnect();
+
     this.config = {
       baseUrl: payload.baseUrl, roomId: payload.roomId,
       agentPrincipalId: payload.agentPrincipalId, credential: payload.credential,

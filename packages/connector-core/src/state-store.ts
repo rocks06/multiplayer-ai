@@ -9,6 +9,21 @@ export const emptyState = (): ConnectorState => ({
 });
 
 /**
+ * Whether durable state may be reused for this agent in this room.
+ *
+ * A session belongs to one agent in one room, and so does the contiguous cursor. State naming a
+ * different pair is left over from a binding the machine no longer has: adopting it would
+ * connect the new agent to the old agent's room, quietly, with every health indicator reading
+ * normally. State that names neither is from a build that predates these fields and is trusted,
+ * because it can only have come from the one binding that machine had.
+ */
+export const belongsTo = (state: ConnectorState, roomId: string, agentPrincipalId: string): boolean => {
+  const sameRoom = state.room_id === undefined || state.room_id === roomId;
+  const sameAgent = state.agent_principal_id === undefined || state.agent_principal_id === agentPrincipalId;
+  return sameRoom && sameAgent;
+};
+
+/**
  * Durable state on the local filesystem, written 0600 through a temp file and rename so a
  * crash mid-write cannot leave a truncated cursor or a half-written marker list behind.
  */

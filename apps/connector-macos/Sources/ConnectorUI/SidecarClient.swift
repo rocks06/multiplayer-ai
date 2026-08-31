@@ -13,6 +13,8 @@ public final class SidecarClient {
     /// A client that never launches anything, for rendering and for reasoning about states.
     public init(preview: SidecarState? = nil) { if let preview { state = preview; previewOnly = true } }
     private var previewOnly = false
+    /// Whether this client is a drawing of one. Nothing is spawned, read, or asked of the network.
+    public var isPreview: Bool { previewOnly }
 
     public private(set) var state: SidecarState = .unknown
     public private(set) var processStartedAt: Date?
@@ -39,6 +41,23 @@ public final class SidecarClient {
         return nil
     }
 
+    /// Where the background half lives, so setup can report on it before trying to run it.
+    public var executablePath: URL? { executable }
+
+    /// Where the helper keeps what it must not lose — its cursor, its session, its log.
+    ///
+    /// Keyed to the bundle rather than fixed. The shipping app's directory is exactly the one it
+    /// has always used, so nothing already written moves; any other build gets its own. Without
+    /// this, two Multiplayer AI builds on one Mac share one durable state file, and either can
+    /// destroy the other's live session by signing out — which is not a hypothetical, it is what
+    /// happened the first time a verification build was run beside the real app.
+    nonisolated public static func supportDirectory(for bundleId: String?) -> URL {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let shipping = "com.multiplayerai.connector"
+        guard let bundleId, bundleId != shipping else { return root.appending(path: "Multiplayer AI") }
+        return root.appending(path: "Multiplayer AI (\(bundleId))")
+    }
+
     public func start() {
         guard !previewOnly else { return }
         guard process == nil, let executable else {
@@ -48,6 +67,10 @@ public final class SidecarClient {
         stopping = false
         let task = Process()
         task.executableURL = executable
+        var environment = ProcessInfo.processInfo.environment
+        environment["MPAI_SUPPORT_DIR"] =
+            SidecarClient.supportDirectory(for: Bundle.main.bundleIdentifier).path
+        task.environment = environment
         let input = Pipe(), output = Pipe()
         task.standardInput = input
         task.standardOutput = output
