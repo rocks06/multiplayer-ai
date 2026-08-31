@@ -97,3 +97,57 @@ import Foundation
         #expect(Onboarding.step(for: Situation(setupComplete: Progress().setupComplete)) == .welcome)
     }
 }
+
+/// Upgrading a Mac that the previous version already set up.
+///
+/// The Connector recorded which agent this machine is. The unified app keeps the same facts under
+/// its own name, and if it does not carry them across on first run it presents a working Mac as a
+/// blank one — then asks for a name for an agent that already exists, creating a second identity
+/// beside the real one.
+@Suite struct UpgradeFromConnectorTests {
+    private let enrolment = Keychain.Enrolment(
+        baseURL: "http://10.16.80.15:4100", roomId: "room-1", roomName: "Rate-limit policy",
+        projectName: "Rate-limit policy", agentPrincipalId: "agent-1", agentDisplayName: "Drafting agent")
+
+    @Test func aMacTheConnectorSetUpIsNotTreatedAsNew() {
+        let adopted = AppModel.adopting(Progress(), from: enrolment)
+        #expect(adopted.setupComplete)
+        #expect(adopted.agentPrincipalId == "agent-1")
+        #expect(adopted.agentDisplayName == "Drafting agent")
+        #expect(adopted.roomId == "room-1")
+        #expect(adopted.workspaceAddress == "http://10.16.80.15:4100")
+    }
+
+    /// The whole point: it must not end up on the screen that makes another agent.
+    @Test func itIsNeverAskedToNameAnAgentItAlreadyHas() {
+        let adopted = AppModel.adopting(Progress(), from: enrolment)
+        let situation = Situation(setupComplete: adopted.setupComplete, signedIn: true, hasWorkspace: true,
+                                  hasAgentIdentity: adopted.agentPrincipalId != nil,
+                                  hasRoom: adopted.roomId != nil, bound: true)
+        #expect(Onboarding.step(for: situation) == .ready)
+    }
+
+    /// The credential does not survive a re-signed build, so the honest destination after an
+    /// upgrade is the one screen that fixes exactly that — not the beginning.
+    @Test func anUpgradeThatCannotPresentItsCredentialGoesToReconnect() {
+        let adopted = AppModel.adopting(Progress(), from: enrolment)
+        let situation = Situation(setupComplete: adopted.setupComplete, signedIn: true, hasWorkspace: true,
+                                  hasAgentIdentity: true, hasRoom: true, bound: true,
+                                  credentialProblem: .unreadable(-25300))
+        #expect(Onboarding.step(for: situation) == .reconnect)
+    }
+
+    @Test func aMacThatWasNeverSetUpIsLeftAlone() {
+        #expect(AppModel.adopting(Progress(), from: nil) == Progress())
+    }
+
+    /// Adoption happens once. Anything the person has done since is theirs, not the old app's.
+    @Test func itNeverOverwritesWhatTheUnifiedAppAlreadyKnows() {
+        var current = Progress()
+        current.setupComplete = true
+        current.agentPrincipalId = "agent-current"
+        current.roomId = "room-current"
+        current.workspaceAddress = "http://127.0.0.1:4100"
+        #expect(AppModel.adopting(current, from: enrolment) == current)
+    }
+}

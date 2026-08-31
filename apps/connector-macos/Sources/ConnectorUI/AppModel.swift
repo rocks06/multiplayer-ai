@@ -42,8 +42,35 @@ public final class AppModel {
         return "http://127.0.0.1:4100"
     }
 
+    /// What a Mac set up by the previous version already knows about itself.
+    ///
+    /// The Connector recorded which agent this machine is and which room it works in; the unified
+    /// app keeps the same facts under a name of its own. Without carrying them across, upgrading
+    /// would present a Mac that has been working for weeks as a blank one — and the next thing it
+    /// would ask for is a name for an agent that already exists, quietly creating a second
+    /// identity beside the real one.
+    ///
+    /// Pure, so the upgrade can be reasoned about without a Keychain or an installed app.
+    nonisolated public static func adopting(_ progress: Progress, from enrolment: Keychain.Enrolment?) -> Progress {
+        guard let enrolment, progress.agentPrincipalId == nil else { return progress }
+        var adopted = progress
+        // It plainly was set up: it has an enrolment, and the helper it used ships in this app.
+        adopted.setupComplete = true
+        adopted.agentPrincipalId = enrolment.agentPrincipalId
+        adopted.agentDisplayName = enrolment.agentDisplayName
+        adopted.roomId = enrolment.roomId
+        // Where it was already pointing wins over where this build defaults to.
+        if adopted.workspaceAddress == nil { adopted.workspaceAddress = enrolment.baseURL }
+        return adopted
+    }
+
     public init(store: ProgressStore = DefaultsProgressStore(), connector: ConnectorModel? = nil) {
-        let loaded = store.load()
+        var loaded = store.load()
+        // Only a live model reads the Keychain; a drawing of one touches nothing.
+        if connector == nil {
+            let adopted = AppModel.adopting(loaded, from: Keychain.enrolment())
+            if adopted != loaded { store.save(adopted); loaded = adopted }
+        }
         self.store = store
         self.progress = loaded
         self.connector = connector ?? ConnectorModel(autostart: false)
