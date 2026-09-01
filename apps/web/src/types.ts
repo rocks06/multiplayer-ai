@@ -3,7 +3,7 @@ export type RoomRole='manager'|'contributor'|'worker_agent';
 export type TaskStatus='open'|'in_progress'|'blocked'|'awaiting_decision'|'completed'|'cancelled';
 
 export type AgentPresence='connected'|'stale'|'offline'|'revoked'|'never';
-export interface Member {principal_id:string;display_name:string;kind:PrincipalKind;role:RoomRole;responsibilities:string;agent_presence?:AgentPresence|null;agent_connection?:string|null;agent_runtime_status?:'idle'|'working'|null;agent_last_seen_at?:string|null}
+export interface Member {principal_id:string;display_name:string;kind:PrincipalKind;role:RoomRole;responsibilities:string;agent_presence?:AgentPresence|null;agent_connection?:string|null;agent_runtime_status?:'idle'|'working'|null;agent_last_seen_at?:string|null;agent_session_room_id?:string|null;agent_session_room_name?:string|null}
 export interface TaskBlocker {task_id:string;title:string;status:TaskStatus;assignee_principal_id:string|null}
 export interface Task {id:string;title:string;description:string;status:TaskStatus;assignee_principal_id:string|null;version:number;updated_at:string;blocked_by?:TaskBlocker[];dependency_override_at?:string|null}
 export interface Message {id:string;sender_principal_id:string;addressed_principal_id:string|null;body_text:string;task_id:string|null;in_reply_to_message_id?:string|null;created_at:string;sender_name:string;sender_kind:PrincipalKind}

@@ -95,3 +95,29 @@ describe('elapsed labels',()=>{
     expect(elapsedLabel(new Date(base+60_000).toISOString(),base)).toBe('just now');
   });
 });
+
+/**
+ * An agent connected to a different room.
+ *
+ * A room shows only its own members' sessions, so an agent bound elsewhere had no session here
+ * and was reported as "Never connected" — the same words as a machine that had never been set
+ * up. It cost hours: the workspace said connected, this room said never, and a message addressed
+ * to the agent here was never seen by anyone.
+ */
+describe('an agent whose session is in another room', () => {
+  const base = { principal_id: 'p1', display_name: 'JJ', kind: 'agent' as const,
+                 role: 'worker_agent' as const, responsibilities: '' };
+  const empty = { tasks: [], decisions: [], members: [] };
+
+  it('says where it is, instead of calling it never connected', () => {
+    const described = describePresence(
+      { ...base, agent_presence: 'never', agent_session_room_name: 'roomr' }, empty);
+    expect(described.label).toBe('Connected to roomr, not here');
+    expect(described.label).not.toBe('Never connected');
+  });
+
+  it('still says never connected when it truly has not', () => {
+    const described = describePresence({ ...base, agent_presence: 'never' }, empty);
+    expect(described.label).toBe('Never connected');
+  });
+});

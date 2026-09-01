@@ -38,8 +38,8 @@ public struct RootView: View {
             VStack(spacing: 0) {
                 if let legacy = app.legacyApp { LegacyAppNotice(app: app, path: legacy) }
                 if !app.handlesSignInLinks { LinkHandlerNotice() }
-                if case .elsewhere(let bound, let expected) = app.roomBinding {
-                    RoomBindingNotice(app: app, bound: bound, expected: expected)
+                if !app.moveTargets.isEmpty && !app.movePromptDismissed {
+                    RoomBindingNotice(app: app)
                 }
             }
         }
@@ -109,33 +109,38 @@ struct LinkHandlerNotice: View {
     }
 }
 
-/// This Mac is working in one room while the app expects another.
+/// Which room this Mac is working in, and the other rooms its agent belongs to.
 ///
-/// The binding came from the code this machine was connected with, and nothing may change it
-/// quietly — a rebinding mints a new credential and abandons the old room's session, which is a
-/// decision, not a detail. So it is stated, and moving is offered rather than performed.
+/// An agent can serve one room per machine, so being a member of several is normal and this is
+/// not an error. It is shown because the alternative is what happened: a Mac bound to one room
+/// while somebody watched another, with nothing anywhere offering to change it. Moving is offered,
+/// never performed — it abandons a live session and mints a new credential, which is a decision.
 struct RoomBindingNotice: View {
     @Bindable var app: AppModel
-    let bound: String
-    let expected: String
+
+    private var boundName: String {
+        guard let bound = app.connector.enrolment?.roomId else { return "another room" }
+        return app.nameOfRoom(bound) ?? "another room"
+    }
 
     var body: some View {
         HStack(spacing: 11) {
             StateDot(tone: .working)
             VStack(alignment: .leading, spacing: 1) {
-                Text("This Mac is working in \(app.nameOfRoom(bound) ?? "another room")")
+                Text("This Mac works in \(boundName)")
                     .font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.ink)
-                Text("Messages sent to \(app.progress.agentDisplayName ?? "this agent") in \(app.nameOfRoom(expected) ?? "the room you are viewing") will not reach it until it moves.")
+                Text("\(app.progress.agentDisplayName ?? "This agent") will not see anything addressed to it in its other rooms until it moves.")
                     .font(.system(size: 12)).foregroundStyle(Palette.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 16)
-            Button("Move to \(app.nameOfRoom(expected) ?? "that room")") {
-                Task { await app.move(to: expected) }
+            ForEach(app.moveTargets) { room in
+                Button("Move to \(room.name)") { Task { await app.move(to: room.id) } }
+                    .buttonStyle(.borderless).font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Palette.ink).disabled(app.busy)
             }
-            .buttonStyle(.borderless).font(.system(size: 13, weight: .medium))
-            .foregroundStyle(Palette.ink)
-            .disabled(app.busy)
+            Button("Not now") { app.movePromptDismissed = true }
+                .buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Palette.muted)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)

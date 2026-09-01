@@ -75,6 +75,24 @@ public final class AppModel {
         AppModel.binding(bound: connector.enrolment?.roomId, expected: progress.roomId)
     }
 
+    /// Rooms this Mac could move to: ones its agent works in, other than where it is bound.
+    ///
+    /// The mismatch that matters is not between the app's two records — those agree on a Mac that
+    /// was set up here, which is why comparing them surfaced nothing for an agent bound to the
+    /// wrong room. It is between where this Mac is working and the other rooms its agent belongs
+    /// to. Those are the moves that exist, so those are what is offered.
+    nonisolated public static func moveTargets(bound: String?, agentRooms: [AgentRoom]) -> [AgentRoom] {
+        guard let bound else { return [] }
+        return agentRooms.filter { $0.id != bound }
+    }
+
+    public var moveTargets: [AgentRoom] {
+        AppModel.moveTargets(bound: connector.enrolment?.roomId, agentRooms: agentRooms)
+    }
+
+    /// Set aside for this run once somebody has said they do not want to move.
+    public var movePromptDismissed = false
+
     public func nameOfRoom(_ id: String) -> String? {
         agentRooms.first { $0.id == id }?.name ?? rooms.first { $0.roomId == id }?.name
     }

@@ -34,6 +34,11 @@ export function describePresence(
   const seen=member.agent_last_seen_at??null;
 
   if(reachable==='revoked')return {reachable,label:'Access revoked',tone:'stop',since:seen};
+  /* Connected, but to a different room. A room-scoped view cannot see that session, so this
+     used to read "Never connected" — indistinguishable from a machine that had never appeared,
+     and the reason a wrong-room binding looked like a dead agent for hours. */
+  if(member.agent_session_room_name)
+    return {reachable,label:`Connected to ${member.agent_session_room_name}, not here`,tone:'wait',since:seen};
   if(reachable==='never')return {reachable,label:'Never connected',tone:'gone'};
   if(reachable==='offline')return {reachable,label:'Offline',tone:'gone',since:seen};
   if(reachable==='stale')return {reachable,label:'Unresponsive',tone:'wait',since:seen};

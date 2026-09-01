@@ -219,3 +219,28 @@ import Foundation
         #expect(AppModel.binding(bound: "room-a", expected: nil) == .correct("room-a"))
     }
 }
+
+/// The moves that actually exist for this Mac.
+@Suite struct MoveTargetTests {
+    private let rooms = [AgentRoom(id: "roomr", name: "roomr"),
+                         AgentRoom(id: "testing-1", name: "TESTING #1")]
+
+    /// The gate that surfaced nothing. Comparing the app's own two records finds no mismatch on a
+    /// Mac that was set up here — both said roomr — while the agent was plainly also a member of
+    /// the room somebody was watching. The move that exists is to the *other* room, so that is
+    /// what has to be offered.
+    @Test func theOtherRoomsTheAgentWorksInAreOffered() {
+        let targets = AppModel.moveTargets(bound: "roomr", agentRooms: rooms)
+        #expect(targets.map(\.id) == ["testing-1"])
+    }
+
+    @Test func theRoomItIsAlreadyInIsNotAMove() {
+        #expect(AppModel.moveTargets(bound: "testing-1", agentRooms: rooms).map(\.id) == ["roomr"])
+        #expect(AppModel.moveTargets(bound: "only", agentRooms: [AgentRoom(id: "only", name: "Only")]).isEmpty)
+    }
+
+    /// An unbound Mac has nothing to move; it has something to connect, which is a different screen.
+    @Test func anUnboundMacIsOfferedNothing() {
+        #expect(AppModel.moveTargets(bound: nil, agentRooms: rooms).isEmpty)
+    }
+}
