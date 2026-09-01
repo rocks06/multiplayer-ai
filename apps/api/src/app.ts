@@ -93,7 +93,33 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const agentGateway=new AgentGatewayService(pool);
   app.register(websocket);
   app.setErrorHandler((error,request,reply)=>{ if(error instanceof DomainError) return reply.status(error.statusCode).send({error:{code:error.code,message:error.message,request_id:request.id,details:error.details}}); if(error instanceof z.ZodError) return reply.status(400).send({error:{code:"validation_error",message:"Invalid request",request_id:request.id,details:error.issues}}); request.log.error(error); return reply.status(500).send({error:{code:"internal_error",message:"Internal server error",request_id:request.id}}); });
+  /* Liveness: the process is up and answering. Deliberately touches nothing else. */
   app.get('/health',async()=>({status:'ok'}));
+
+  /* Readiness: whether this instance can actually serve the product.
+  
+     /health answers from the process alone, so a deployment whose database is unreachable or
+     unmigrated reports itself perfectly healthy while every route that matters returns 500 — which
+     is exactly what a hosted deployment did, and what cost an afternoon to find from the outside.
+     This asks the database the two questions that decide it: can I reach you, and are you the
+     shape I expect. Table names only; nothing here reveals where the database is or how to get in. */
+  app.get('/ready',async(_request,reply)=>{
+    try{
+      await pool.query('SELECT 1');
+    }catch(failure){
+      return reply.status(503).send({status:'unavailable',database:'unreachable',
+        detail:'The database did not answer. Check the connection string and that the database is running.'});
+    }
+    const expected=['companies','principals','rooms','users','user_auth_tokens','user_sessions',
+      'external_agent_credentials','auth_rate_limits'];
+    const found=await pool.query<{name:string|null}>(
+      `SELECT to_regclass('public.'||t) name FROM unnest($1::text[]) t`,[expected]);
+    const missing=expected.filter((_,index)=>!found.rows[index]?.name);
+    if(missing.length) return reply.status(503).send({status:'unavailable',database:'reachable',
+      migrations:'incomplete',missing,
+      detail:'Run the migration step (node dist/packages/db/src/migrate.js) before serving.'});
+    return {status:'ready',database:'reachable',migrations:'complete'};
+  });
   /* What the product may say about how a link arrives. Not a secret, and not about any one
      person: it exists so "check your email" is only shown when an email is actually sent, and the
      developer wording about a workspace operator only when that is genuinely what happens. */

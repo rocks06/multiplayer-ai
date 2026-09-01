@@ -103,3 +103,43 @@ describe("rate limiting the routes that send email", () => {
     expect(overLimit(AUTH_LIMITS.perEmail.limit + 1, AUTH_LIMITS.perEmail)).toBe(true);
   });
 });
+
+/**
+ * A service that reports itself healthy while nothing works.
+ *
+ * /health answers from the process alone. A deployment whose database was unreachable or
+ * unmigrated therefore passed its host's health check and served 500s from every route that
+ * touches data — which is precisely what happened, and could only be diagnosed by guessing from
+ * outside. Readiness asks the database the two questions that actually decide it.
+ */
+describe("readiness", () => {
+  it("is a different question from liveness", async () => {
+    const { buildApp } = await import("../apps/api/src/app.js");
+    const pg = await import("pg");
+    const app = buildApp(new pg.default.Pool({ connectionString: process.env.DATABASE_URL }),
+      { pollIntervalMs: 50 }, { allowHeaderPrincipal: false, environment: { SIGN_IN_DELIVERY: "silent" } });
+
+    const live = await app.inject({ method: "GET", url: "/health" });
+    expect(live.statusCode).toBe(200);
+    expect(live.json()).toEqual({ status: "ok" });
+
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toMatchObject({ status: "ready", migrations: "complete" });
+    await app.close();
+  });
+
+  it("reports an unreachable database rather than claiming to be fine", async () => {
+    const { buildApp } = await import("../apps/api/src/app.js");
+    const pg = await import("pg");
+    // A port nothing listens on: the shape of a misconfigured DATABASE_URL.
+    const app = buildApp(new pg.default.Pool({ connectionString: "postgres://nobody@127.0.0.1:1/none" }),
+      { pollIntervalMs: 50 }, { allowHeaderPrincipal: false, environment: { SIGN_IN_DELIVERY: "silent" } });
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({ status: "unavailable", database: "unreachable" });
+    // Never says where the database is or how to reach it.
+    expect(JSON.stringify(ready.json())).not.toContain("127.0.0.1");
+    await app.close();
+  });
+});
