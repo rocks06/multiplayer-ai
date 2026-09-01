@@ -1,3 +1,13 @@
+-- baseline: 0008_message_replies.sql
+--
+-- This file is the starting point for an empty database, and the line above says how far along
+-- the migration history it reaches. Everything after that migration is applied on top of it.
+--
+-- Keep the line accurate. It is what stops a fresh database being created from this file and then
+-- told it has already had migrations it never received — which is exactly what happened to 0009:
+-- recorded as applied, absent from the database, and undiscoverable because the record said
+-- otherwise. If you regenerate this file from a migrated database, move the line forward.
+
 CREATE TABLE IF NOT EXISTS companies (
   id uuid PRIMARY KEY,
   name text NOT NULL,

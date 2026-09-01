@@ -29,17 +29,27 @@ describe("Database migrator", () => {
 
   const connect = () => new pg.Pool({ connectionString: scratchUrl });
 
-  it("initializes an empty database and records every migration as applied", async () => {
+  /**
+   * This test used to assert that an empty database "records every migration as applied", which
+   * is exactly the bug: schema.sql is a snapshot, so anything added after it was taken was written
+   * down as done and never actually run. It held for years because nothing checked that the tables
+   * were there. What an empty database owes is the finished schema — every table the migrations
+   * create — not a full set of records.
+   */
+  it("initializes an empty database to the complete schema, not just to the snapshot", async () => {
     const pool = connect();
     try {
       const result = await migrate(pool);
       expect(result.initialized).toBe(true);
-      expect(result.applied).toEqual([]);
       const recorded = await pool.query<{ name: string }>(`SELECT name FROM schema_migrations ORDER BY name`);
       expect(recorded.rows.map(r => r.name)).toContain("0007_task_dependencies.sql");
-      // The schema is complete, including columns only an ALTER migration adds.
+      // Columns only an ALTER migration adds, from inside the snapshot...
       const columns = await pool.query(`SELECT 1 FROM information_schema.columns WHERE table_name='tasks' AND column_name='dependency_override_at'`);
       expect(columns.rowCount).toBe(1);
+      // ...and a table from a migration that comes after it, which must have genuinely run.
+      expect(result.applied).toContain("0009_auth_rate_limits.sql");
+      expect((await pool.query(`SELECT to_regclass('public.auth_rate_limits') name`)).rows[0]?.name)
+        .toBe("auth_rate_limits");
     } finally { await pool.end(); }
   });
 
@@ -49,7 +59,7 @@ describe("Database migrator", () => {
       await migrate(pool);
       const before = await pool.query(`SELECT name,checksum,applied_at FROM schema_migrations ORDER BY name`);
       const second = await migrate(pool);
-      expect(second).toEqual({ initialized: false, applied: [] });
+      expect(second).toEqual({ initialized: false, applied: [], repaired: [] });
       const after = await pool.query(`SELECT name,checksum,applied_at FROM schema_migrations ORDER BY name`);
       expect(after.rows).toEqual(before.rows);
     } finally { await pool.end(); }
@@ -79,6 +89,7 @@ describe("Database migrator", () => {
       const upgraded = await migrate(pool, withNew);
       expect(upgraded.initialized).toBe(false);
       expect(upgraded.applied).toEqual(["9999_probe.sql"]);
+      expect(upgraded.repaired).toEqual([]);
       expect((await pool.query(`SELECT 1 FROM pg_tables WHERE tablename='migrator_probe'`)).rowCount).toBe(1);
 
       // Already-seen migrations are never re-run.
