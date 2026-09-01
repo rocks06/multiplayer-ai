@@ -28,8 +28,8 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
 
   app.post("/v1/companies/:companyId/agents/:agentPrincipalId/enrollments",async req=>{
     const p=parse(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);
-    const x=parse(z.object({label:z.string().min(1).max(100),ttl_minutes:z.number().int().min(1).max(60).optional()}),req.body);
-    return gateway.createEnrollment({companyId:p.companyId,actorId:await resolvePrincipal(req,p.companyId),agentPrincipalId:p.agentPrincipalId,label:x.label,ttlMinutes:x.ttl_minutes});
+    const x=parse(z.object({label:z.string().min(1).max(100),room_id:z.string().uuid().optional(),ttl_minutes:z.number().int().min(1).max(60).optional()}),req.body);
+    return gateway.createEnrollment({companyId:p.companyId,actorId:await resolvePrincipal(req,p.companyId),agentPrincipalId:p.agentPrincipalId,label:x.label,roomId:x.room_id,ttlMinutes:x.ttl_minutes});
   });
   // Unauthenticated by design: the single-use code is the authentication, and it names the
   // principal so a connecting device can never choose one.

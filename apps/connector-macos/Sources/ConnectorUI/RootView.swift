@@ -38,6 +38,9 @@ public struct RootView: View {
             VStack(spacing: 0) {
                 if let legacy = app.legacyApp { LegacyAppNotice(app: app, path: legacy) }
                 if !app.handlesSignInLinks { LinkHandlerNotice() }
+                if case .elsewhere(let bound, let expected) = app.roomBinding {
+                    RoomBindingNotice(app: app, bound: bound, expected: expected)
+                }
             }
         }
         .frame(minWidth: 720, minHeight: 560)
@@ -97,6 +100,42 @@ struct LinkHandlerNotice: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 16)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 1) }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// This Mac is working in one room while the app expects another.
+///
+/// The binding came from the code this machine was connected with, and nothing may change it
+/// quietly — a rebinding mints a new credential and abandons the old room's session, which is a
+/// decision, not a detail. So it is stated, and moving is offered rather than performed.
+struct RoomBindingNotice: View {
+    @Bindable var app: AppModel
+    let bound: String
+    let expected: String
+
+    var body: some View {
+        HStack(spacing: 11) {
+            StateDot(tone: .working)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("This Mac is working in \(app.nameOfRoom(bound) ?? "another room")")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.ink)
+                Text("Messages sent to \(app.progress.agentDisplayName ?? "this agent") in \(app.nameOfRoom(expected) ?? "the room you are viewing") will not reach it until it moves.")
+                    .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 16)
+            Button("Move to \(app.nameOfRoom(expected) ?? "that room")") {
+                Task { await app.move(to: expected) }
+            }
+            .buttonStyle(.borderless).font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Palette.ink)
+            .disabled(app.busy)
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)

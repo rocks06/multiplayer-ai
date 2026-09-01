@@ -20,7 +20,8 @@ const workspace={companyId:'c1',name:'Northwind'};
 const room=(objective=UNSET_OBJECTIVE):WorkspaceRoom=>({room_id:'r1',name:'Developer API',project_id:'j1',project_name:'Developer API',objective});
 const agent=(display_name:string,presence:WorkspaceAgent['connector']['presence']='never'):WorkspaceAgent=>({
   agent_id:`a-${display_name}`,principal_id:`p-${display_name}`,display_name,status:'active',owner_display_name:'Sam Rivera',
-  connector:{enrolled:presence!=='never',presence,runtime_status:presence==='connected'?'idle':null,last_seen_at:null},
+  connector:{enrolled:presence!=='never',presence,runtime_status:presence==='connected'?'idle':null,last_seen_at:null,
+      room_id:presence==='never'?null:'r1',room_name:presence==='never'?null:'Developer API'},
   rooms:[{room_id:'r1',name:'Developer API'}],
 });
 function arrive(me:any,agents:WorkspaceAgent[]=[],rooms:WorkspaceRoom[]=[]){
@@ -107,16 +108,23 @@ describe('corrected onboarding order and durable resume',()=>{
 describe('the reused enrollment component',()=>{
   it('shows a real single-use code only after the room exists',async()=>{
     arrive(withWorkspace,[agent('Agent A')],[room()]);
-    vi.mocked(api.createEnrollmentCode).mockResolvedValue({enrollment_code:'MPAI-82HT-KT87-BZ74',expires_at:new Date(Date.now()+900_000).toISOString()});
+    vi.mocked(api.createEnrollmentCode).mockResolvedValue({enrollment_code:'MPAI-82HT-KT87-BZ74',expires_at:new Date(Date.now()+900_000).toISOString(),room_id:room().room_id});
     show();
     fireEvent.click(await screen.findByRole('button',{name:'Connect this agent'}));
     expect(await screen.findByText('MPAI-82HT-KT87-BZ74')).toBeVisible();
     expect(screen.getByText(/It can be used once/)).toBeVisible();
+
+      /* The room is what the code is for. Issuing one without it is how an agent connected from
+         inside a room ended up bound to whichever room it had joined earliest. */
+      expect(vi.mocked(api.createEnrollmentCode).mock.calls[0]![3]).toBe(room().room_id);
   });
 
   it('never claims a connection the Gateway has not seen',()=>{
     expect(connectionOf(agent('A'))).toMatchObject({label:'Not connected yet',arrived:false});
-    expect(connectionOf(agent('A','connected'))).toMatchObject({label:'Connected',arrived:true});
+    /* Connected, and where. This list spans the workspace while a room shows only its own
+       members, so a bare "Connected" beside a room reporting the agent never appeared is
+       the product contradicting itself — which is what a wrong-room binding looked like. */
+    expect(connectionOf(agent('A','connected'))).toMatchObject({label:'Connected · Developer API',arrived:true});
     expect(connectionOf(agent('A','offline'))).toMatchObject({arrived:true});
   });
 

@@ -50,7 +50,11 @@ export function connectionOf(agent:WorkspaceAgent):{
   label:string;tone:'live'|'wait'|'idle'|'gone';arrived:boolean;ready:boolean}{
   const {enrolled,presence}=agent.connector;
   const roomed=Boolean(agent.rooms?.length);
-  if(presence==='connected')return {label:'Connected',tone:'live',arrived:true,ready:true};
+  /* Where it is connected, not just that it is. This list spans the workspace while a room shows
+     only its own members, so a bare "Connected" beside a room reporting the agent never appeared
+     is the product contradicting itself. Naming the room makes both answers true at once. */
+  const where=agent.connector.room_name?` · ${agent.connector.room_name}`:'';
+  if(presence==='connected')return {label:`Connected${where}`,tone:'live',arrived:true,ready:true};
   if(presence==='stale')return {label:'Connected earlier, quiet just now',tone:'wait',arrived:true,ready:true};
   if(presence==='offline')return {label:'Connected earlier, not running now',tone:'gone',arrived:true,ready:true};
   if(presence==='revoked')return {label:'Access removed',tone:'gone',arrived:false,ready:false};
@@ -131,7 +135,8 @@ function NameWorkspace({onCreated}:{onCreated:(workspace:Workspace)=>void}){
  * true: a machine you are not signed in on. That is what this screen is for, and it is the
  * exception rather than the way in. Nothing here reports a connection the Gateway has not seen.
  */
-export function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent:WorkspaceAgent;onChanged:()=>void}){
+export function ConnectAgent({companyId,roomId,roomName,agent,onChanged}:{
+  companyId:string;roomId:string;roomName?:string;agent:WorkspaceAgent;onChanged:()=>void}){
   const [code,setCode]=useState<{value:string;expiresAt:string}|null>(null);
   const [expired,setExpired]=useState(false);
   const [copied,setCopied]=useState(false);
@@ -153,7 +158,7 @@ export function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent
   useEffect(()=>{if(connection.ready)setCode(null)},[connection.ready]);
 
   const issue=()=>run(async()=>{
-    const issued=await createEnrollmentCode(companyId,agent.principal_id,`${agent.display_name} runtime`);
+    const issued=await createEnrollmentCode(companyId,agent.principal_id,`${agent.display_name} runtime`,roomId);
     setCode({value:issued.enrollment_code,expiresAt:issued.expires_at});
     setCopied(false);
     onChanged();
@@ -174,7 +179,10 @@ export function ConnectAgent({companyId,agent,onChanged}:{companyId:string;agent
               <RefreshCw size={13}/>{busy?'Preparing…':'Get a new code'}</button>
           </>
         : <>
-            <p className="code-note">Enter this in Multiplayer AI on the machine where {agent.display_name} runs.</p>
+            <p className="code-note">
+              Enter this in Multiplayer AI on the machine where {agent.display_name} runs.
+              {roomName&&<> It connects {agent.display_name} to <strong>{roomName}</strong>.</>}
+            </p>
             <div className="code-value">
               <code>{code.value}</code>
               <button type="button" aria-label="Copy code" onClick={()=>{
@@ -292,14 +300,15 @@ function CreateFirstRoom({companyId,agents,onCreated}:{
   </>;
 }
 
-function ConnectAgents({companyId,agents,onRefresh,onDone}:{companyId:string;agents:WorkspaceAgent[];onRefresh:()=>void;onDone:()=>void}){
+function ConnectAgents({companyId,room,agents,onRefresh,onDone}:{
+  companyId:string;room:WorkspaceRoom;agents:WorkspaceAgent[];onRefresh:()=>void;onDone:()=>void}){
   const waiting=agents.filter(agent=>!connectionOf(agent).arrived);
   return <>
     <h1>Connect your agents</h1>
     <p className="welcome-lead">Their room is ready. Open Multiplayer AI on the Mac each agent runs on. The first objective unlocks after every agent has appeared.</p>
     <ul className="agent-list">{agents.map(agent=><li key={agent.principal_id}>
       <div className="agent-head"><span className="identity-mark agent" aria-hidden="true">{agent.display_name.slice(0,1).toUpperCase()}</span><strong>{agent.display_name}</strong></div>
-      <ConnectAgent companyId={companyId} agent={agent} onChanged={onRefresh}/>
+      <ConnectAgent companyId={companyId} roomId={room.room_id} roomName={room.name} agent={agent} onChanged={onRefresh}/>
     </li>)}</ul>
     <div className="welcome-forward"><button type="button" className="primary" disabled={waiting.length>0} onClick={onDone}>Next: set the first objective<ArrowRight size={15}/></button>
       {waiting.length>0&&<p className="welcome-note">This unlocks after {waiting.map(agent=>agent.display_name).join(' and ')} {waiting.length===1?'connects':'connect'}.</p>}
@@ -409,7 +418,7 @@ export default function Welcome({navigate}:{navigate:(to:string)=>void}){
         onDone={()=>setHere('room')}/>}
     {step==='room'&&workspace&&<CreateFirstRoom companyId={workspace.companyId} agents={agents}
       onCreated={async room=>{setRooms([room]);await load();setHere('connect')}}/>}
-    {step==='connect'&&workspace&&<ConnectAgents companyId={workspace.companyId} agents={agents}
+    {step==='connect'&&workspace&&rooms[0]&&<ConnectAgents companyId={workspace.companyId} room={rooms[0]} agents={agents}
       onRefresh={()=>{void load()}} onDone={()=>setHere('objective')}/>}
     {step==='objective'&&workspace&&rooms[0]&&<FirstObjective companyId={workspace.companyId} room={rooms[0]}
       onDone={()=>{void load();enter(rooms[0]!)}}/>}

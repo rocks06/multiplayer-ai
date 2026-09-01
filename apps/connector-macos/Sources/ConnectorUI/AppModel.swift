@@ -25,6 +25,8 @@ public final class AppModel {
     public private(set) var identity: Identity?
     public private(set) var company: Identity.Company?
     public private(set) var rooms: [WorkspaceRoom] = []
+    /// The rooms this Mac's agent is actually a worker in, as the workspace reports them.
+    public private(set) var agentRooms: [AgentRoom] = []
 
     /// Something the person has to read, from whichever screen produced it. One at a time: a
     /// second problem while the first is unread means the first is stale.
@@ -49,6 +51,42 @@ public final class AppModel {
     }
 
     public func dismissLegacyApp() { legacyApp = nil }
+
+    /// Where this Mac is working, against where it is meant to be.
+    ///
+    /// A binding is a durable fact about this machine, and nothing may change it quietly. The
+    /// room it holds came from the code it was connected with; if that is not the room the person
+    /// is working in, the honest thing is to say so and offer to move — not to reassign the
+    /// binding behind their back, and certainly not to report success in a room the agent has
+    /// never appeared in.
+    public enum RoomBinding: Equatable, Sendable {
+        case notBound
+        case correct(String)                       // room id
+        case elsewhere(bound: String, expected: String)
+    }
+
+    nonisolated public static func binding(bound: String?, expected: String?) -> RoomBinding {
+        guard let bound else { return .notBound }
+        guard let expected, expected != bound else { return .correct(bound) }
+        return .elsewhere(bound: bound, expected: expected)
+    }
+
+    public var roomBinding: RoomBinding {
+        AppModel.binding(bound: connector.enrolment?.roomId, expected: progress.roomId)
+    }
+
+    public func nameOfRoom(_ id: String) -> String? {
+        agentRooms.first { $0.id == id }?.name ?? rooms.first { $0.roomId == id }?.name
+    }
+
+    /// Move this Mac to a room, deliberately. Signing out first is what makes it a move rather
+    /// than a second binding: the old credential goes, and a new one is minted for the new room.
+    public func move(to roomId: String) async {
+        guard roomId != connector.enrolment?.roomId || connector.enrolment == nil else { return }
+        write { $0.roomId = roomId }
+        await connector.signOut()
+        await bind()
+    }
 
     public var workspaceAddress: String { progress.workspaceAddress ?? AppModel.defaultAddress }
 
@@ -193,11 +231,18 @@ public final class AppModel {
             if let name = mine["display_name"] as? String, name != progress.agentDisplayName {
                 write { $0.agentDisplayName = name }
             }
-            let joined = (mine["rooms"] as? [[String: Any]] ?? []).compactMap { $0["room_id"] as? String }
-            if let room = progress.roomId, !joined.contains(room) {
-                write { $0.roomId = joined.first }
-            } else if progress.roomId == nil, let first = joined.first {
-                write { $0.roomId = first }
+            let joined = (mine["rooms"] as? [[String: Any]] ?? []).compactMap { entry -> AgentRoom? in
+                guard let id = entry["room_id"] as? String else { return nil }
+                return AgentRoom(id: id, name: entry["name"] as? String ?? "")
+            }
+            agentRooms = joined
+            /* Choosing for somebody is only honest when there is nothing to choose. One room is
+               not a decision; more than one is, and quietly picking the oldest is exactly how a
+               Mac ended up working in a room nobody had asked for. */
+            if progress.roomId == nil, joined.count == 1 {
+                write { $0.roomId = joined[0].id }
+            } else if let room = progress.roomId, !joined.contains(where: { $0.id == room }) {
+                write { $0.roomId = joined.count == 1 ? joined[0].id : nil }
             }
         }
     }

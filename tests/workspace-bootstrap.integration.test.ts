@@ -187,7 +187,7 @@ describe("Workspace bootstrap and agent listing", () => {
         display_name: "Agent A",
         status: "active",
         owner_display_name: "Rocco",
-        connector: { enrolled: false, presence: "never", runtime_status: null, last_seen_at: null },
+        connector: { enrolled: false, presence: "never", runtime_status: null, last_seen_at: null, room_id: null, room_name: null },
         rooms: [{ room_id: room.id, name: "Launch" }],
       });
 
@@ -208,7 +208,7 @@ describe("Workspace bootstrap and agent listing", () => {
       const enrolled = (await call("POST", "/v1/agent-gateway/v1/enroll", { code: issued.enrollment_code, device_label: "MacBook" })).json();
       const only = async () => (await call("GET", `/v1/companies/${workspace.company_id}/agents`, undefined, { cookie: me.cookie })).json().agents[0];
 
-      expect((await only()).connector).toEqual({ enrolled: true, presence: "never", runtime_status: null, last_seen_at: null });
+      expect((await only()).connector).toEqual({ enrolled: true, presence: "never", runtime_status: null, last_seen_at: null, room_id: null, room_name: null });
 
       const client = new FakeExternalAgentClient(baseUrl); clients.add(client);
       client.credentialToken = enrolled.credential_token; client.roomId = room.id;
@@ -216,6 +216,19 @@ describe("Workspace bootstrap and agent listing", () => {
       expect((await only()).connector.presence).toBe("connected");
       await client.heartbeat("working");
       expect((await only()).connector.runtime_status).toBe("working");
+      /* And which room that session is in. This list spans the workspace while a room shows only
+         its own members, so a bare "connected" beside a room saying the agent never appeared is
+         the product contradicting itself — which is what a wrong-room binding looked like from
+         the outside. */
+      expect((await only()).connector.room_id).toBeTruthy();
+      expect((await only()).connector.room_name).toBeTruthy();
+      /* And which room that session is in. This list spans the workspace while a room shows only
+         its own members, so a bare "connected" beside a room reporting the agent never appeared
+         is the product contradicting itself — which is exactly what a wrong-room binding looked
+         like from the outside. */
+      const connected = (await only()).connector;
+      expect(connected.room_id).toBeTruthy();
+      expect(connected.room_name).toBeTruthy();
 
       // A session the Gateway still calls connected but which stopped reporting is not live.
       await pool.query(`UPDATE external_agent_sessions SET last_seen_at=now()-interval '2 minutes' WHERE id=$1`, [client.sessionId]);

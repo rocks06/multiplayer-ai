@@ -115,18 +115,22 @@ export class RoomService {
       const result=await c.query(`SELECT a.id agent_id,p.id principal_id,p.display_name,a.status,u.display_name owner_display_name,
         EXISTS(SELECT 1 FROM external_agent_credentials ec WHERE ec.company_id=a.company_id AND ec.agent_principal_id=p.id AND ec.status='active') connector_enrolled,
         CASE WHEN s.status IS NULL THEN 'never' WHEN s.status<>'connected' THEN s.status WHEN s.last_seen_at < now()-interval '90 seconds' THEN 'stale' ELSE 'connected' END presence,
-        s.runtime_status,s.last_seen_at,
+        s.runtime_status,s.last_seen_at,s.room_id session_room_id,sr.name session_room_name,
         COALESCE(m.rooms,'[]'::jsonb) rooms
         FROM agents a
         JOIN principals p ON p.company_id=a.company_id AND p.agent_id=a.id AND p.kind='agent'
         LEFT JOIN users u ON u.id=a.owner_user_id
-        LEFT JOIN LATERAL (SELECT es.status,es.runtime_status,es.last_seen_at FROM external_agent_sessions es WHERE es.company_id=a.company_id AND es.agent_principal_id=p.id ORDER BY es.last_seen_at DESC LIMIT 1) s ON true
+        LEFT JOIN LATERAL (SELECT es.status,es.runtime_status,es.last_seen_at,es.room_id FROM external_agent_sessions es WHERE es.company_id=a.company_id AND es.agent_principal_id=p.id ORDER BY es.last_seen_at DESC LIMIT 1) s ON true
+        LEFT JOIN rooms sr ON sr.company_id=a.company_id AND sr.id=s.room_id
         LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('room_id',r.id,'name',r.name) ORDER BY r.name) rooms FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id WHERE rm.company_id=a.company_id AND rm.principal_id=p.id AND rm.status='active') m ON true
         WHERE a.company_id=$1 AND p.status='active' ORDER BY p.display_name`,[companyId]);
       return {agents:result.rows.map((row:any)=>({
         agent_id:row.agent_id,principal_id:row.principal_id,display_name:row.display_name,status:row.status,
         owner_display_name:row.owner_display_name,
-        connector:{enrolled:row.connector_enrolled,presence:row.presence,runtime_status:row.runtime_status??null,last_seen_at:row.last_seen_at??null},
+        /* Which room the session is in, because this list is workspace-wide and the room view is
+           not. "Connected" here with "never appeared" inside a room is the app disagreeing with
+           itself; naming the room makes both answers true and the difference legible. */
+        connector:{enrolled:row.connector_enrolled,presence:row.presence,runtime_status:row.runtime_status??null,last_seen_at:row.last_seen_at??null,room_id:row.session_room_id??null,room_name:row.session_room_name??null},
         rooms:row.rooms,
       }))};
     } finally { c.release(); }

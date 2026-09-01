@@ -583,7 +583,9 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
     agent_id:connectingRecord.agent_id,principal_id:connecting.principal_id,display_name:connecting.display_name,
     status:connectingRecord.status,owner_display_name:null,
     connector:{enrolled:Boolean(connectingRecord.connector_enrolled),presence:connecting.agent_presence??'never',
-      runtime_status:connecting.agent_runtime_status??null,last_seen_at:connecting.agent_last_seen_at??null},
+      runtime_status:connecting.agent_runtime_status??null,last_seen_at:connecting.agent_last_seen_at??null,
+      // Built from the room's own view, so the session it describes is this room's by construction.
+      room_id:identity.roomId,room_name:snapshot.room.name},
     rooms:[{room_id:identity.roomId,name:snapshot.room.name}],
   }:null;
 
@@ -625,7 +627,10 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
         <button type="button" className="connect-close" aria-label="Close connection setup" onClick={()=>setConnecting(null)}><X size={16}/></button>
         <h2 id="connect-agent-title">Connect {enrollmentAgent.display_name}</h2>
         <p>Open Multiplayer AI on the machine where this agent runs.</p>
-        <ConnectAgent companyId={identity.companyId} agent={enrollmentAgent} onChanged={loadAgents}/>
+        {/* The room being looked at is the room the code is for. Anything else is how an agent
+            connected from one room ends up bound to another. */}
+        <ConnectAgent companyId={identity.companyId} roomId={identity.roomId}
+          roomName={snapshot.room.name} agent={enrollmentAgent} onChanged={loadAgents}/>
       </section>
     </div>}
     <div className="sr-live" aria-live="polite">{lastEvent&&`${lastEvent.actor_display_name} ${activityText(lastEvent)}`}</div>

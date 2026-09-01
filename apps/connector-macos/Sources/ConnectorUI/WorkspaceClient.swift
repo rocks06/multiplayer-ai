@@ -282,3 +282,10 @@ public final class WorkspaceClient: @unchecked Sendable {
         return token
     }
 }
+
+/// A room this Mac's agent is a worker in.
+public struct AgentRoom: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let name: String
+    public init(id: String, name: String) { self.id = id; self.name = name }
+}

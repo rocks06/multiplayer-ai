@@ -149,6 +149,55 @@ describe("Bringing your own agents", () => {
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json().agent_display_name).toBe("Agent A");
   });
+
+  /**
+   * The failure this exists to prevent, reproduced.
+   *
+   * An agent in two rooms was connected from the second one, and the machine ended up bound to
+   * the first — because the code named no room and redemption returned every room the agent
+   * belonged to, oldest membership first, for the connecting machine to pick from. Nothing
+   * reported a problem: the workspace said connected, the room said the agent had never
+   * appeared, and messages addressed to it in that room were never seen.
+   */
+  it("connects an agent to the room its code was issued from, not the room it joined first", async () => {
+    const cookie = await signedInUser();
+    const companyId = await workspace(cookie);
+    const agent = await registerAgent(cookie, companyId, "JJ");
+
+    // Joined first, and therefore what the old code picked no matter which room you asked from.
+    const first = await makeRoom(cookie, companyId, "roomr");
+    await addToRoom(cookie, companyId, first.id, agent.principal_id);
+    const second = await makeRoom(cookie, companyId, "TESTING #1");
+    await addToRoom(cookie, companyId, second.id, agent.principal_id);
+
+    const issued = (await call("POST", `/v1/companies/${companyId}/agents/${agent.principal_id}/enrollments`,
+      { label: "JJ's Mac", room_id: second.id }, { cookie })).json();
+    expect(issued.room_id).toBe(second.id);
+
+    const redeemed = await call("POST", "/v1/agent-gateway/v1/enroll", { code: issued.enrollment_code });
+    expect(redeemed.statusCode).toBe(200);
+    const rooms = redeemed.json().rooms;
+    // Exactly one room, and it is the one the person was standing in.
+    expect(rooms).toHaveLength(1);
+    expect(rooms[0].id).toBe(second.id);
+    expect(rooms[0].name).toBe("TESTING #1");
+  });
+
+  it("refuses a code for a room the agent does not work in", async () => {
+    const cookie = await signedInUser();
+    const companyId = await workspace(cookie);
+    const agent = await registerAgent(cookie, companyId, "Agent A");
+    const mine = await makeRoom(cookie, companyId, "Mine");
+    await addToRoom(cookie, companyId, mine.id, agent.principal_id);
+    const other = await makeRoom(cookie, companyId, "Somewhere else");
+
+    const refused = await call("POST", `/v1/companies/${companyId}/agents/${agent.principal_id}/enrollments`,
+      { label: "A Mac", room_id: other.id }, { cookie });
+    // Refused while somebody is still looking at the screen, rather than at redemption time on
+    // another machine, or — worse — silently against a different room.
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error.code).toBe("enrollment_room_invalid");
+  });
 });
 
 /**

@@ -123,7 +123,7 @@ async function send<T>(path:string,init:RequestInit={}):Promise<T>{
 export interface WorkspaceAgent {
   agent_id:string;principal_id:string;display_name:string;status:'active'|'paused'|'archived';
   owner_display_name:string|null;
-  connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'never';runtime_status:string|null;last_seen_at:string|null};
+  connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'never';runtime_status:string|null;last_seen_at:string|null;room_id:string|null;room_name:string|null};
   rooms:Array<{room_id:string;name:string}>|null;
 }
 export interface WorkspaceRoom {room_id:string;name:string;project_id:string;project_name:string;objective?:string}
@@ -141,9 +141,11 @@ export const listWorkspaceRooms=(companyId:string)=>
 export const addWorkspaceAgent=(companyId:string,name:string)=>
   send<{agent_id:string;principal_id:string}>(`/v1/companies/${companyId}/agents`,{method:'POST',body:JSON.stringify({name})});
 
-export const createEnrollmentCode=(companyId:string,agentPrincipalId:string,label:string)=>
-  send<{enrollment_code:string;expires_at:string}>(`/v1/companies/${companyId}/agents/${agentPrincipalId}/enrollments`,
-    {method:'POST',body:JSON.stringify({label})});
+/** A code is for one agent in one room. The room is not optional in the product, only in the
+ *  wire format, because codes issued before rooms were carried have no room to name. */
+export const createEnrollmentCode=(companyId:string,agentPrincipalId:string,label:string,roomId:string)=>
+  send<{enrollment_code:string;expires_at:string;room_id:string|null}>(`/v1/companies/${companyId}/agents/${agentPrincipalId}/enrollments`,
+    {method:'POST',body:JSON.stringify({label,room_id:roomId})});
 
 export const createProject=(companyId:string,name:string,objective:string)=>
   send<{id:string;name:string;objective:string}>(`/v1/companies/${companyId}/projects`,{method:'POST',body:JSON.stringify({name,objective})});

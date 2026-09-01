@@ -190,3 +190,32 @@ import Foundation
         #expect(app.queuedAuthURL == nil)
     }
 }
+
+/// Which room this Mac is actually working in.
+///
+/// An agent in two rooms was connected from the second and bound to the first, because the code
+/// named no room and redemption returned every room the agent belonged to, oldest first. From
+/// then on the workspace said connected, the room said the agent had never appeared, and a
+/// message addressed to it there was never seen. The binding is a durable fact about the machine:
+/// it may be wrong, and when it is, the app says so rather than quietly reassigning it.
+@Suite struct RoomBindingTests {
+    @Test func aMacBoundToTheRoomItIsMeantToBeInIsCorrect() {
+        #expect(AppModel.binding(bound: "room-a", expected: "room-a") == .correct("room-a"))
+    }
+
+    @Test func aMacBoundSomewhereElseIsNamedAsSuch() {
+        #expect(AppModel.binding(bound: "roomr", expected: "testing-1")
+                == .elsewhere(bound: "roomr", expected: "testing-1"))
+    }
+
+    /// Nothing to compare against is not a mismatch — it is a Mac that has not been bound.
+    @Test func anUnboundMacIsNotAMismatch() {
+        #expect(AppModel.binding(bound: nil, expected: "room-a") == .notBound)
+        #expect(AppModel.binding(bound: nil, expected: nil) == .notBound)
+    }
+
+    /// A binding with nothing expected of it is left alone rather than called wrong.
+    @Test func aBindingWithNoExpectationStands() {
+        #expect(AppModel.binding(bound: "room-a", expected: nil) == .correct("room-a"))
+    }
+}
