@@ -162,3 +162,28 @@ import Foundation
         #expect(AppModel.token(from: "https://app.example.com/signin#other=1") == "https://app.example.com/signin#other=1")
     }
 }
+
+/// The first screen a new person sees, and the route it takes.
+///
+/// This opened on Sign in. A brand-new address sent to the sign-in route is answered
+/// `{"status":"accepted"}` and nothing is sent — the server will not admit an address has no
+/// account, deliberately — so a clean install said "Check your email" about an email that was
+/// never going to exist, and no log line anywhere recorded it. The default is the whole bug, and
+/// it was invisible because it lived in view state that nothing asserted.
+@Suite struct FirstRunAccountTests {
+    @Test func aFreshlyInstalledAppOpensOnCreatingAnAccount() {
+        #expect(AccountScreen.opensCreating, "first run must offer to create an account, not to sign in")
+    }
+
+    /// The two routes are not interchangeable: only one of them can make an account exist.
+    @Test func theTwoRoutesAreDifferentEndpoints() throws {
+        let base = URL(string: "https://workspace.example")!
+        let signUp = try WorkspaceEndpoint.request(base: base, method: "POST", path: "/v1/auth/sign-up",
+                                                   body: ["name": "A", "email": "a@b.c"])
+        let signIn = try WorkspaceEndpoint.request(base: base, method: "POST", path: "/v1/auth/sign-in-links",
+                                                   body: ["email": "a@b.c"])
+        #expect(signUp.url?.path == "/v1/auth/sign-up")
+        #expect(signIn.url?.path == "/v1/auth/sign-in-links")
+        #expect(signUp.url != signIn.url)
+    }
+}

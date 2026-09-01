@@ -116,6 +116,7 @@ let screens: [(String, AppModel, AnyView)] = {
     let account = AppModel.preview(step: .account, connector: previewConnector(withHermes))
     let linkSent = AppModel.preview(step: .account, connector: previewConnector(withHermes),
                                     awaitingLinkFor: "priya@acme.com")
+    let firstRun = AppModel.preview(step: .account, connector: previewConnector(withHermes))
     let linkExpired = AppModel.preview(step: .account, connector: previewConnector(withHermes),
                                        problem: .from(status: 401, code: "sign_in_invalid", message: nil),
                                        awaitingLinkFor: "priya@acme.com")
@@ -136,6 +137,7 @@ let screens: [(String, AppModel, AnyView)] = {
         screen("22-setup-done", setupDone, SetupScreen(app: setupDone)),
         screen("23-setup-failed", setupFailed, SetupScreen(app: setupFailed)),
         screen("24-account", account, AccountScreen(app: account)),
+        screen("24b-first-run-default", firstRun, AccountScreen(app: firstRun)),
         screen("25-link-sent", linkSent, AccountScreen(app: linkSent)),
         screen("26-link-expired", linkExpired, AccountScreen(app: linkExpired)),
         screen("27-workspace", workspace, WorkspaceNameScreen(app: workspace)),

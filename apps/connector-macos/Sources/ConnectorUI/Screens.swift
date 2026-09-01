@@ -149,7 +149,17 @@ struct SetupRow: View {
 /// asking someone which one they are before they have told you anything is a wasted decision.
 public struct AccountScreen: View {
     @Bindable var app: AppModel
-    @State private var creating = false
+    /* Someone on the first run of a freshly installed app is, by definition, new.
+    
+       This opened on Sign in, which sent a new address to the sign-in route — and that route
+       will not say an address has no account, deliberately, so nothing arrived and nothing
+       could explain why. The likely case goes first; signing in is one tap away for the people
+       who already have an account, and they are the ones who know that they do. */
+    @State private var creating = AccountScreen.opensCreating
+
+    /// Named so it can be asserted. A default buried in view state is exactly what went wrong:
+    /// nothing could see it, so nothing caught it sending new people to the sign-in route.
+    public static let opensCreating = true
     @State private var name = ""
     @State private var email = ""
     @State private var pasted = ""
@@ -203,16 +213,52 @@ public struct AccountScreen: View {
                 if let problem = app.problem {
                     Problem(what: problem.message, todo: problem.recovery)
                 }
+                nothingArrived()
             }
         } actions: {
-            VStack(alignment: .leading, spacing: 16) {
-                PrimaryButton("Sign in", busy: app.busy) { Task { await app.redeem(pasted) } }
-                    .disabled(pasted.trimmingCharacters(in: .whitespaces).isEmpty || app.busy)
-                QuietButton("Use a different address") {
-                    app.awaitingLinkFor = nil; app.problem = nil; pasted = ""
-                }
-            }
+            PrimaryButton("Sign in", busy: app.busy) { Task { await app.redeem(pasted) } }
+                .disabled(pasted.trimmingCharacters(in: .whitespaces).isEmpty || app.busy)
         }
+    }
+
+    /**
+     What to do when the email does not turn up.
+
+     The server will never say whether an address has an account — that refusal is deliberate and
+     stays. It means this screen cannot tell someone *why* nothing arrived, and the honest thing
+     is therefore to lay out both roads and let them pick the one that matches what they already
+     know about themselves. Waiting with no explanation is what this replaces.
+     */
+    private func nothingArrived() -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Nothing arrived?")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Palette.ink)
+            Text(creating
+                 ? "Check your spam folder first. If you already had an account with this address, sign in instead — creating one again does not send a second link."
+                 : "Check your spam folder first. A sign-in link is only sent to an address that already has an account, so if you have not set one up yet, create an account instead.")
+                .font(.system(size: 13))
+                .lineSpacing(2)
+                .foregroundStyle(Palette.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 18) {
+                QuietButton(creating ? "Sign in instead" : "Create an account") { restart(creating: !creating) }
+                QuietButton("Use a different address") { restart(creating: creating) }
+            }
+            .padding(.top, 1)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
+    }
+
+    /// Back to the form, in whichever mode was asked for, with nothing stale left behind.
+    private func restart(creating wanted: Bool) {
+        creating = wanted
+        app.awaitingLinkFor = nil
+        app.problem = nil
+        pasted = ""
     }
 
     private var canSubmit: Bool {
