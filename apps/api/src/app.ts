@@ -12,6 +12,7 @@ import { AgentRuntimeService } from "./agent-runtime/runtime-service.js";
 import { AgentGatewayService } from "./agent-gateway/gateway-service.js";
 import { registerAgentGatewayRoutes } from "./agent-gateway/gateway-routes.js";
 import { AuthService, type SignInLinkDelivery } from "./auth/auth-service.js";
+import { RoomInviteService } from "./invites/room-invite-service.js";
 import { deliveryMode, resolveSignInDelivery, type DeliveryEnvironment } from "./auth/delivery-config.js";
 import { assertProductionSafe, isProduction } from "./production-guard.js";
 import { AUTH_LIMITS, PostgresRateLimitStore, clientBucket, emailBucket, overLimit,
@@ -68,6 +69,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const delivery=options.signInDelivery ?? resolveSignInDelivery(environment);
   const mode=options.signInDelivery ? 'custom' : deliveryMode(environment);
   const auth=new AuthService(pool,delivery);
+  const invites=new RoomInviteService(pool);
   const rateLimits=options.rateLimits ?? new PostgresRateLimitStore(pool);
 
   /* The two routes that send mail to an address the caller chose. Counted before anything looks
@@ -129,6 +131,10 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.post('/v1/auth/sessions',async(req,reply)=>{const x=body(z.object({token:z.string().min(8)}),req.body);const created=await auth.createSession(x.token);writeSessionCookie(reply,created.session_token,SESSION_MAX_AGE,cookieSecure);return auth.identity(created.user_id)});
   app.delete('/v1/auth/sessions/current',async(req,reply)=>{const result=await auth.revokeSession(readSessionCookie(req));writeSessionCookie(reply,'',0,cookieSecure);return result});
   app.get('/v1/auth/me',async req=>{const session=await auth.resolveSession(readSessionCookie(req));return auth.identity(session.userId)});
+  /* Invite secrets live in the URL fragment, never the request path. That keeps them out of
+     proxy access logs and referrers; preview and acceptance carry the secret in a POST body. */
+  app.post('/v1/room-invites/preview',async req=>{const x=body(z.object({token:z.string().min(20).max(200)}),req.body);return invites.preview(x.token)});
+  app.post('/v1/room-invites/accept',async req=>{const x=body(z.object({token:z.string().min(20).max(200)}),req.body);const session=await auth.resolveSession(readSessionCookie(req));return invites.accept(x.token,session.userId)});
   // Developer beta: no email transport, so an authorized company member mints a link and
   // reads it once from this response. Delivery stays behind the SignInLinkDelivery seam.
   app.post('/v1/companies/:companyId/users/:userId/sign-in-links',async req=>{const p=body(z.object({companyId:z.string().uuid(),userId:z.string().uuid()}),req.params);const session=await auth.resolveSession(readSessionCookie(req));return auth.issueSignInLinkFor({companyId:p.companyId,actorUserId:session.userId,userId:p.userId})});
@@ -152,6 +158,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.patch('/v1/companies/:companyId/projects/:projectId/objective',async req=>{const p=body(z.object({companyId:z.string().uuid(),projectId:z.string().uuid()}),req.params);const x=body(z.object({objective:z.string().min(1).max(4000),expected_objective:z.string().min(1).max(4000)}),req.body);return service.setProjectObjective(p.companyId,p.projectId,await principal(req,p.companyId),x.objective,x.expected_objective)});
   app.post('/v1/companies/:companyId/projects/:projectId/rooms',async req=>{const p=body(z.object({companyId:z.string().uuid(),projectId:z.string().uuid()}),req.params);const x=body(z.object({name:z.string().min(1),responsibilities:z.string().default('Manage the project room')}),req.body);return service.createRoom(p.companyId,p.projectId,await principal(req,p.companyId),x.name,x.responsibilities)});
   app.post('/v1/companies/:companyId/rooms/:roomId/members',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({principal_id:z.string().uuid(),role:z.enum(['manager','contributor','worker_agent']),responsibilities:z.string().default('')}),req.body);return service.addMember({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),principalId:x.principal_id,role:x.role,responsibilities:x.responsibilities,idempotencyKey:idem(req)})});
+  app.post('/v1/companies/:companyId/rooms/:roomId/invites',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({ttl_hours:z.number().int().min(1).max(168).optional()}),req.body??{});return invites.issue({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),ttlHours:x.ttl_hours})});
   app.delete('/v1/companies/:companyId/rooms/:roomId/members/:principalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),principalId:z.string().uuid()}),req.params);return service.removeMember({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),principalId:p.principalId,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/messages',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({body:z.string().min(1),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional()}),req.body);return service.sendMessage({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),addressedPrincipalId:x.addressed_principal_id,body:x.body,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/tasks',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({title:z.string().min(1),description:z.string().default(''),assignee_principal_id:z.string().uuid().optional()}),req.body);return service.createTask({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),title:x.title,description:x.description,assigneePrincipalId:x.assignee_principal_id,idempotencyKey:idem(req)})});
@@ -200,7 +207,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
     app.get('/assets/*',async(request,reply)=>
       reply.sendFile(join('assets',(request.params as {'*':string})['*'])));
     // '/' is already served by the static handler; these are the deep links a refresh must survive.
-    for(const route of ['/home','/signup','/signin','/settings','/welcome','/welcome/*','/rooms/*','/fixtures/*'])
+    for(const route of ['/home','/signup','/signin','/join','/settings','/welcome','/welcome/*','/rooms/*','/fixtures/*'])
       app.get(route,async(_request,reply)=>reply.sendFile('index.html'));
   }
   app.addHook('onReady',async()=>{await realtime.start()});

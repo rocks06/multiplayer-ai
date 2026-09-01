@@ -21,6 +21,7 @@
     "test:ui": "vitest run --config vitest.ui.config.ts",
     "test:e2e": "playwright test --config playwright.config.ts",
     "test:watch": "vitest",
+    "testing:reset": "tsx packages/testing-reset/src/cli.ts",
     "db:migrate": "tsx packages/db/src/migrate.ts"
   },
   "dependencies": {

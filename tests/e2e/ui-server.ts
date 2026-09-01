@@ -1,17 +1,20 @@
 import * as pg from 'pg';
-import {readFile} from 'node:fs/promises';
 import {buildApp} from '../../apps/api/src/app.js';
+import type {SignInLink,SignInLinkDelivery} from '../../apps/api/src/auth/auth-service.js';
 import {RoomService} from '../../apps/api/src/room-service.js';
 import {AgentRuntimeService} from '../../apps/api/src/agent-runtime/runtime-service.js';
 import {AgentWorker} from '../../apps/worker/src/agent-worker.js';
 import {DeterministicFakeProvider,type FakeScript} from '../../packages/provider-fake/src/index.js';
+import {migrate} from '../../packages/db/src/migrator.js';
+import {truncateAll} from '../support/database.js';
 
 const {Pool}=pg;
-const connectionString=process.env.DATABASE_URL??'postgres://postgres:postgres@127.0.0.1:55432/multiplayer_ai';
+const connectionString=process.env.DATABASE_URL;
+if(!connectionString)throw new Error('DATABASE_URL is required for the browser fixture');
 const pool=new Pool({connectionString});
 const rooms=new RoomService(pool);const runtime=new AgentRuntimeService(pool,rooms);
-await pool.query(await readFile('packages/db/schema.sql','utf8'));
-await pool.query(`TRUNCATE decisions,agent_tool_calls,agent_runs,command_receipts,room_events,messages,tasks,room_members,rooms,projects,principals,agents,company_users,users,companies CASCADE`);
+await migrate(pool);
+await truncateAll(pool);
 const company=await rooms.createCompany('Multiplayer Studio');
 const alex=await rooms.createHuman(company.id,'alex@multiplayer.local','Alex Morgan');
 const sarah=await rooms.createHuman(company.id,'sarah@multiplayer.local','Sarah Chen');
@@ -32,9 +35,20 @@ const agentBScript:FakeScript=[{kind:'tool',id:'authority',name:'decision.reques
 const runA=await runtime.queueRun({companyId:company.id,roomId:room.id,actorId:alex.principal_id,agentPrincipalId:agentA.principal_id,taskId:taskA.id,script:agentAScript,maxAttempts:3,idempotencyKey:'run-a'});
 const runB=await runtime.queueRun({companyId:company.id,roomId:room.id,actorId:alex.principal_id,agentPrincipalId:agentB.principal_id,taskId:taskB.id,script:agentBScript,maxAttempts:3,idempotencyKey:'run-b'});
 const worker=(id:string)=>new AgentWorker(runtime,new DeterministicFakeProvider(),{workerId:id,leaseMs:10_000});
-const app=buildApp(pool,{pollIntervalMs:20});
+class CapturingDelivery implements SignInLinkDelivery {
+ readonly delivered:SignInLink[]=[];
+ async deliver(link:SignInLink){this.delivered.push(link)}
+}
+const delivery=new CapturingDelivery();
+const app=buildApp(pool,{pollIntervalMs:20},{allowHeaderPrincipal:false,cookieSecure:false,signInDelivery:delivery});
 const fixture={companyId:company.id,roomId:room.id,alexId:alex.principal_id,sarahId:sarah.principal_id,agentAId:agentA.principal_id,agentBId:agentB.principal_id,taskAId:taskA.id,taskBId:taskB.id,runAId:runA.id,runBId:runB.id};
 app.get('/__e2e/fixture',async()=>fixture);
+// Test-only mail sink. Authentication itself still uses the public link and session routes.
+app.get('/__e2e/auth-token',async req=>{
+ const email=String((req.query as {email?:string}).email??'');
+ const link=delivery.delivered.filter(item=>item.email===email).at(-1);
+ return link?{token:link.token}:{token:null};
+});
 app.post('/__e2e/agent-a',async()=>({result:await worker('e2e-a').runOnce()}));
 app.post('/__e2e/agent-b',async()=>({result:await worker('e2e-b').runOnce()}));
 app.delete('/__e2e/sarah-access',async()=>rooms.removeMember({companyId:company.id,roomId:room.id,actorId:alex.principal_id,principalId:sarah.principal_id,idempotencyKey:'revoke-sarah'}));

@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {ArrowRight} from 'lucide-react';
 import {ApiError,signInDelivery,signUp,type SignInDelivery} from './api';
-import {rememberIntent} from './SignIn';
+import {rememberDefaultIntent} from './SignIn';
 
 /**
  * The front door.
@@ -48,7 +48,7 @@ export function SignUp({onNavigate}:{onNavigate:(to:string)=>void}){
     try{
       await signUp(name.trim(),email.trim());
       // Where they should end up once the link is redeemed.
-      rememberIntent('/home');
+      rememberDefaultIntent('/home');
       setSent(true);
     }catch(failure){
       setProblem(failure instanceof ApiError?failure.message:'That did not work. Try again.');

@@ -29,6 +29,7 @@ export class RoomApi {
     return response.json() as Promise<T>;
   }
   snapshot(){return this.request<RoomSnapshot>('/snapshot')}
+  createInvite(ttlHours=24){return this.request<{id:string;invite_token:string;invite_path:string;expires_at:string}>('/invites',{method:'POST',body:JSON.stringify({ttl_hours:ttlHours})})}
   decisions(){return this.request<{decisions:Decision[]}>('/decisions?status=pending')}
   sendMessage(body:string,addressedPrincipalId?:string){return this.request('/messages',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined})})}
   createTask(input:{title:string;description:string;assigneePrincipalId?:string}){return this.request('/tasks',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({title:input.title,description:input.description,assignee_principal_id:input.assigneePrincipalId||undefined})})}
@@ -167,6 +168,11 @@ export const signUp=(name:string,email:string)=>
   send<{status:string}>('/v1/auth/sign-up',{method:'POST',body:JSON.stringify({name,email})});
 
 export const signOut=()=>send<unknown>('/v1/auth/sessions/current',{method:'DELETE'});
+
+export interface RoomInvitePreview {company_name:string;room_name:string;expires_at:string}
+export interface AcceptedRoomInvite {company_id:string;room_id:string;principal_id:string;company_name:string;room_name:string;room_path:string}
+export const previewRoomInvite=(token:string)=>send<RoomInvitePreview>('/v1/room-invites/preview',{method:'POST',body:JSON.stringify({token})});
+export const acceptRoomInvite=(token:string)=>send<AcceptedRoomInvite>('/v1/room-invites/accept',{method:'POST',body:JSON.stringify({token})});
 
 /**
  * How sign-in links actually reach people, asked of the server rather than assumed.

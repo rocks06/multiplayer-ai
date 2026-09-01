@@ -19,6 +19,8 @@ const redemption=(()=>{
 
 /** Remember where someone was heading so signing in returns them there. */
 export function rememberIntent(path:string){try{sessionStorage.setItem(INTENT_KEY,path)}catch{}}
+/** Set the ordinary post-auth destination without replacing a more specific flow such as an invite. */
+export function rememberDefaultIntent(path:string){try{if(!sessionStorage.getItem(INTENT_KEY))sessionStorage.setItem(INTENT_KEY,path)}catch{}}
 function takeIntent(){try{const value=sessionStorage.getItem(INTENT_KEY);sessionStorage.removeItem(INTENT_KEY);return value}catch{return null}}
 
 type Phase=

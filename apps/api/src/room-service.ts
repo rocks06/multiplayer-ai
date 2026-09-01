@@ -24,6 +24,20 @@ export class RoomService {
     return result.rows[0]!;
   }
 
+  /** Company records exist for room-only guests because principals are company-scoped. That is
+   * not workspace authority. All workspace-wide reads and mutations pass this separate gate. */
+  private async workspaceActor(client: DbClient, companyId: string, actorId: string): Promise<Actor> {
+    const actor = await this.actor(client, companyId, actorId);
+    if (actor.kind !== "human") throw new DomainError("workspace_access_denied", "Workspace access is required", 403);
+    const access = await client.query(
+      `SELECT 1 FROM principals p JOIN company_users cu ON cu.company_id=p.company_id AND cu.user_id=p.user_id
+       WHERE p.company_id=$1 AND p.id=$2 AND cu.status='active' AND cu.access_scope='workspace'`,
+      [companyId, actorId],
+    );
+    if (!access.rowCount) throw new DomainError("workspace_access_denied", "Workspace access is required", 403);
+    return actor;
+  }
+
   private async membership(client: DbClient, companyId: string, roomId: string, actorId: string): Promise<Membership> {
     const result = await client.query<Membership>(`SELECT role, responsibilities FROM room_members WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' FOR SHARE`, [companyId, roomId, actorId]);
     if (!result.rowCount) throw new DomainError("room_access_denied", "Active room membership is required", 403);
@@ -111,7 +125,7 @@ export class RoomService {
   async listCompanyAgents(companyId:string,actorId:string) {
     const c=await this.pool.connect();
     try {
-      await this.actor(c,companyId,actorId);
+      await this.workspaceActor(c,companyId,actorId);
       const result=await c.query(`SELECT a.id agent_id,p.id principal_id,p.display_name,a.status,u.display_name owner_display_name,
         EXISTS(SELECT 1 FROM external_agent_credentials ec WHERE ec.company_id=a.company_id AND ec.agent_principal_id=p.id AND ec.status='active') connector_enrolled,
         CASE WHEN s.status IS NULL THEN 'never' WHEN s.status<>'connected' THEN s.status WHEN s.last_seen_at < now()-interval '90 seconds' THEN 'stale' ELSE 'connected' END presence,
@@ -170,7 +184,7 @@ export class RoomService {
   async createAgentForPrincipal(companyId:string,actorId:string,name:string) {
     const c=await this.pool.connect();
     try {
-      const actor=await this.actor(c,companyId,actorId);
+      const actor=await this.workspaceActor(c,companyId,actorId);
       if(actor.kind!=='human') throw new DomainError('forbidden','Only a person can add an agent',403);
       const owner=await c.query<{user_id:string}>(`SELECT user_id FROM principals WHERE id=$1 AND company_id=$2 AND kind='human' AND status='active'`,[actorId,companyId]);
       const ownerUserId=owner.rows[0]?.user_id;
@@ -179,7 +193,7 @@ export class RoomService {
     } finally { c.release(); }
   }
 
-  async createProject(companyId:string,actorId:string,name:string,objective:string) { await this.pool.query(`SELECT 1 FROM principals WHERE id=$1 AND company_id=$2`,[actorId,companyId]).then(r=>{if(!r.rowCount)throw new DomainError('forbidden','Invalid company principal',403)}); const id=uuidv7(); await this.pool.query(`INSERT INTO projects(id,company_id,name,objective,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[id,companyId,name,objective,actorId]); return {id,name,objective}; }
+  async createProject(companyId:string,actorId:string,name:string,objective:string) { const c=await this.pool.connect(); try { await this.workspaceActor(c,companyId,actorId); const id=uuidv7(); await c.query(`INSERT INTO projects(id,company_id,name,objective,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[id,companyId,name,objective,actorId]); return {id,name,objective}; } finally { c.release(); } }
   /**
    * Projects own objectives; rooms only point at projects. No existing command updates that
    * field, so onboarding needs this small compare-and-set mutation to create the room first.
@@ -191,7 +205,7 @@ export class RoomService {
     const c=await this.pool.connect();
     try {
       await c.query('BEGIN');
-      const actor=await this.actor(c,companyId,actorId);
+      const actor=await this.workspaceActor(c,companyId,actorId);
       if(actor.kind!=='human')throw new DomainError('permission_denied','Only a person can set the project objective',403);
       const project=await c.query<{id:string;name:string;objective:string}>(
         `SELECT id,name,objective FROM projects WHERE company_id=$1 AND id=$2 FOR UPDATE`,[companyId,projectId]);
@@ -209,7 +223,7 @@ export class RoomService {
       return changed.rows[0]!;
     } catch(error){await c.query('ROLLBACK');throw error} finally{c.release()}
   }
-  async createRoom(companyId:string,projectId:string,actorId:string,name:string,responsibilities:string) { const c=await this.pool.connect(); try { await c.query('BEGIN'); const actor=await this.actor(c,companyId,actorId); const roomId=uuidv7(), memberId=uuidv7(), commandId=uuidv7(); await c.query(`INSERT INTO rooms(id,company_id,project_id,name,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[roomId,companyId,projectId,name,actorId]); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,'manager',$5)`,[memberId,companyId,roomId,actorId,responsibilities]); await this.appendEvent(c,{companyId,roomId,actor,eventType:'room.created',entityType:'room',entityId:roomId,payload:{name},commandId,correlationId:commandId}); await this.appendEvent(c,{companyId,roomId,actor,eventType:'member.joined',entityType:'room_member',entityId:memberId,payload:{principal_id:actorId,role:'manager'},commandId,correlationId:commandId}); await c.query('COMMIT'); return {id:roomId,name,room_seq:2}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
+  async createRoom(companyId:string,projectId:string,actorId:string,name:string,responsibilities:string) { const c=await this.pool.connect(); try { await c.query('BEGIN'); const actor=await this.workspaceActor(c,companyId,actorId); const roomId=uuidv7(), memberId=uuidv7(), commandId=uuidv7(); await c.query(`INSERT INTO rooms(id,company_id,project_id,name,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[roomId,companyId,projectId,name,actorId]); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,'manager',$5)`,[memberId,companyId,roomId,actorId,responsibilities]); await this.appendEvent(c,{companyId,roomId,actor,eventType:'room.created',entityType:'room',entityId:roomId,payload:{name},commandId,correlationId:commandId}); await this.appendEvent(c,{companyId,roomId,actor,eventType:'member.joined',entityType:'room_member',entityId:memberId,payload:{principal_id:actorId,role:'manager'},commandId,correlationId:commandId}); await c.query('COMMIT'); return {id:roomId,name,room_seq:2}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
 
   async addMember(input:{companyId:string;roomId:string;actorId:string;principalId:string;role:RoomRole;responsibilities:string;idempotencyKey:string}) { return this.command({...input,commandType:'member.add',input:{principalId:input.principalId,role:input.role,responsibilities:input.responsibilities},permission:'member.manage'}, async(c)=>{ const target=await this.actor(c,input.companyId,input.principalId); const id=uuidv7(); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,$5,$6)`,[id,input.companyId,input.roomId,input.principalId,input.role,input.responsibilities]); return {response:{id,principal_id:target.id,role:input.role},event:{type:'member.joined',entityType:'room_member',entityId:id,payload:{principal_id:target.id,role:input.role}}}; }); }
 

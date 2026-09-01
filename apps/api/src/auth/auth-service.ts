@@ -131,7 +131,7 @@ export class AuthService {
    * once from the response. The raw token is never persisted.
    */
   async issueSignInLinkFor(input: { companyId: string; actorUserId: string; userId: string }) {
-    const actor = await this.pool.query(`SELECT 1 FROM company_users WHERE company_id=$1 AND user_id=$2 AND status='active'`, [input.companyId, input.actorUserId]);
+    const actor = await this.pool.query(`SELECT 1 FROM company_users WHERE company_id=$1 AND user_id=$2 AND status='active' AND access_scope='workspace'`, [input.companyId, input.actorUserId]);
     if (!actor.rowCount) throw new DomainError("forbidden", "You do not have access to this company", 403);
     const target = await this.pool.query<{ id: string; email: string }>(
       `SELECT u.id,u.email FROM users u JOIN company_users cu ON cu.user_id=u.id AND cu.company_id=$1 AND cu.status='active' WHERE u.id=$2`,

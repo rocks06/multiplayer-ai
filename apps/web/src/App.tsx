@@ -1,5 +1,5 @@
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
-import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Plus,RefreshCw,ShieldAlert,Users,X} from 'lucide-react';
+import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Copy,Plus,RefreshCw,Share2,ShieldAlert,Users,X} from 'lucide-react';
 import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
@@ -8,6 +8,7 @@ import Welcome,{ConnectAgent} from './Welcome';
 import {Entry,SignUp} from './Entry';
 import {Home} from './Home';
 import {Settings} from './Settings';
+import JoinRoom from './JoinRoom';
 import {Shell} from './Shell';
 import {AgentControls,SharedWork,type WorkActions} from './Work';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
@@ -437,6 +438,7 @@ function RoomApp(){
 
   if(path==='/signin')return <SignIn/>;
   if(path==='/signup')return <SignUp onNavigate={navigate}/>;
+  if(path==='/join')return <JoinRoom navigate={navigate}/>;
   if(path==='/welcome')return <Welcome navigate={navigate}/>;
   if(path==='/fixtures/presence')return <PresenceFixture/>;
   if(path==='/fixtures/decisions')return <DecisionFixture/>;
@@ -504,6 +506,26 @@ function RoomContext({workspace,snapshot}:{workspace:string;snapshot:RoomSnapsho
   </nav>;
 }
 
+function ShareRoom({roomName,onCreate,onClose}:{roomName:string;onCreate:()=>Promise<{invite_path:string;expires_at:string}>;onClose:()=>void}){
+  const [state,setState]=useState<{status:'creating'}|{status:'ready';url:string;expires:string;copied:boolean}|{status:'error';message:string}>({status:'creating'});
+  useEffect(()=>{let alive=true;void onCreate().then(invite=>{if(alive)setState({status:'ready',url:new URL(invite.invite_path,location.origin).href,expires:invite.expires_at,copied:false})}).catch(problem=>{if(alive)setState({status:'error',message:(problem as Error).message})});return()=>{alive=false}},[onCreate]);
+  const copy=async()=>{if(state.status!=='ready')return;await navigator.clipboard.writeText(state.url);setState({...state,copied:true})};
+  return <div className="connect-overlay share-overlay" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)onClose()}}>
+    <section className="connect-dialog share-dialog" role="dialog" aria-modal="true" aria-labelledby="share-room-title">
+      <button type="button" className="connect-close" aria-label="Close invitation" onClick={onClose}><X size={16}/></button>
+      <h2 id="share-room-title">Invite someone to {roomName}</h2>
+      <p>This single-use link adds one signed-in person to this room. It expires after 24 hours.</p>
+      {state.status==='creating'&&<p className="auth-quiet" role="status">Creating a secure invitation…</p>}
+      {state.status==='error'&&<p className="form-error" role="alert">{state.message}</p>}
+      {state.status==='ready'&&<>
+        <label className="field"><span className="field-label">Invitation link</span><input readOnly value={state.url} onFocus={event=>event.currentTarget.select()}/></label>
+        <button className="copy-invite" onClick={()=>void copy()}><Copy size={15}/>{state.copied?'Copied':'Copy link'}</button>
+        <small>Expires {new Date(state.expires).toLocaleString()}. The secret is never stored in readable form.</small>
+      </>}
+    </section>
+  </div>;
+}
+
 function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   const {api,snapshot,connection,lastEvent,error,refresh}=useRoomSession(identity);
   const [briefingOpen,setBriefingOpen]=useState(false);
@@ -514,6 +536,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   const [addressee,setAddressee]=useState('');
   const [composerFocus,setComposerFocus]=useState(0);
   const [connecting,setConnecting]=useState<Member|null>(null);
+  const [sharing,setSharing]=useState(false);
   /* Which agent record an action addresses, and whether it is paused, are company-level facts
      the room snapshot does not carry. They are refetched whenever the room reports an agent
      changing, so a pause made here or elsewhere is reflected without polling. */
@@ -590,7 +613,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   }:null;
 
   return <main className="room-app">
-    <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div><button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
+    <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div>{managers&&<button className="share-room" onClick={()=>setSharing(true)}><Share2 size={14}/>Share</button>}<button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
     {briefingOpen&&<section className="briefing"><div><span>Normalized room briefing</span><h2>{snapshot.briefing.project_objective}</h2></div><dl><div><dt>Your role</dt><dd>{snapshot.briefing.joining_principal.role}</dd></div><div><dt>Your responsibility</dt><dd>{snapshot.briefing.joining_principal.responsibilities||'Contribute to the room objective'}</dd></div><div><dt>Active work</dt><dd>{snapshot.briefing.active_tasks.length} tasks · {snapshot.briefing.blockers.length} blocked</dd></div></dl></section>}
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
@@ -633,6 +656,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
           roomName={snapshot.room.name} agent={enrollmentAgent} onChanged={loadAgents}/>
       </section>
     </div>}
+    {sharing&&<ShareRoom roomName={snapshot.room.name} onCreate={()=>api.createInvite()} onClose={()=>setSharing(false)}/>}
     <div className="sr-live" aria-live="polite">{lastEvent&&`${lastEvent.actor_display_name} ${activityText(lastEvent)}`}</div>
   </main>;
 }
