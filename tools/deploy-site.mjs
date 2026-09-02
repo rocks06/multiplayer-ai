@@ -15,6 +15,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +23,18 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const site = path.join(repo, 'dist/marketing');
 /* A step that fails has already said why, in its own words and on this terminal. Re-throwing it
    as a Node stack trace buries that under the internals of how it was spawned. */
+/* Same as `run`, but the child's stdout is wanted rather than shown. Errors still reach the
+   terminal, so a failure explains itself exactly as it would otherwise. */
+const capture = (command, args) => {
+  try {
+    return execFileSync(command, args,
+      { cwd: repo, encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'], env: process.env });
+  } catch (failure) {
+    console.error(`\n✗ ${command} ${args.join(' ')} failed — nothing was published.`);
+    process.exit(typeof failure?.status === 'number' ? failure.status : 1);
+  }
+};
+
 const run = (command, args) => {
   try { execFileSync(command, args, { cwd: repo, stdio: 'inherit', env: process.env }); }
   catch (failure) {
@@ -30,9 +43,15 @@ const run = (command, args) => {
   }
 };
 
-const token = process.env.NETLIFY_AUTH_TOKEN;
-if (!token) {
-  console.error('NETLIFY_AUTH_TOKEN is not set. Add it to .env, or export it, and run again.');
+/* Either kind of credential will do: an access token in the environment, or a CLI that has been
+   logged in interactively. Requiring the token alone turned `netlify login` into a dead end. */
+const cliConfig = path.join(os.homedir(), '.config/netlify/config.json');
+const loggedIn = () => {
+  try { return Object.keys(JSON.parse(fs.readFileSync(cliConfig, 'utf8')).users ?? {}).length > 0; }
+  catch { return false; }
+};
+if (!process.env.NETLIFY_AUTH_TOKEN && !loggedIn()) {
+  console.error('No Netlify credential. Either set NETLIFY_AUTH_TOKEN, or run `npx netlify-cli@17 login`.');
   process.exit(1);
 }
 const stateFile = path.join(repo, '.netlify/state.json');
@@ -69,12 +88,46 @@ if (fs.statSync(image).size !== manifest.bytes) {
 }
 console.log(`  ${manifest.file} · ${manifest.sha256}`);
 
-/* --no-build, deliberately. Netlify has a build command configured, and running it here would
-   empty dist/marketing and take the image back out again — which is exactly the bug. */
-console.log('• deploying to production');
-run('npx', ['-y', 'netlify-cli@17', 'deploy', '--prod', '--no-build',
-            '--dir', 'dist/marketing', '--site', siteId]);
+/* No --build, deliberately, and that is the whole of it.
 
-console.log(`\n✓ published ${manifest.file}`);
-console.log(`  sha256   ${manifest.sha256}`);
-console.log(`  built_at ${manifest.built_at}`);
+   This CLI builds only when asked: `--build` is opt-in, and there is no `--no-build` to pass — an
+   earlier attempt passed one and the deploy failed on the unknown flag. Leaving it off is what
+   stops Netlify running `build:marketing`, which would empty dist/marketing and take the image
+   back out after we just put it in. The version is pinned because that is a promise about flags. */
+console.log('• deploying to production');
+const output = capture('npx', ['-y', 'netlify-cli@17', 'deploy', '--prod', '--json',
+                               '--dir', 'dist/marketing', '--site', siteId]);
+let live;
+try { live = JSON.parse(output).url; } catch { /* fall through to the check below */ }
+if (!live) {
+  console.error('The deploy returned no site URL, so it cannot be checked. Verify by hand.');
+  process.exit(1);
+}
+
+/* Check the published site, not the directory that was uploaded.
+
+   The failure this exists to prevent reported success: the deploy worked, the front page worked,
+   and the download 404'd. Uploading the right bytes and serving them are two different claims,
+   and only the second one matters to somebody installing the product. */
+console.log(`• checking ${live}`);
+const manifestUrl = `${live}/app/manifest.json`;
+const imageUrl = `${live}/app/${encodeURIComponent(manifest.file)}`;
+const published = await fetch(manifestUrl, { redirect: 'follow' });
+// HEAD, because the question is whether it is served, not what forty megabytes contain.
+const downloadable = await fetch(imageUrl, { method: 'HEAD', redirect: 'follow' });
+const served = published.ok ? await published.json() : null;
+
+console.log(`  ${published.status}  ${manifestUrl}`);
+console.log(`  ${downloadable.status}  ${imageUrl}`);
+if (!published.ok || !downloadable.ok) {
+  console.error('\n✗ published, but the download is not being served. Do not announce this build.');
+  process.exit(1);
+}
+if (served?.sha256 !== manifest.sha256) {
+  console.error(`\n✗ live manifest says ${served?.sha256}, expected ${manifest.sha256}.`);
+  process.exit(1);
+}
+
+console.log(`\n✓ published and serving ${manifest.file}`);
+console.log(`  sha256   ${served.sha256}`);
+console.log(`  built_at ${served.built_at}`);
