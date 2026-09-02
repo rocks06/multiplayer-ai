@@ -33,6 +33,27 @@ describe('Slice 6 room interface',()=>{
   }));
  });
  afterEach(()=>{cleanup();vi.unstubAllGlobals()});
+
+ /**
+  * A room opens on its own membership, not on the workspace room list.
+  *
+  * The list is what the sidebar draws. Waiting for it meant a person invited to a single room —
+  * who may not be allowed to enumerate the workspace at all — sat on "Opening the room…" forever,
+  * and so did anyone whose list call simply failed. Room context also has to survive a reload,
+  * which is the same code path.
+  */
+ it('opens for someone who cannot list the workspace',async()=>{
+  vi.mocked(fetch).mockImplementation(async(url:any,init?:RequestInit)=>{
+   if(String(url).includes('/v1/auth/me'))return new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}});
+   // Exactly the refusal a room-only invitee gets when asking for the workspace's rooms.
+   if(String(url).endsWith('/rooms'))return new Response(JSON.stringify({error:{code:'forbidden'}}),{status:403,headers:{'content-type':'application/json'}});
+   if(init?.method==='POST')return new Response(JSON.stringify({ok:true}),{status:200,headers:{'content-type':'application/json'}});
+   return new Response(JSON.stringify(snapshot),{status:200,headers:{'content-type':'application/json'}});
+  });
+  render(<RoomApp/>);
+  expect(await screen.findByRole('heading',{name:'Launch room'})).toBeVisible();
+ });
+
  it('renders room context, distinct identities, active work, and a priority decision',async()=>{
   render(<RoomApp/>);
   expect(await screen.findByRole('heading',{name:'Launch room'})).toBeVisible();

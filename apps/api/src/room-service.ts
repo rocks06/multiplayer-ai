@@ -294,7 +294,9 @@ export class RoomService {
       await c.query(`UPDATE agent_enrollment_tokens SET status='revoked' WHERE company_id=$1 AND agent_principal_id=$2 AND status='pending'`,[companyId,agentPrincipalId]);
       await c.query(`UPDATE agent_runtime_bindings SET status='removed',ended_at=now() WHERE company_id=$1 AND agent_principal_id=$2 AND status='active'`,[companyId,agentPrincipalId]);
       await c.query(`UPDATE room_members SET status='removed',removed_at=now() WHERE company_id=$1 AND principal_id=$2 AND status='active'`,[companyId,agentPrincipalId]);
-      await c.query(`UPDATE agents SET status='archived',run_generation=run_generation+1 WHERE company_id=$1 AND id=$2`,[companyId,target.rows[0]!.agent_id]);
+      // 'disabled' is the word the schema has for an agent that is no longer available; 'archived'
+      // is not in its CHECK, so removing an agent failed with a constraint violation every time.
+      await c.query(`UPDATE agents SET status='disabled',run_generation=run_generation+1 WHERE company_id=$1 AND id=$2`,[companyId,target.rows[0]!.agent_id]);
       await c.query(`UPDATE principals SET status='disabled' WHERE company_id=$1 AND id=$2`,[companyId,agentPrincipalId]);
       await c.query('COMMIT');
       return {principal_id:agentPrincipalId,status:'removed'};
