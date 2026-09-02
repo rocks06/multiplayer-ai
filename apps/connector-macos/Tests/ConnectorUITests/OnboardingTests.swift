@@ -375,4 +375,61 @@ struct BindDecisionTests {
                                     gateway: "superseded") == false)
     }
 }
+
+/**
+ * Connect existing agent, from the web, on the machine that can actually see the runtime.
+ *
+ * The browser cannot detect Hermes; it can only ask the Mac to. So Home links to the app, and the
+ * app does discovery, validation and enrolment in that order — nothing is created for a runtime
+ * that has not answered.
+ */
+@Suite("The connect-runtime link")
+struct ConnectRuntimeLinkTests {
+    @Test("is recognised however the link is spelled")
+    func recognised() {
+        #expect(AppModel.isConnectRuntime("multiplayerai://connect-runtime"))
+        #expect(AppModel.isConnectRuntime("multiplayerai:///connect-runtime"))
+    }
+
+    /// A sign-in link must still be a sign-in link: these arrive on the same scheme.
+    @Test("is not confused with a sign-in link")
+    func notASignInLink() {
+        #expect(AppModel.isConnectRuntime("multiplayerai://auth?token=mpsi_abc") == false)
+        #expect(AppModel.isConnectRuntime("https://example.test/connect-runtime") == false)
+        #expect(AppModel.isConnectRuntime("") == false)
+    }
+}
+
+/**
+ * What may be bound to.
+ *
+ * Found is not the same as reachable, and reachable is not the same as identified. Binding an
+ * agent to a runtime that was merely *installed* is how an identity gets minted for something that
+ * is not running — the junk this slice exists to stop.
+ */
+@Suite("Whether a discovered runtime can be connected")
+struct RuntimeConnectableTests {
+    private func runtime(available: Bool = true, endpoint: String? = "http://127.0.0.1:8642",
+                         probe: String? = "healthy", externalId: String? = "id-1",
+                         installation: String? = "install-1") -> SidecarState.Runtime {
+        .init(available: available, name: "Hermes Agent", version: "0.19.1", path: nil, reason: nil,
+              runtimeType: "hermes", externalRuntimeId: externalId,
+              connectorInstallationId: installation, endpoint: endpoint,
+              healthEndpoint: endpoint.map { $0 + "/health" }, transport: "http", probeStatus: probe)
+    }
+
+    @Test("a runtime that was found, identified and answered may be connected")
+    func connectable() { #expect(runtime().isConnectable) }
+
+    @Test("anything less may not")
+    func notConnectable() {
+        #expect(runtime(available: false).isConnectable == false)
+        // Installed, but nothing is listening: no endpoint was ever proven.
+        #expect(runtime(endpoint: nil).isConnectable == false)
+        #expect(runtime(probe: "failed").isConnectable == false)
+        // Reachable but anonymous: connecting it could only ever create another duplicate.
+        #expect(runtime(externalId: nil).isConnectable == false)
+        #expect(runtime(installation: nil).isConnectable == false)
+    }
+}
 }

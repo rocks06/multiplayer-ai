@@ -281,6 +281,44 @@ public final class WorkspaceClient: @unchecked Sendable {
         guard let token = payload["credential_token"] as? String else { throw WorkspaceError.malformed() }
         return token
     }
+
+    /**
+     * Tell the workspace which physical runtime this Mac is, and be told which agent that is.
+     *
+     * The answer is usually one it already knows: a runtime that has connected before keeps the
+     * principal it had, whatever it is called and whatever room it works in now. That is the whole
+     * point — enrolling one machine's Hermes three times produced three agents, two of them
+     * duplicates with a digit on the end, because every enrollment was treated as a new agent. `createAsNew` is the deliberate exception, and it is
+     * only ever set because a person asked for a second agent on the same machine.
+     */
+    public func connectRuntime(companyId: String, name: String, runtime: SidecarState.Runtime,
+                               createAsNew: Bool = false) async throws -> ConnectedRuntime {
+        guard let type = runtime.runtimeType, let externalId = runtime.externalRuntimeId,
+              let installationId = runtime.connectorInstallationId, let endpoint = runtime.endpoint,
+              runtime.probeStatus == "healthy" else { throw WorkspaceError.malformed() }
+        var body: [String: Any] = [
+            "name": name, "runtime_type": type, "external_runtime_id": externalId,
+            "connector_installation_id": installationId, "endpoint": endpoint,
+            "probe_status": "healthy", "create_as_new": createAsNew,
+        ]
+        if let version = runtime.version { body["runtime_version"] = version }
+        let payload = try await send("POST", "/v1/companies/\(companyId)/runtime-connections", body: body)
+        guard let principalId = payload["principal_id"] as? String else { throw WorkspaceError.malformed() }
+        return ConnectedRuntime(principalId: principalId,
+                                displayName: payload["display_name"] as? String ?? name,
+                                reused: payload["reused"] as? Bool ?? false)
+    }
+}
+
+/// What the workspace made of a runtime this Mac introduced.
+public struct ConnectedRuntime: Equatable, Sendable {
+    public let principalId: String
+    public let displayName: String
+    /// True when the workspace recognised this runtime and handed back the agent it already was.
+    public let reused: Bool
+    public init(principalId: String, displayName: String, reused: Bool) {
+        self.principalId = principalId; self.displayName = displayName; self.reused = reused
+    }
 }
 
 /// A room this Mac's agent is a worker in.

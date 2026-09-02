@@ -10,9 +10,32 @@ public struct SidecarState: Decodable, Equatable, Sendable {
         public var version: String?
         public var path: String?
         public var reason: String?
-        public init(available: Bool, name: String, version: String? = nil, path: String? = nil, reason: String? = nil) {
+        /* What the runtime actually is, as discovered rather than assumed. The endpoint is only
+           ever present when a health check answered on it, so "we found Hermes" and "we can talk
+           to Hermes" cannot be confused — and identity is the runtime's own durable id, not its
+           name, its port, or the app installation that happens to be talking to it. */
+        public var runtimeType: String?
+        public var externalRuntimeId: String?
+        public var connectorInstallationId: String?
+        public var endpoint: String?
+        public var healthEndpoint: String?
+        public var transport: String?
+        public var probeStatus: String?
+        public init(available: Bool, name: String, version: String? = nil, path: String? = nil, reason: String? = nil,
+                    runtimeType: String? = nil, externalRuntimeId: String? = nil,
+                    connectorInstallationId: String? = nil, endpoint: String? = nil,
+                    healthEndpoint: String? = nil, transport: String? = nil, probeStatus: String? = nil) {
             self.available = available; self.name = name; self.version = version
             self.path = path; self.reason = reason
+            self.runtimeType = runtimeType; self.externalRuntimeId = externalRuntimeId
+            self.connectorInstallationId = connectorInstallationId; self.endpoint = endpoint
+            self.healthEndpoint = healthEndpoint; self.transport = transport; self.probeStatus = probeStatus
+        }
+
+        /// Whether this is a runtime we may actually bind to: found, identified, and answering.
+        public var isConnectable: Bool {
+            available && endpoint != nil && probeStatus == "healthy"
+                && externalRuntimeId != nil && connectorInstallationId != nil
         }
     }
     public struct Sync: Decodable, Equatable, Sendable {

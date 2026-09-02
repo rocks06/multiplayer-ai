@@ -391,7 +391,62 @@ public final class AppModel {
     /// its first look at the world. It deliberately does not depend on a view having run: the
     /// first version of this waited for `RootView`'s task to call back, and a link that arrived
     /// on a cold launch was queued and then never spent, because that call never came.
+    /// Whether an incoming link is the web asking this Mac to introduce its runtime, rather than a
+    /// sign-in link. Pure, because URL shapes are exactly the thing that is wrong at 2am.
+    nonisolated public static func isConnectRuntime(_ raw: String) -> Bool {
+        guard let url = URLComponents(string: raw), url.scheme == "multiplayerai" else { return false }
+        // multiplayerai://connect-runtime and multiplayerai:///connect-runtime both mean this.
+        return url.host == "connect-runtime"
+            || url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "connect-runtime"
+    }
+
+    /**
+     * Introduce the runtime on this Mac to the workspace, and bind to whatever agent it turns out
+     * to be.
+     *
+     * Discovery happens here rather than in the browser because this is the machine that can
+     * actually see Hermes: the web can only ask. Nothing is created until the runtime has been
+     * found, identified, and answered a health check — an agent identity minted for a runtime that
+     * turns out not to be running is exactly the junk this is meant to stop.
+     */
+    public func connectRuntime(createAsNew: Bool = false) async {
+        guard let company else { problem = .init(code: "signed_out",
+            message: "Sign in on this Mac before connecting its runtime.", status: 0,
+            recovery: "Open Multiplayer AI, sign in, and try again."); return }
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+
+        connector.begin()
+        await connector.sidecar.refresh()
+        let runtime = connector.sidecar.state.runtime
+        guard runtime.isConnectable else {
+            problem = .init(code: "runtime_unreachable",
+                message: runtime.reason ?? "\(runtime.name) is not answering on this Mac.",
+                status: 0,
+                recovery: "Start it, then choose Connect existing agent again.")
+            return
+        }
+        do {
+            let connected = try await client.connectRuntime(
+                companyId: company.companyId,
+                name: progress.agentDisplayName ?? runtime.name,
+                runtime: runtime, createAsNew: createAsNew)
+            // The workspace decides which agent this runtime is; this Mac records the answer.
+            write { $0.agentPrincipalId = connected.principalId
+                    $0.agentDisplayName = connected.displayName }
+            problem = nil
+            await refresh()
+        } catch let error as WorkspaceError { problem = error }
+        catch { problem = .init(code: "runtime_connect", message: "That did not work.", status: 0,
+                                recovery: "Try Connect existing agent again.") }
+    }
+
     public func receive(authURL raw: String) async {
+        if AppModel.isConnectRuntime(raw) {
+            guard initialized else { queuedAuthURL = raw; return }
+            return await connectRuntime()
+        }
         /* Recorded because the alternative is guessing. When a sign-in link does not work, the
            first question is whether the app was ever handed it, and that is otherwise invisible
            from outside. The token is never written — only that something arrived. */
@@ -408,6 +463,7 @@ public final class AppModel {
     private func spendQueuedAuthURL() async {
         guard let waiting = queuedAuthURL else { return }
         queuedAuthURL = nil
+        if AppModel.isConnectRuntime(waiting) { return await connectRuntime() }
         await redeem(waiting)
     }
 
