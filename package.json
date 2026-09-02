@@ -15,6 +15,7 @@
     "build:web": "vite build --config vite.config.ts",
     "build:marketing": "vite build --config vite.marketing.config.ts",
     "build": "pnpm build:server && pnpm build:web && pnpm build:marketing",
+    "deploy:site": "node tools/deploy-site.mjs",
     "test": "vitest run",
     "test:frontend": "vitest run --config vitest.ui.config.ts tests/room-ui.test.tsx",
     "test:marketing": "vitest run --config vitest.ui.config.ts tests/marketing-site.test.tsx",

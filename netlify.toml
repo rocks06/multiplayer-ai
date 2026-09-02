@@ -1,5 +1,14 @@
+# Deploys are made from a Mac with `pnpm deploy:site`, which builds the site, stages the disk
+# image into it, and uploads the result prebuilt. This command exists for the case where something
+# triggers a build on Netlify instead: staging runs after the site build rather than before it, so
+# the image is put into a directory that is not about to be emptied.
+#
+# On Netlify that staging step fails, and it should. The disk image is built on macOS and their
+# builders are Linux, so a build there can never produce one — and a deploy that fails is far
+# better than the one that prompted this: a successful deploy, a working front page, and a
+# download returning 404, found by somebody trying to install the product.
 [build]
-  command = "pnpm build:marketing"
+  command = "pnpm build:marketing && node tools/stage-download.mjs"
   publish = "dist/marketing"
 
 [build.environment]
