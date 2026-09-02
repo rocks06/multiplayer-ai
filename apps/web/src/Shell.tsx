@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {ChevronDown} from 'lucide-react';
 import {signOut,type WorkspaceRoom} from './api';
+import {ContextualOnboarding} from './ContextualOnboarding';
 
 /**
  * The frame around every signed-in page.
@@ -9,11 +10,12 @@ import {signOut,type WorkspaceRoom} from './api';
  * do I get back, and where is the room I was in. It is a single restrained bar rather than a
  * sidebar, because the room underneath is the product and should keep the width.
  */
-export function Shell({workspace,rooms,currentRoomId,onNavigate,children}:{
-  workspace:{companyId:string;name:string};
+export function Shell({workspace,rooms,currentRoomId,onNavigate,onboardingKey,children}:{
+  workspace:{companyId:string;name:string}|null;
   rooms:WorkspaceRoom[];
   currentRoomId?:string;
   onNavigate:(to:string)=>void;
+  onboardingKey?:string;
   children:React.ReactNode}){
   const [roomsOpen,setRoomsOpen]=useState(false);
   const [accountOpen,setAccountOpen]=useState(false);
@@ -34,17 +36,17 @@ export function Shell({workspace,rooms,currentRoomId,onNavigate,children}:{
     <header className="shell-bar" ref={bar}>
       <button type="button" className="shell-home" onClick={()=>onNavigate('/home')}>
         <span className="brand-mark" aria-hidden="true">M</span>
-        <span className="shell-workspace">{workspace.name}</span>
+        <span className="shell-workspace">{workspace?.name??'Home'}</span>
       </button>
 
       {rooms.length>0&&<div className="shell-rooms">
-        <button type="button" aria-expanded={roomsOpen} onClick={()=>{setRoomsOpen(v=>!v);setAccountOpen(false)}}>
+        <button type="button" data-onboarding="rooms" aria-expanded={roomsOpen} onClick={()=>{setRoomsOpen(v=>!v);setAccountOpen(false)}}>
           {current?current.name:'Rooms'}<ChevronDown size={13}/>
         </button>
         {roomsOpen&&<div className="shell-menu" role="menu">
           {rooms.map(room=>
             <button type="button" key={room.room_id} role="menuitem"
-              onClick={()=>{setRoomsOpen(false);onNavigate(`/rooms/${workspace.companyId}/${room.room_id}`)}}>
+              onClick={()=>{setRoomsOpen(false);if(workspace)onNavigate(`/rooms/${workspace.companyId}/${room.room_id}`)}}>
               <span>{room.name}</span>
               {room.project_name!==room.name&&<small>{room.project_name}</small>}
             </button>)}
@@ -64,5 +66,6 @@ export function Shell({workspace,rooms,currentRoomId,onNavigate,children}:{
       </div>
     </header>
     <div className="shell-body">{children}</div>
+    {onboardingKey&&<ContextualOnboarding identityKey={onboardingKey}/>}
   </div>;
 }

@@ -66,6 +66,7 @@ export class RoomApi {
   }
   pauseAgent(agentId:string){return this.request(`/agents/${agentId}/pause`,{method:'POST',headers:{'idempotency-key':commandKey()}})}
   resumeAgent(agentId:string){return this.request(`/agents/${agentId}/resume`,{method:'POST',headers:{'idempotency-key':commandKey()}})}
+  disconnectMember(principalId:string){return this.request(`/members/${principalId}`,{method:'DELETE',headers:{'idempotency-key':commandKey()}})}
 
   resolveDecision(decision:Decision,resolution:'approve'|'reject',note:string){return this.request(`/decisions/${decision.id}/${resolution}`,{method:'POST',headers:{'idempotency-key':`decision-${decision.id}-${resolution}-v${decision.version}`},body:JSON.stringify({proposed_action_digest:decision.proposed_action_digest,expected_version:decision.version,note:note||undefined})})}
   streamUrl(afterSeq?:number){
@@ -82,7 +83,7 @@ export function roomFromLocation():{companyId:string;roomId:string}|null{
   return {companyId:match[1],roomId:match[2]};
 }
 
-export interface SignedInIdentity {user:{id:string;email:string;display_name:string};companies:Array<{company_id:string;company_name:string;principal_id:string;display_name:string}>}
+export interface SignedInIdentity {user:{id:string;email:string;display_name:string};companies:Array<{company_id:string;company_name:string;principal_id:string;display_name:string;access_scope?:'workspace'|'room_only'}>}
 
 export async function requestSignInLink(email:string){
   const response=await fetch('/v1/auth/sign-in-links',{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify({email})});
@@ -135,12 +136,21 @@ export const createWorkspace=(name:string)=>
 export const listWorkspaceAgents=(companyId:string)=>
   send<{agents:WorkspaceAgent[]}>(`/v1/companies/${companyId}/agents`).then(r=>r.agents);
 
+/* Always a list. The sidebar and the room list both iterate this, and a response that is merely
+   shaped differently than expected should leave them empty rather than take the page down. */
 export const listWorkspaceRooms=(companyId:string)=>
-  send<{rooms:WorkspaceRoom[]}>(`/v1/companies/${companyId}/rooms`).then(r=>r.rooms);
+  send<{rooms:WorkspaceRoom[]}>(`/v1/companies/${companyId}/rooms`)
+    .then(r=>Array.isArray(r?.rooms)?r.rooms:[]);
 
 /** The owner is the signed-in person; the server resolves it and the client cannot choose. */
 export const addWorkspaceAgent=(companyId:string,name:string)=>
   send<{agent_id:string;principal_id:string}>(`/v1/companies/${companyId}/agents`,{method:'POST',body:JSON.stringify({name})});
+
+export const removeWorkspaceAgent=(companyId:string,principalId:string)=>
+  send<{principal_id:string;status:'removed'}>(`/v1/companies/${companyId}/agents/${principalId}`,{method:'DELETE'});
+
+export const deleteWorkspaceRoom=(companyId:string,roomId:string)=>
+  send<{id:string;status:'deleted'}>(`/v1/companies/${companyId}/rooms/${roomId}`,{method:'DELETE'});
 
 /** A code is for one agent in one room. The room is not optional in the product, only in the
  *  wire format, because codes issued before rooms were carried have no room to name. */

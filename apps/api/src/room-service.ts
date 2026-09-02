@@ -39,7 +39,7 @@ export class RoomService {
   }
 
   private async membership(client: DbClient, companyId: string, roomId: string, actorId: string): Promise<Membership> {
-    const result = await client.query<Membership>(`SELECT role, responsibilities FROM room_members WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' FOR SHARE`, [companyId, roomId, actorId]);
+    const result = await client.query<Membership>(`SELECT rm.role,rm.responsibilities FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id WHERE rm.company_id=$1 AND rm.room_id=$2 AND rm.principal_id=$3 AND rm.status='active' AND r.status='active' FOR SHARE OF rm`, [companyId, roomId, actorId]);
     if (!result.rowCount) throw new DomainError("room_access_denied", "Active room membership is required", 403);
     return result.rows[0]!;
   }
@@ -153,13 +153,16 @@ export class RoomService {
         EXISTS(SELECT 1 FROM external_agent_credentials ec WHERE ec.company_id=a.company_id AND ec.agent_principal_id=p.id AND ec.status='active') connector_enrolled,
         CASE WHEN s.status IS NULL THEN 'never' WHEN s.status<>'connected' THEN s.status WHEN s.last_seen_at < now()-interval '90 seconds' THEN 'stale' ELSE 'connected' END presence,
         s.runtime_status,s.last_seen_at,s.room_id session_room_id,sr.name session_room_name,
+        ri.runtime_type,ri.runtime_version,ri.endpoint runtime_endpoint,ri.probe_status,
         COALESCE(m.rooms,'[]'::jsonb) rooms
         FROM agents a
         JOIN principals p ON p.company_id=a.company_id AND p.agent_id=a.id AND p.kind='agent'
         LEFT JOIN users u ON u.id=a.owner_user_id
         LEFT JOIN LATERAL (SELECT es.status,es.runtime_status,es.last_seen_at,es.room_id FROM external_agent_sessions es WHERE es.company_id=a.company_id AND es.agent_principal_id=p.id ORDER BY es.last_seen_at DESC LIMIT 1) s ON true
         LEFT JOIN rooms sr ON sr.company_id=a.company_id AND sr.id=s.room_id
-        LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('room_id',r.id,'name',r.name) ORDER BY r.name) rooms FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id WHERE rm.company_id=a.company_id AND rm.principal_id=p.id AND rm.status='active') m ON true
+        LEFT JOIN agent_runtime_bindings arb ON arb.company_id=a.company_id AND arb.agent_principal_id=p.id AND arb.status='active'
+        LEFT JOIN runtime_installations ri ON ri.company_id=arb.company_id AND ri.id=arb.runtime_installation_id
+        LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('room_id',r.id,'name',r.name) ORDER BY r.name) rooms FROM room_members rm JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id WHERE rm.company_id=a.company_id AND rm.principal_id=p.id AND rm.status='active' AND r.status='active') m ON true
         WHERE a.company_id=$1 AND p.status='active' ORDER BY p.display_name`,[companyId]);
       return {agents:result.rows.map((row:any)=>({
         agent_id:row.agent_id,principal_id:row.principal_id,display_name:row.display_name,status:row.status,
@@ -168,6 +171,7 @@ export class RoomService {
            not. "Connected" here with "never appeared" inside a room is the app disagreeing with
            itself; naming the room makes both answers true and the difference legible. */
         connector:{enrolled:row.connector_enrolled,presence:row.presence,runtime_status:row.runtime_status??null,last_seen_at:row.last_seen_at??null,room_id:row.session_room_id??null,room_name:row.session_room_name??null},
+        runtime:row.runtime_type?{type:row.runtime_type,version:row.runtime_version??null,endpoint:row.runtime_endpoint,probe_status:row.probe_status}:null,
         rooms:row.rooms,
       }))};
     } finally { c.release(); }
@@ -190,7 +194,7 @@ export class RoomService {
          FROM room_members rm
          JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id
          JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id
-         WHERE rm.company_id=$1 AND rm.principal_id=$2 AND rm.status='active'
+         WHERE rm.company_id=$1 AND rm.principal_id=$2 AND rm.status='active' AND r.status='active'
          ORDER BY r.created_at`,[companyId,actorId]);
       return {rooms:result.rows};
     } finally { c.release(); }
@@ -214,6 +218,110 @@ export class RoomService {
       if(!ownerUserId) throw new DomainError('forbidden','Principal is not active in this company',403);
       return this.createAgent(companyId,ownerUserId,name);
     } finally { c.release(); }
+  }
+
+  /** Bind a validated physical runtime installation to one durable agent principal.
+   *
+   * The stable key is `(company, runtime_type, external_runtime_id)`. Credentials, connector
+   * installations, sessions, room memberships and display names are observations around that key,
+   * never evidence that a second runtime exists. A reconnect therefore returns the principal that
+   * is already bound. `createAsNew` is the sole explicit escape hatch and retires the old binding.
+   */
+  async connectRuntimeForPrincipal(input:{companyId:string;actorId:string;name:string;runtimeType:string;externalRuntimeId:string;connectorInstallationId:string;endpoint:string;runtimeVersion?:string;createAsNew:boolean}) {
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      const actor=await this.workspaceActor(c,input.companyId,input.actorId);
+      if(actor.kind!=='human')throw new DomainError('forbidden','Only a person can connect a runtime',403);
+      const owner=await c.query<{user_id:string}>(`SELECT user_id FROM principals WHERE id=$1 AND company_id=$2 AND kind='human' AND status='active'`,[input.actorId,input.companyId]);
+      const ownerUserId=owner.rows[0]?.user_id;
+      if(!ownerUserId)throw new DomainError('forbidden','Principal is not active in this company',403);
+
+      const installationId=uuidv7();
+      const installation=await c.query<{id:string}>(
+        `INSERT INTO runtime_installations(id,company_id,runtime_type,external_runtime_id,connector_installation_id,endpoint,runtime_version,probe_status)
+         VALUES($1,$2,$3,$4,$5,$6,$7,'healthy')
+         ON CONFLICT(company_id,runtime_type,external_runtime_id) DO UPDATE SET
+           connector_installation_id=EXCLUDED.connector_installation_id,endpoint=EXCLUDED.endpoint,
+           runtime_version=EXCLUDED.runtime_version,probe_status='healthy',last_seen_at=now()
+         RETURNING id`,
+        [installationId,input.companyId,input.runtimeType,input.externalRuntimeId,input.connectorInstallationId,input.endpoint,input.runtimeVersion??null]);
+      const runtimeInstallationId=installation.rows[0]!.id;
+      const current=await c.query<{agent_principal_id:string;agent_id:string;display_name:string}>(
+        `SELECT b.agent_principal_id,p.agent_id,p.display_name FROM agent_runtime_bindings b
+         JOIN principals p ON p.company_id=b.company_id AND p.id=b.agent_principal_id
+         JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id
+         WHERE b.company_id=$1 AND b.runtime_installation_id=$2 AND b.status='active'
+         FOR UPDATE OF b`,[input.companyId,runtimeInstallationId]);
+      if(current.rowCount&&!input.createAsNew){
+        await c.query('COMMIT');
+        const known=current.rows[0]!;
+        return {agent_id:known.agent_id,principal_id:known.agent_principal_id,display_name:known.display_name,
+          runtime_installation_id:runtimeInstallationId,reused:true,runtime_type:input.runtimeType,
+          runtime_version:input.runtimeVersion??null,endpoint:input.endpoint,probe_status:'healthy' as const};
+      }
+      if(current.rowCount){
+        await c.query(`UPDATE agent_runtime_bindings SET status='replaced',ended_at=now() WHERE company_id=$1 AND runtime_installation_id=$2 AND status='active'`,[input.companyId,runtimeInstallationId]);
+        await c.query(`UPDATE external_agent_sessions SET status='superseded',disconnected_at=now() WHERE company_id=$1 AND agent_principal_id=$2 AND status='connected'`,[input.companyId,current.rows[0]!.agent_principal_id]);
+        await c.query(`UPDATE external_agent_credentials SET status='revoked',revoked_at=now() WHERE company_id=$1 AND agent_principal_id=$2 AND status='active'`,[input.companyId,current.rows[0]!.agent_principal_id]);
+      }
+      const agentId=uuidv7(),principalId=uuidv7(),bindingId=uuidv7();
+      await c.query(`INSERT INTO agents(id,company_id,owner_user_id,name) VALUES($1,$2,$3,$4)`,[agentId,input.companyId,ownerUserId,input.name]);
+      await c.query(`INSERT INTO principals(id,company_id,kind,agent_id,display_name) VALUES($1,$2,'agent',$3,$4)`,[principalId,input.companyId,agentId,input.name]);
+      await c.query(`INSERT INTO agent_runtime_bindings(id,company_id,runtime_installation_id,agent_principal_id,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[bindingId,input.companyId,runtimeInstallationId,principalId,input.actorId]);
+      await c.query('COMMIT');
+      return {agent_id:agentId,principal_id:principalId,display_name:input.name,
+        runtime_installation_id:runtimeInstallationId,reused:false,runtime_type:input.runtimeType,
+        runtime_version:input.runtimeVersion??null,endpoint:input.endpoint,probe_status:'healthy' as const};
+    } catch(error){await c.query('ROLLBACK');throw error} finally{c.release()}
+  }
+
+  /** Remove an agent from current operation while preserving principals and attributed history. */
+  async removeAgent(companyId:string,actorId:string,agentPrincipalId:string) {
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      const actor=await this.workspaceActor(c,companyId,actorId);
+      if(actor.kind!=='human')throw new DomainError('permission_denied','Only a workspace user can remove an agent',403);
+      const target=await c.query<{agent_id:string;display_name:string}>(`SELECT agent_id,display_name FROM principals WHERE company_id=$1 AND id=$2 AND kind='agent' AND status='active' FOR UPDATE`,[companyId,agentPrincipalId]);
+      if(!target.rowCount)throw new DomainError('agent_not_found','Active agent not found',404);
+      const rooms=await c.query<{room_id:string}>(`SELECT room_id FROM room_members WHERE company_id=$1 AND principal_id=$2 AND status='active'`,[companyId,agentPrincipalId]);
+      for(const room of rooms.rows){
+        await this.appendEvent(c,{companyId,roomId:room.room_id,actor,eventType:'agent.removed',entityType:'agent',entityId:agentPrincipalId,payload:{principal_id:agentPrincipalId,display_name:target.rows[0]!.display_name},commandId:uuidv7(),correlationId:uuidv7()});
+      }
+      await c.query(`UPDATE external_agent_sessions SET status='revoked',disconnected_at=now() WHERE company_id=$1 AND agent_principal_id=$2 AND status='connected'`,[companyId,agentPrincipalId]);
+      await c.query(`UPDATE external_agent_credentials SET status='revoked',revoked_at=now() WHERE company_id=$1 AND agent_principal_id=$2 AND status='active'`,[companyId,agentPrincipalId]);
+      await c.query(`UPDATE agent_enrollment_tokens SET status='revoked' WHERE company_id=$1 AND agent_principal_id=$2 AND status='pending'`,[companyId,agentPrincipalId]);
+      await c.query(`UPDATE agent_runtime_bindings SET status='removed',ended_at=now() WHERE company_id=$1 AND agent_principal_id=$2 AND status='active'`,[companyId,agentPrincipalId]);
+      await c.query(`UPDATE room_members SET status='removed',removed_at=now() WHERE company_id=$1 AND principal_id=$2 AND status='active'`,[companyId,agentPrincipalId]);
+      await c.query(`UPDATE agents SET status='archived',run_generation=run_generation+1 WHERE company_id=$1 AND id=$2`,[companyId,target.rows[0]!.agent_id]);
+      await c.query(`UPDATE principals SET status='disabled' WHERE company_id=$1 AND id=$2`,[companyId,agentPrincipalId]);
+      await c.query('COMMIT');
+      return {principal_id:agentPrincipalId,status:'removed'};
+    } catch(error){await c.query('ROLLBACK');throw error} finally{c.release()}
+  }
+
+  /** Delete operational room access, not its audit trail. */
+  async deleteRoom(companyId:string,roomId:string,actorId:string) {
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      const actor=await this.workspaceActor(c,companyId,actorId);
+      const membership=await this.membership(c,companyId,roomId,actorId);
+      if(membership.role!=='manager')throw new DomainError('permission_denied','Room manager access is required to delete this room',403);
+      const room=await c.query<{name:string}>(`SELECT name FROM rooms WHERE company_id=$1 AND id=$2 AND status='active' FOR UPDATE`,[companyId,roomId]);
+      if(!room.rowCount)throw new DomainError('room_not_found','Active room not found',404);
+      const commandId=uuidv7();
+      await this.appendEvent(c,{companyId,roomId,actor,eventType:'room.deleted',entityType:'room',entityId:roomId,payload:{name:room.rows[0]!.name},commandId,correlationId:commandId});
+      const credentials=await c.query<{credential_id:string}>(`SELECT DISTINCT credential_id FROM external_agent_sessions WHERE company_id=$1 AND room_id=$2 AND status='connected'`,[companyId,roomId]);
+      await c.query(`UPDATE external_agent_sessions SET status='revoked',disconnected_at=now() WHERE company_id=$1 AND room_id=$2 AND status='connected'`,[companyId,roomId]);
+      if(credentials.rows.length)await c.query(`UPDATE external_agent_credentials SET status='revoked',revoked_at=now() WHERE company_id=$1 AND id=ANY($2::uuid[]) AND status='active'`,[companyId,credentials.rows.map(row=>row.credential_id)]);
+      await c.query(`UPDATE agent_enrollment_tokens SET status='revoked' WHERE company_id=$1 AND room_id=$2 AND status='pending'`,[companyId,roomId]);
+      await c.query(`UPDATE room_members SET status='removed',removed_at=now() WHERE company_id=$1 AND room_id=$2 AND status='active'`,[companyId,roomId]);
+      await c.query(`UPDATE rooms SET status='deleted',deleted_at=now() WHERE company_id=$1 AND id=$2`,[companyId,roomId]);
+      await c.query('COMMIT');
+      return {id:roomId,status:'deleted'};
+    } catch(error){await c.query('ROLLBACK');throw error} finally{c.release()}
   }
 
   async createProject(companyId:string,actorId:string,name:string,objective:string) { const c=await this.pool.connect(); try { await this.workspaceActor(c,companyId,actorId); const id=uuidv7(); await c.query(`INSERT INTO projects(id,company_id,name,objective,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[id,companyId,name,objective,actorId]); return {id,name,objective}; } finally { c.release(); } }
@@ -252,8 +360,15 @@ export class RoomService {
 
   async removeMember(input:{companyId:string;roomId:string;actorId:string;principalId:string;idempotencyKey:string}) {
     return this.command({...input,commandType:'member.remove',input:{principalId:input.principalId},permission:'member.manage'}, async(c)=>{
+      const target=await this.actor(c,input.companyId,input.principalId);
       const removed=await c.query<{id:string}>(`UPDATE room_members SET status='removed',removed_at=now() WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' RETURNING id`,[input.companyId,input.roomId,input.principalId]);
       if(!removed.rowCount) throw new DomainError('member_not_found','Active room member not found',404);
+      if(target.kind==='agent'){
+        const credentials=await c.query<{credential_id:string}>(`SELECT DISTINCT credential_id FROM external_agent_sessions WHERE company_id=$1 AND room_id=$2 AND agent_principal_id=$3 AND status='connected'`,[input.companyId,input.roomId,input.principalId]);
+        await c.query(`UPDATE external_agent_sessions SET status='revoked',disconnected_at=now() WHERE company_id=$1 AND room_id=$2 AND agent_principal_id=$3 AND status='connected'`,[input.companyId,input.roomId,input.principalId]);
+        if(credentials.rows.length)await c.query(`UPDATE external_agent_credentials SET status='revoked',revoked_at=now() WHERE company_id=$1 AND id=ANY($2::uuid[]) AND status='active'`,[input.companyId,credentials.rows.map(row=>row.credential_id)]);
+        await c.query(`UPDATE agent_enrollment_tokens SET status='revoked' WHERE company_id=$1 AND room_id=$2 AND agent_principal_id=$3 AND status='pending'`,[input.companyId,input.roomId,input.principalId]);
+      }
       const id=removed.rows[0]!.id;
       return {response:{id,principal_id:input.principalId,status:'removed'},event:{type:'member.removed',entityType:'room_member',entityId:id,payload:{principal_id:input.principalId,status:'removed'}}};
     });

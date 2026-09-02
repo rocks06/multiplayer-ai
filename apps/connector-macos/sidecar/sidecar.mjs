@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
+import { randomUUID } from 'node:crypto';
 // Bundled from the repository's compiled output, so the shipped binary carries the same
 // connector core and Hermes adapter the rest of the product is tested against.
 import * as core from '../../../dist/packages/connector-core/src/index.js';
@@ -41,9 +42,25 @@ const SUPPORT = process.env.MPAI_SUPPORT_DIR
   || path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI');
 const STATE_FILE = path.join(SUPPORT, 'connector-state.json');
 const LOG_FILE = path.join(SUPPORT, 'connector.log');
+// Runtime identity deliberately lives outside a build-specific support directory. Credentials,
+// app builds and connector state may all be replaced without turning this Mac's Hermes into JJ2.
+const IDENTITY_ROOT = process.env.MPAI_IDENTITY_DIR
+  || path.join(os.homedir(), 'Library', 'Application Support', 'Multiplayer AI');
+const RUNTIME_ID_FILE = path.join(IDENTITY_ROOT, 'runtime-installation-id');
+const CONNECTOR_ID_FILE = path.join(SUPPORT, 'connector-installation-id');
 const SESSION_ENV = 'MPAI_SESSION';
 
 const emit = (payload) => process.stdout.write(JSON.stringify(payload) + '\n');
+
+function durableId(file) {
+  try { const value=fs.readFileSync(file,'utf8').trim(); if(/^[0-9a-f-]{36}$/i.test(value))return value; } catch {}
+  fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
+  const value=randomUUID();
+  fs.writeFileSync(file,`${value}\n`,{mode:0o600});
+  return value;
+}
+const externalRuntimeId=durableId(RUNTIME_ID_FILE);
+const connectorInstallationId=durableId(CONNECTOR_ID_FILE);
 
 /* Logs are read by people and attached to reports, so nothing secret may reach them. Anything
    that looks like a credential, a session token, or an enrollment code is masked on the way out. */
@@ -143,6 +160,15 @@ class Connector {
     return {
       available: detection.available, name: detection.name,
       version: detection.version ?? null, path: detection.path ?? null,
+      runtimeType: this.adapter.id,
+      externalRuntimeId,
+      connectorInstallationId,
+      endpoint: detection.endpoint ?? null,
+      healthEndpoint: detection.healthEndpoint ?? null,
+      transport: detection.transport ?? null,
+      processId: detection.processId ?? null,
+      configPath: detection.configPath ?? null,
+      probeStatus: detection.available ? 'healthy' : 'failed',
       reason: detection.reason ?? null,
     };
   }

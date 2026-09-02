@@ -188,6 +188,9 @@ describe("Workspace bootstrap and agent listing", () => {
         status: "active",
         owner_display_name: "Rocco",
         connector: { enrolled: false, presence: "never", runtime_status: null, last_seen_at: null, room_id: null, room_name: null },
+        // Which physical runtime this agent is, when one has ever identified itself. Null here:
+        // an agent named in the workspace is not yet a runtime, and the two are not the same fact.
+        runtime: null,
         rooms: [{ room_id: room.id, name: "Launch" }],
       });
 

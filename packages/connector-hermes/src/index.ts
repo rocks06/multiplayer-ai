@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   WORKFLOW_STEPS,
@@ -104,13 +105,50 @@ export class HermesAdapter implements AgentRuntimeAdapter {
         reason: `Hermes ${version} is older than the supported minimum ${this.options.minimumVersion ?? DEFAULT_MINIMUM}. Update Hermes and try again.`,
       };
     }
-    return { available: true, name: "Hermes Agent", version, path };
+    const api = await this.discoverApiServer();
+    return {
+      available: true, name: "Hermes Agent", version, path,
+      endpoint: api?.endpoint ?? `process://${path}`,
+      healthEndpoint: api?.healthEndpoint,
+      transport: api ? "http" : "process",
+      processId: api?.processId,
+      configPath: api?.configPath,
+    };
+  }
+
+  /** Discover Hermes' real endpoint from its own config/process state, then prove it answers. */
+  private async discoverApiServer(): Promise<{endpoint:string;healthEndpoint:string;processId?:number;configPath?:string}|null> {
+    const home=process.env.HERMES_HOME ?? path.join(process.env.HOME ?? "", ".hermes");
+    const configPath=path.join(home,"config.yaml"),envPath=path.join(home,".env");
+    let port=Number(process.env.API_SERVER_PORT ?? "");
+    if(!Number.isInteger(port)||port<1||port>65535){
+      try { const match=fs.readFileSync(envPath,"utf8").match(/^API_SERVER_PORT\s*=\s*["']?(\d+)/m); port=Number(match?.[1]??0); } catch {}
+    }
+    if(!Number.isInteger(port)||port<1||port>65535){
+      try {
+        const text=fs.readFileSync(configPath,"utf8");
+        const block=text.match(/api_server:\s*[\s\S]{0,800}?(?=\n\S|$)/)?.[0];
+        port=Number(block?.match(/(?:^|\n)\s*port:\s*(\d+)/)?.[1]??0);
+      } catch {}
+    }
+    const processProbe=spawnSync("pgrep",["-f","hermes.*(?:gateway|api_server)|gateway.*hermes"],{encoding:"utf8"});
+    const processId=Number(processProbe.stdout?.trim().split(/\s+/)[0]??0)||undefined;
+    // Hermes documents 8642 as the default API server port. It is only tried when an actual
+    // Hermes service process was found, and never reported unless the health endpoint answers.
+    if((!Number.isInteger(port)||port<1||port>65535)&&processId)port=8642;
+    if(!Number.isInteger(port)||port<1||port>65535)return null;
+    const endpoint=`http://127.0.0.1:${port}`;
+    try {
+      const response=await fetch(`${endpoint}/health`,{signal:AbortSignal.timeout(1200)});
+      if(!response.ok)return null;
+      return {endpoint,healthEndpoint:`${endpoint}/health`,processId,configPath:fs.existsSync(configPath)?configPath:undefined};
+    } catch { return null; }
   }
 
   async health(): Promise<RuntimeHealth> {
     const detection = await this.detect();
     return detection.available
-      ? { ok: true, detail: `${detection.name} ${detection.version}` }
+      ? { ok: true, detail: `${detection.name} ${detection.version} · ${detection.endpoint}` }
       : { ok: false, detail: detection.reason };
   }
 

@@ -154,9 +154,26 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   /* Adding an agent is an authenticated act by a person in the addressed company; the owner is
      resolved from who is acting, so it can never be chosen by the caller. */
   app.post('/v1/companies/:companyId/agents',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({name:z.string().min(1).max(100)}),req.body);return service.createAgentForPrincipal(p.companyId,await principal(req,p.companyId),x.name)});
+  /* A physical runtime is connected only after its local adapter has successfully probed it. The
+   * stable installation id is separate from every credential and survives credential rotation. */
+  app.post('/v1/companies/:companyId/runtime-connections',async req=>{
+    const p=body(z.object({companyId:z.string().uuid()}),req.params);
+    const x=body(z.object({
+      name:z.string().min(1).max(100),runtime_type:z.string().min(1).max(50),
+      external_runtime_id:z.string().uuid(),connector_installation_id:z.string().uuid(),
+      endpoint:z.string().min(1).max(500),runtime_version:z.string().max(100).optional(),
+      probe_status:z.literal('healthy'),create_as_new:z.boolean().default(false),
+    }),req.body);
+    return service.connectRuntimeForPrincipal({companyId:p.companyId,actorId:await principal(req,p.companyId),
+      name:x.name,runtimeType:x.runtime_type,externalRuntimeId:x.external_runtime_id,
+      connectorInstallationId:x.connector_installation_id,endpoint:x.endpoint,
+      runtimeVersion:x.runtime_version,createAsNew:x.create_as_new});
+  });
+  app.delete('/v1/companies/:companyId/agents/:agentPrincipalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);return service.removeAgent(p.companyId,await principal(req,p.companyId),p.agentPrincipalId)});
   app.post('/v1/companies/:companyId/projects',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({name:z.string().min(1),objective:z.string().min(1)}),req.body);return service.createProject(p.companyId,await principal(req,p.companyId),x.name,x.objective)});
   app.patch('/v1/companies/:companyId/projects/:projectId/objective',async req=>{const p=body(z.object({companyId:z.string().uuid(),projectId:z.string().uuid()}),req.params);const x=body(z.object({objective:z.string().min(1).max(4000),expected_objective:z.string().min(1).max(4000)}),req.body);return service.setProjectObjective(p.companyId,p.projectId,await principal(req,p.companyId),x.objective,x.expected_objective)});
   app.post('/v1/companies/:companyId/projects/:projectId/rooms',async req=>{const p=body(z.object({companyId:z.string().uuid(),projectId:z.string().uuid()}),req.params);const x=body(z.object({name:z.string().min(1),responsibilities:z.string().default('Manage the project room')}),req.body);return service.createRoom(p.companyId,p.projectId,await principal(req,p.companyId),x.name,x.responsibilities)});
+  app.delete('/v1/companies/:companyId/rooms/:roomId',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.deleteRoom(p.companyId,p.roomId,await principal(req,p.companyId))});
   app.post('/v1/companies/:companyId/rooms/:roomId/members',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({principal_id:z.string().uuid(),role:z.enum(['manager','contributor','worker_agent']),responsibilities:z.string().default('')}),req.body);return service.addMember({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),principalId:x.principal_id,role:x.role,responsibilities:x.responsibilities,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/invites',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({ttl_hours:z.number().int().min(1).max(168).optional()}),req.body??{});return invites.issue({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),ttlHours:x.ttl_hours})});
   app.delete('/v1/companies/:companyId/rooms/:roomId/members/:principalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),principalId:z.string().uuid()}),req.params);return service.removeMember({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),principalId:p.principalId,idempotencyKey:idem(req)})});

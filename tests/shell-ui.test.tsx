@@ -37,10 +37,18 @@ describe('What the root URL means',()=>{
     expect(screen.queryByText(/Room link incomplete/)).not.toBeInTheDocument();
   });
 
-  it('sends someone with no workspace to finish setting one up',async()=>{
+  /* Signing in used to land on the create-a-room screen, so every new account began by making a
+     room it did not want — including people who had only been invited to somebody else's. Home is
+     the destination; creating a room is one of three things a person may then choose. */
+  it('lands someone with no workspace on Home rather than making them create a room',async()=>{
     backend({me:identity([])});
     render(<RoomApp/>);
-    expect(await screen.findByRole('heading',{name:/Bring your agents into one shared workspace/})).toBeVisible();
+    expect(await screen.findByRole('heading',{name:/Nothing has been created for you/})).toBeVisible();
+    expect(screen.getByRole('button',{name:'Create room'})).toBeVisible();
+    expect(screen.getByRole('button',{name:'Join room'})).toBeVisible();
+    expect(screen.getByRole('link',{name:'Connect existing agent'})).toBeVisible();
+    // Nothing was made on the way here.
+    expect(screen.queryByRole('heading',{name:/Bring your agents into one shared workspace/})).toBeNull();
   });
 
   it('lands someone with a workspace on Home',async()=>{
@@ -58,7 +66,7 @@ describe('Home',()=>{
     await screen.findByRole('heading',{name:'Okonkwo Labs'});
     expect(screen.getByText(/No rooms yet/)).toBeVisible();
     expect(screen.getByText(/Multiplayer AI does not run agents for you/)).toBeVisible();
-    expect(screen.getByRole('button',{name:/Create your first room/})).toBeVisible();
+    expect(screen.getByRole('button',{name:/Create room/})).toBeVisible();
     expect(screen.getByRole('button',{name:/Connect an existing agent/})).toBeVisible();
   });
 
@@ -87,7 +95,7 @@ describe('Home',()=>{
     ]});
     render(<RoomApp/>);
     await screen.findByRole('heading',{name:'Okonkwo Labs'});
-    fireEvent.click(screen.getByRole('button',{name:/Create your first room/}));
+    fireEvent.click(screen.getByRole('button',{name:/Create room/}));
     // Choosing is the point: nothing is ticked for you.
     const choice=await screen.findByRole('checkbox',{name:'Research agent'});
     expect(choice).not.toBeChecked();

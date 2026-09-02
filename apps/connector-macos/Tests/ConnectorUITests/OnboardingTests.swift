@@ -16,24 +16,32 @@ import Foundation
         #expect(Onboarding.step(for: Situation(setupComplete: true)) == .account)
     }
 
-    @Test func signedInWithNothingNamesTheWorkspace() {
-        #expect(Onboarding.step(for: Situation(setupComplete: true, signedIn: true)) == .workspace)
+    /* Signing in is the end of setting up, not the start of a corridor.
+
+       Naming a workspace, then an agent, then a room used to be forced on every account in that
+       order, so a person invited to somebody else's room had to create one of their own before
+       they could join it — and the workspace filled with rooms nobody wanted. Home offers all
+       three; none of them is a step. */
+    @Test func signedInWithNothingOpensTheProduct() {
+        #expect(Onboarding.step(for: Situation(setupComplete: true, signedIn: true)) == .ready)
     }
 
-    @Test func workspaceWithNoAgentAsksForTheAgent() {
-        let situation = Situation(setupComplete: true, signedIn: true, hasWorkspace: true)
-        #expect(Onboarding.step(for: situation) == .agent)
+    @Test func nothingAboutWorkspaceAgentOrRoomIsAskedForOnTheWayIn() {
+        for situation in [
+            Situation(setupComplete: true, signedIn: true, hasWorkspace: true),
+            Situation(setupComplete: true, signedIn: true, hasWorkspace: true, hasAgentIdentity: true),
+            Situation(setupComplete: true, signedIn: true, hasWorkspace: true,
+                      hasAgentIdentity: true, hasRoom: true),
+        ] { #expect(Onboarding.step(for: situation) == .ready) }
     }
 
-    @Test func agentWithNoRoomAsksForTheRoom() {
-        let situation = Situation(setupComplete: true, signedIn: true, hasWorkspace: true, hasAgentIdentity: true)
-        #expect(Onboarding.step(for: situation) == .room)
-    }
-
-    @Test func roomWithNoBindingBindsWithoutAsking() {
+    /// The exception, and the reason this is not simply "signed in means ready": a binding this
+    /// Mac cannot present is a fault in something that already exists, and it still needs fixing.
+    @Test func aBrokenBindingIsStillRepairedBeforeTheProduct() {
         let situation = Situation(setupComplete: true, signedIn: true, hasWorkspace: true,
-                                  hasAgentIdentity: true, hasRoom: true)
-        #expect(Onboarding.step(for: situation) == .binding)
+                                  hasAgentIdentity: true, hasRoom: true, bound: true,
+                                  credentialProblem: .missing)
+        #expect(Onboarding.step(for: situation) == .reconnect)
     }
 
     @Test func aFinishedMacOpensTheProduct() {
@@ -273,14 +281,34 @@ import Foundation
         #expect(app.connector.enrolment == nil)
     }
 
-    /// What a relaunch would then decide: finish the move, rather than reconnect to the old room.
+    /* What a relaunch then does: finish the move, rather than come back to the old room.
+
+       This used to be the binding step's doing, and the step machine no longer has one — forcing
+       every account through workspace, agent and room was what filled the product with junk rooms.
+       So the resume moved into the model, and this proves it still happens: the target room is
+       recorded, the old binding is gone, and refreshing carries it the rest of the way. */
     @Test func aRelaunchAfterAnInterruptedMoveResumesTowardsTheNewRoom() async {
         let app = model(boundTo: "roomr")
         await app.move(to: "testing-1")
-        let situation = Situation(setupComplete: true, signedIn: true, hasWorkspace: true,
-                                  hasAgentIdentity: true, hasRoom: app.progress.roomId != nil,
-                                  bound: app.connector.enrolment != nil)
-        #expect(Onboarding.step(for: situation) == .binding)
+        #expect(app.progress.roomId == "testing-1")
+        #expect(app.connector.enrolment == nil)
+
+        // Everything needed to finish is recorded, so a launch that can reach the workspace does.
+        #expect(AppModel.shouldResumeBinding(roomId: app.progress.roomId,
+                                             agentPrincipalId: app.progress.agentPrincipalId,
+                                             hasCompany: true, hasEnrolment: false,
+                                             hasProblem: false))
+    }
+
+    /// And a Mac with nothing to finish does not go looking for work: a person who has just signed
+    /// in, with no room of their own, must not be handed a binding they never asked for.
+    @Test func aMacWithNoMoveToFinishBindsNothing() {
+        #expect(AppModel.shouldResumeBinding(roomId: nil, agentPrincipalId: "agent-1",
+                                             hasCompany: true, hasEnrolment: false,
+                                             hasProblem: false) == false)
+        #expect(AppModel.shouldResumeBinding(roomId: "testing-1", agentPrincipalId: "agent-1",
+                                             hasCompany: true, hasEnrolment: true,
+                                             hasProblem: false) == false)
     }
 
     /// A room the agent does not work in is refused before anything is given up.

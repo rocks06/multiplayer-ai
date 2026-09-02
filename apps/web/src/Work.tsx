@@ -227,7 +227,7 @@ function TaskRow({task,tasks,members,agents,canManage,mine,actions}:{task:Task;t
 export function SharedWork({tasks,members,agents,canManage,currentId,actions,children}:{
   tasks:Task[];members:Member[];agents:Member[];canManage:boolean;currentId:string;actions:WorkActions;children?:React.ReactNode}){
   const live=tasks.filter(isOpen);
-  return <section className="tasks">
+  return <section className="tasks" data-onboarding="shared-work">
     <div className="section-label"><span>Shared work</span><b>{live.length}</b></div>
     <ul>{tasks.map(task=>
       <TaskRow key={task.id} task={task} tasks={tasks} members={members} agents={agents}
@@ -245,8 +245,8 @@ export function SharedWork({tasks,members,agents,canManage,currentId,actions,chi
  * own machine may still be finishing its current step, and finds out at its next contact. The
  * copy says that rather than pretending a remote process stopped on command.
  */
-export function AgentControls({member,agent,canManage,actions,onMessage,onConnect}:{
-  member:Member;agent?:CompanyAgent;canManage:boolean;actions:WorkActions;onMessage:(principalId:string)=>void;onConnect?:(member:Member)=>void}){
+export function AgentControls({member,agent,canManage,actions,onMessage,onConnect,onDisconnect}:{
+  member:Member;agent?:CompanyAgent;canManage:boolean;actions:WorkActions;onMessage:(principalId:string)=>void;onConnect?:(member:Member)=>void;onDisconnect?:(member:Member)=>Promise<void>}){
   const [open,setOpen]=useState(false);
   const [confirmingPause,setConfirmingPause]=useState(false);
   const {busy,problem,run}=useAction();
@@ -259,6 +259,10 @@ export function AgentControls({member,agent,canManage,actions,onMessage,onConnec
     {open&&<div className="agent-menu">
       <button type="button" onClick={()=>{onMessage(member.principal_id);setOpen(false)}}>Message {member.display_name}</button>
       {member.agent_presence==='never'&&onConnect&&<button type="button" onClick={()=>{onConnect(member);setOpen(false)}}>Connect {member.display_name}</button>}
+      {onDisconnect&&<button type="button" className="danger" onClick={async()=>{
+        if(!confirm(`Disconnect ${member.display_name} from this room? Its active room session and credential will be revoked, but the agent remains in the workspace.`))return;
+        await onDisconnect(member);setOpen(false);
+      }}>Disconnect from room</button>}
 
       {!agent&&<p className="agent-note">This agent is not registered to the workspace, so it cannot be paused from here.</p>}
 

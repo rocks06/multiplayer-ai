@@ -80,6 +80,12 @@ export interface RuntimeDetection {
   name: string;
   version?: string;
   path?: string;
+  /** The real transport the connector will use; never a guessed display-only port. */
+  endpoint?: string;
+  healthEndpoint?: string;
+  transport?: "process" | "http" | "socket";
+  processId?: number;
+  configPath?: string;
   /** Why it is unavailable, phrased for a person to act on. */
   reason?: string;
 }

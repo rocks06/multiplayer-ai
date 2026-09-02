@@ -606,4 +606,13 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .copy-invite{display:inline-flex;align-items:center;justify-content:center;gap:6px;margin-top:var(--s3);padding:9px 13px;border-radius:var(--r-control);background:var(--ink);color:var(--on-ink);font-size:var(--t-small);font-weight:600}
 .share-dialog>small{display:block;margin-top:var(--s3);color:var(--faint);font-size:var(--t-caption);line-height:1.45}
 .join-room .eyebrow{margin:0;font-size:var(--t-micro);letter-spacing:.1em;text-transform:uppercase;color:var(--live);font-weight:700}
+.empty-home{display:grid;place-items:center;min-height:calc(100vh - 52px)}
+.empty-home-card{max-width:620px;padding:var(--s6);border:1px solid var(--line);border-radius:18px;background:var(--surface);box-shadow:var(--shadow)}
+.empty-home-card h1{margin:.35rem 0 .7rem;font:500 30px/1.1 var(--serif)}
+.empty-home-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:var(--s4)}
+.home-secondary,.home-form-actions a{display:inline-flex;align-items:center;justify-content:center;padding:9px 13px;border:1px solid var(--line-strong);border-radius:var(--r-control);background:var(--surface);color:var(--ink);font-size:12px;font-weight:600}
+.coachmark{position:fixed;z-index:120;padding:14px;border:1px solid color-mix(in srgb,var(--ink) 18%,transparent);border-radius:12px;background:var(--ink);color:var(--on-ink);box-shadow:0 14px 40px rgba(0,0,0,.24);font-size:13px;line-height:1.45}
+.coachmark p{margin:0}.coachmark-count{margin-bottom:7px!important;color:color-mix(in srgb,var(--on-ink) 62%,transparent);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.coachmark-actions{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:5px;margin-top:12px}
+.coachmark-actions button{padding:5px 8px;border-radius:6px;color:inherit;font-size:11px}.coachmark-next{background:var(--surface)!important;color:var(--ink)!important}
 }

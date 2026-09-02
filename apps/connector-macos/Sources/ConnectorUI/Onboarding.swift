@@ -49,11 +49,14 @@ public enum Onboarding {
     public static func step(for s: Situation) -> Step {
         if !s.setupComplete { return .welcome }
         if !s.signedIn { return .account }
-        if !s.hasWorkspace { return .workspace }
+        /* A binding this Mac cannot present is a fault in something that already exists, not a
+           step in setting anything up, and every remedy for it needs a signed-in person — so it
+           stays here, ahead of the product. */
         if s.credentialProblem != nil { return .reconnect }
-        if !s.hasAgentIdentity { return .agent }
-        if !s.hasRoom { return .room }
-        if !s.bound { return .binding }
+        /* Everything else is Home's to offer. Creating a workspace, naming an agent and making a
+           room used to be a corridor every account walked down, which is how invited people ended
+           up making a junk room before they could join the one they were invited to. None of the
+           three is a step: they are things a person may choose, from Home, when they mean to. */
         return .ready
     }
 

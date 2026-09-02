@@ -1,6 +1,6 @@
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Copy,Plus,RefreshCw,Share2,ShieldAlert,Users,X} from 'lucide-react';
-import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
+import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,deleteWorkspaceRoom,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
@@ -114,16 +114,16 @@ function AddAgent({available,onAdd}:{available:CompanyAgent[];onAdd:(choice:{nam
   </form>;
 }
 
-export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect,onAddAgent}:{
+export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect,onDisconnect,onAddAgent}:{
   members:Member[];currentId:string;tasks:Task[];decisions:Decision[];
   companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void;
-  onConnect?:(member:Member)=>void;onAddAgent?:(choice:{name?:string;principalId?:string})=>Promise<void>}){
+  onConnect?:(member:Member)=>void;onDisconnect?:(member:Member)=>Promise<void>;onAddAgent?:(choice:{name?:string;principalId?:string})=>Promise<void>}){
   const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
   // Only agents that are not currently reachable carry an elapsed reading, so the clock runs
   // only when something on screen actually depends on it.
   const presences=agents.map(agent=>({agent,presence:describePresence(agent,{tasks,decisions,members})}));
   const now=useCoarseNow(presences.some(entry=>entry.presence.since));
-  return <aside className="participants" aria-label="Room participants">
+  return <aside className="participants" aria-label="Room participants" data-onboarding="agents">
     <div className="rail-heading"><Users size={15}/><span>In this room</span><b>{members.length}</b></div>
     <section><h2>People</h2><ul>{humans.map(m=><HumanRow key={m.principal_id} member={m} current={m.principal_id===currentId}/>)}</ul></section>
     <section><h2>Agents</h2><ul>{presences.map(({agent,presence})=>{
@@ -133,7 +133,7 @@ export function Participants({members,currentId,tasks,decisions,companyAgents,ca
           label={presence.label} tone={presence.tone} detail={presence.detail} paused={record?.status==='paused'}
           elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>
         {actions&&onMessage&&
-          <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect}/>}
+          <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect} onDisconnect={onDisconnect}/>}
       </li>;
     })}</ul>
       {!agents.length&&<p className="small-empty">No agents here yet. Add one you already run.</p>}
@@ -296,7 +296,7 @@ function Composer({members,onSend,to,onAddressee,focusToken}:{members:Member[];o
   // Choosing to message an agent should land the person in the box, ready to write.
   useEffect(()=>{if(focusToken)field.current?.focus()},[focusToken]);
   const submit=async(e?:FormEvent)=>{e?.preventDefault();if(!body.trim()||busy)return;setBusy(true);setError('');try{await onSend(body.trim(),to||undefined);setBody('')}catch(x){setError((x as Error).message)}finally{setBusy(false)}};
-  return <form className="composer" onSubmit={submit} aria-label="Send a room message">
+  return <form className="composer" onSubmit={submit} aria-label="Send a room message" data-onboarding="conversation">
     <div className="composer-meta"><label>Send to <select value={to} onChange={e=>onAddressee(e.target.value)}><option value="">Everyone</option>{members.map(m=><option value={m.principal_id} key={m.principal_id}>{m.display_name}</option>)}</select></label><span>Enter to send · Shift Enter for a new line</span></div>
     <div className="composer-input"><textarea ref={field} aria-label="Message" placeholder="Add direction, context, or a question…" value={body} rows={2} onChange={e=>setBody(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void submit()}}}/><button disabled={!body.trim()||busy} aria-label="Send message"><ArrowUp size={18}/></button></div>
     {error&&<p className="form-error" role="alert">{error}</p>}
@@ -396,9 +396,9 @@ function TaskCreator({agents,onCreate}:{agents:Member[];onCreate:(x:{title:strin
   return <form className="task-form" onSubmit={submit}><input autoFocus aria-label="Task title" placeholder="Task title" value={title} onChange={e=>setTitle(e.target.value)}/><textarea aria-label="Task description" placeholder="What does done look like?" value={description} onChange={e=>setDescription(e.target.value)} rows={2}/><select aria-label="Task owner" value={owner} onChange={e=>setOwner(e.target.value)}><option value="">Unassigned</option>{agents.map(a=><option value={a.principal_id} key={a.principal_id}>{a.display_name}</option>)}</select><div><button type="button" onClick={()=>setOpen(false)}>Cancel</button><button disabled={busy||!title.trim()}>Create task</button></div>{error&&<p className="form-error">{error}</p>}</form>
 }
 
-function RoomRoute({navigate}:{navigate:(to:string)=>void}){
-  const room=useMemo(roomFromLocation,[]);
-  const [state,setState]=useState<{status:'loading'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity;workspace:string}>({status:'loading'});
+function RoomRoute({path,navigate}:{path:string;navigate:(to:string)=>void}){
+  const room=useMemo(roomFromLocation,[path]);
+  const [state,setState]=useState<{status:'loading'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity;workspace:{companyId:string;name:string};rooms:WorkspaceRoom[];userId:string}>({status:'loading'});
   useEffect(()=>{
     if(!room)return;
     let alive=true;
@@ -408,7 +408,17 @@ function RoomRoute({navigate}:{navigate:(to:string)=>void}){
       if(!me){rememberIntent(location.pathname);return navigate('/signin')}
       const membership=me.companies.find(c=>c.company_id===room.companyId);
       if(!membership)return setState({status:'no_access'});
-      setState({status:'ready',identity:{...room,principalId:membership.principal_id},workspace:membership.company_name});
+      /* The room opens on its own membership, not on the room list.
+
+         The list is what the sidebar draws; it is not what makes this room readable, and a person
+         invited to a single room may not be allowed to enumerate the workspace at all. Waiting for
+         it meant a failed or forbidden list left the room on "Opening the room…" for good. */
+      setState({status:'ready',identity:{...room,principalId:membership.principal_id},
+                workspace:{companyId:room.companyId,name:membership.company_name},
+                rooms:[],userId:me.user.id});
+      void listWorkspaceRooms(room.companyId)
+        .then(rooms=>{if(alive)setState(current=>current.status==='ready'?{...current,rooms}:current)})
+        .catch(()=>{/* the sidebar lists nothing; the room is already open */});
     }).catch(error=>{if(alive)setState({status:'error',message:(error as Error).message})});
     return()=>{alive=false};
   },[room?.companyId,room?.roomId,navigate]);
@@ -417,7 +427,9 @@ function RoomRoute({navigate}:{navigate:(to:string)=>void}){
   if(state.status==='loading')return <main className="route-error"><div className="brand-mark">M</div><p className="auth-quiet">Opening the room…</p></main>;
   if(state.status==='no_access')return <main className="route-error"><div className="brand-mark">M</div><h1>No access to this workspace</h1><p>Your account is not a member of this company.</p></main>;
   if(state.status==='error')return <main className="route-error"><div className="brand-mark">M</div><h1>Something went wrong</h1><p>{state.message}</p></main>;
-  return <Room identity={state.identity} workspace={state.workspace}/>;
+  return <Shell workspace={state.workspace} rooms={state.rooms} currentRoomId={room.roomId} onNavigate={navigate} onboardingKey={`${state.userId}:${state.workspace.companyId}`}>
+    <Room identity={state.identity} workspace={state.workspace.name} onNavigate={navigate}/>
+  </Shell>;
 }
 
 /**
@@ -443,7 +455,7 @@ function RoomApp(){
   if(path==='/fixtures/presence')return <PresenceFixture/>;
   if(path==='/fixtures/decisions')return <DecisionFixture/>;
   if(path==='/'||path==='/home'||path==='/settings')return <Authenticated path={path} navigate={navigate}/>;
-  return <RoomRoute navigate={navigate}/>;
+  return <RoomRoute path={path} navigate={navigate}/>;
 }
 
 /**
@@ -455,7 +467,7 @@ function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void})
   const [state,setState]=useState<
     |{status:'loading'}
     |{status:'anonymous'}
-    |{status:'ready';identity:SignedInIdentity;workspace:{companyId:string;name:string}|null;rooms:WorkspaceRoom[]}>(
+    |{status:'ready';identity:SignedInIdentity;workspace:{companyId:string;name:string;accessScope:'workspace'|'room_only'}|null;rooms:WorkspaceRoom[]}>(
     {status:'loading'});
 
   useEffect(()=>{
@@ -465,7 +477,7 @@ function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void})
       if(!alive)return;
       if(!me)return setState({status:'anonymous'});
       const company=me.companies[0];
-      const workspace=company?{companyId:company.company_id,name:company.company_name}:null;
+      const workspace=company?{companyId:company.company_id,name:company.company_name,accessScope:company.access_scope??'workspace'}:null;
       const rooms=workspace?await listWorkspaceRooms(workspace.companyId).catch(()=>[]):[];
       if(!alive)return;
       setState({status:'ready',identity:me,workspace,rooms});
@@ -480,17 +492,11 @@ function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void})
   if(state.status==='loading')return <main className="loading-room"><div className="brand-mark">M</div><div className="loading-line"/><p>Loading…</p></main>;
   if(state.status==='anonymous')return <Entry onNavigate={navigate}/>;
 
-  // Signed in with nothing set up yet: onboarding is the honest destination.
-  if(!state.workspace){
-    if(path!=='/welcome')navigate('/welcome');
-    return <Welcome navigate={navigate}/>;
-  }
-
   const inner=path==='/settings'
-    ? <Settings identity={state.identity} workspace={state.workspace}/>
+    ? state.workspace?<Settings identity={state.identity} workspace={state.workspace}/>:<Home workspace={null} onNavigate={navigate}/>
     : <Home workspace={state.workspace} onNavigate={navigate}/>;
 
-  return <Shell workspace={state.workspace} rooms={state.rooms} onNavigate={navigate}>{inner}</Shell>;
+  return <Shell workspace={state.workspace} rooms={state.rooms} onNavigate={navigate} onboardingKey={state.workspace?`${state.identity.user.id}:${state.workspace.companyId}`:undefined}>{inner}</Shell>;
 }
 
 
@@ -526,7 +532,7 @@ function ShareRoom({roomName,onCreate,onClose}:{roomName:string;onCreate:()=>Pro
   </div>;
 }
 
-function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
+function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:string;onNavigate:(to:string)=>void}){
   const {api,snapshot,connection,lastEvent,error,refresh}=useRoomSession(identity);
   const [briefingOpen,setBriefingOpen]=useState(false);
   const [oversightOpen,setOversightOpen]=useState(false);
@@ -613,7 +619,7 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
   }:null;
 
   return <main className="room-app">
-    <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div>{managers&&<button className="share-room" onClick={()=>setSharing(true)}><Share2 size={14}/>Share</button>}<button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
+    <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div>{managers&&<><button className="share-room" onClick={()=>setSharing(true)}><Share2 size={14}/>Share</button><button className="delete-room" onClick={async()=>{if(!confirm(`Delete ${snapshot.room.name}? Members lose access and active room agent sessions and credentials are revoked. Audit history is retained.`))return;await deleteWorkspaceRoom(identity.companyId,identity.roomId);onNavigate('/home')}}>Delete room</button></>}<button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
     {briefingOpen&&<section className="briefing"><div><span>Normalized room briefing</span><h2>{snapshot.briefing.project_objective}</h2></div><dl><div><dt>Your role</dt><dd>{snapshot.briefing.joining_principal.role}</dd></div><div><dt>Your responsibility</dt><dd>{snapshot.briefing.joining_principal.responsibilities||'Contribute to the room objective'}</dd></div><div><dt>Active work</dt><dd>{snapshot.briefing.active_tasks.length} tasks · {snapshot.briefing.blockers.length} blocked</dd></div></dl></section>}
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
@@ -625,18 +631,22 @@ function Room({identity,workspace}:{identity:RoomIdentity;workspace:string}){
           <button ref={oversightClose} onClick={closeOversight} aria-label="Close team and work"><X size={16}/></button>
         </div>
         <div className="supervision-scroll">
-          {needsYou.total>0&&<section className="needs-you">
+          {/* Only for people a decision can actually be addressed to: a contributor cannot
+              resolve one, and a section of things that will never need them is noise. */}
+          {managers&&<section className="needs-you" data-onboarding="needs-you">
           <div className="section-label"><span>Needs you</span><b>{needsYou.total}</b></div>
           {needsYou.decisions.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} onResolve={(result,note)=>mutate(()=>api.resolveDecision(d,result,note))}/>)}
           {needsYou.blocked.map(t=><BlockedItem key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)}/>)}
+          {needsYou.total===0&&<p className="small-empty">No decisions or approvals need you.</p>}
         </section>}
           <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}
             companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent} onConnect={setConnecting}
+            onDisconnect={member=>mutate(()=>api.disconnectMember(member.principal_id)).then(()=>undefined)}
             onAddAgent={addAgentToRoom}/>
           <SharedWork tasks={snapshot.tasks} members={snapshot.members} agents={agents} canManage={managers} currentId={identity.principalId} actions={actions}>
             <TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/>
           </SharedWork>
-          <details className="activity"><summary className="section-label"><span>Room activity</span></summary><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></details>
+          <details className="activity" data-onboarding="live-activity"><summary className="section-label"><span>Live activity</span></summary><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></details>
         </div>
       </aside>
       {oversightOpen&&<button type="button" className="sheet-scrim" aria-label="Close team and work" onClick={closeOversight}/>}

@@ -1,4 +1,5 @@
 import {signOut,type SignedInIdentity} from './api';
+import {restartOnboarding} from './ContextualOnboarding';
 
 /**
  * The small set of things a normal product has and this one genuinely needs: who you are, which
@@ -35,6 +36,12 @@ export function Settings({identity,workspace}:{
         Install it on each machine that runs an agent, then use <strong>Connect</strong> beside that
         agent to get its code.
       </p>
+    </section>
+
+    <section>
+      <h2>Help</h2>
+      <p className="settings-note">Replay the small tips beside Rooms, Agents, conversation, work, approvals, and activity.</p>
+      <button type="button" onClick={restartOnboarding}>Restart onboarding</button>
     </section>
 
     <section>

@@ -52,9 +52,9 @@ export default function SignIn({onAuthenticated=hardNavigate}:{onAuthenticated?:
     const settle=(identity:SignedInIdentity)=>{
       if(!alive)return;
       const intent=takeIntent();
-      // Somewhere specific if that is where they were headed; otherwise the workspace, which
-      // works out for itself whether there is anything still to set up.
-      onAuthenticated(intent??'/welcome');
+      // Invite/room intent wins. Ordinary authentication always lands on Home and never creates
+      // or pressures the person to create a workspace, room, or agent.
+      onAuthenticated(intent??'/home');
     };
     if(redemption){
       setPhase({step:'redeeming'});

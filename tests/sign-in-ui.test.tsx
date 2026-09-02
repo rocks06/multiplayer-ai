@@ -57,11 +57,13 @@ describe('Sign in',()=>{
     expect(sessionStorage.getItem('mpai:after-sign-in')).toBeNull();
   });
 
-  it('sends you to your workspace when there was no intended destination',async()=>{
+  it('sends you to Home when there was no intended destination',async()=>{
     stubFetch(url=>url.includes('/auth/sessions')?json(identity):json({error:{}},401));
     await mount('/signin?token=mpsi_good',to=>replaced.push(to));
-    // Signing in is never the destination; the workspace works out what is left to set up.
-    await waitFor(()=>expect(replaced).toEqual(['/welcome']));
+    /* Home, not room creation. Signing in used to land on the create-a-room screen, so every
+       account — including people invited to somebody else's room — began by making a room they
+       did not want. Creating one is a thing a person chooses to do. */
+    await waitFor(()=>expect(replaced).toEqual(['/home']));
   });
 
   it('explains a spent or expired link instead of failing silently',async()=>{
@@ -74,7 +76,7 @@ describe('Sign in',()=>{
   it('honours an existing session rather than asking twice',async()=>{
     stubFetch(url=>url.includes('/auth/me')?json(identity):json({error:{}},401));
     await mount('/signin',to=>replaced.push(to));
-    await waitFor(()=>expect(replaced).toEqual(['/welcome']));
+    await waitFor(()=>expect(replaced).toEqual(['/home']));
     expect(screen.queryByLabelText('Email')).toBeNull();
   });
 });

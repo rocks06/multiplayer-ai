@@ -237,6 +237,21 @@ public final class AppModel {
         legacyApp = LegacyApp.found()
         handlesSignInLinks = URLScheme.claimedByThisApp()
         if step == .account { await readDeliveryMode() }
+        /* Finish a move that was interrupted.
+
+           A move writes the target room down, gives up the old binding, and mints a new one. The
+           binding step used to be what drove that last part, so removing the forced setup corridor
+           left a Mac that was quit mid-move with a room recorded, no binding, and nothing anywhere
+           that would ever complete it. Resuming belongs to the model, not to whichever screen
+           happened to be on display — `bind` mints nothing when there is already a binding to keep,
+           so this is a no-op on every ordinary launch. */
+        if AppModel.shouldResumeBinding(roomId: progress.roomId,
+                                        agentPrincipalId: progress.agentPrincipalId,
+                                        hasCompany: company != nil,
+                                        hasEnrolment: connector.enrolment != nil,
+                                        hasProblem: problem != nil) {
+            await bind()
+        }
         initialized = true
         await spendQueuedAuthURL()
     }
@@ -504,6 +519,21 @@ public final class AppModel {
     /// machine the agent runs on, so the app asks the workspace for this agent's credential
     /// directly and puts it in the Keychain. An enrollment code exists for the case this is not
     /// — a Mac nobody is signed in on — and stays available for exactly that.
+    /// Whether a launch should carry an unfinished move the rest of the way.
+    ///
+    /// A Mac that recorded a room, gave up its old binding, and was then quit has everything it
+    /// needs to finish except somebody to do it — and the binding step that used to is gone, along
+    /// with the rest of the forced setup corridor. Pure, so the rule can be stated without a
+    /// workspace to talk to. A person with no room recorded has no move to resume, and one already
+    /// bound has nothing to finish.
+    nonisolated public static func shouldResumeBinding(roomId: String?, agentPrincipalId: String?,
+                                                       hasCompany: Bool, hasEnrolment: Bool,
+                                                       hasProblem: Bool) -> Bool {
+        guard roomId != nil, agentPrincipalId != nil else { return false }
+        // Minting needs a signed-in workspace, and repeating a failure every refresh helps nobody.
+        return hasCompany && !hasEnrolment && !hasProblem
+    }
+
     /// Whether binding has to mint a new credential, or whether this Mac already holds the one
     /// it needs. Pure, so the rule that cost a working binding can be stated and checked without
     /// a Keychain, a workspace, or a Mac.

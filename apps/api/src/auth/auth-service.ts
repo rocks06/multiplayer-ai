@@ -201,7 +201,7 @@ export class AuthService {
     const user = await this.pool.query<{ id: string; email: string; display_name: string }>(`SELECT id,email,display_name FROM users WHERE id=$1`, [userId]);
     if (!user.rowCount) throw new DomainError("unauthenticated", "Session is invalid or expired", 401);
     const companies = await this.pool.query(
-      `SELECT c.id company_id,c.name company_name,p.id principal_id,p.display_name FROM company_users cu JOIN companies c ON c.id=cu.company_id JOIN principals p ON p.company_id=cu.company_id AND p.user_id=cu.user_id AND p.kind='human' AND p.status='active' WHERE cu.user_id=$1 AND cu.status='active' ORDER BY c.name`,
+      `SELECT c.id company_id,c.name company_name,p.id principal_id,p.display_name,cu.access_scope FROM company_users cu JOIN companies c ON c.id=cu.company_id JOIN principals p ON p.company_id=cu.company_id AND p.user_id=cu.user_id AND p.kind='human' AND p.status='active' WHERE cu.user_id=$1 AND cu.status='active' ORDER BY c.name`,
       [userId],
     );
     return { user: user.rows[0], companies: companies.rows };

@@ -1,7 +1,7 @@
 import {useCallback,useEffect,useRef,useState,type FormEvent} from 'react';
 import {ChevronRight,Plus} from 'lucide-react';
-import {ApiError,addRoomMember,addWorkspaceAgent,createProject,createRoom,
-  listWorkspaceAgents,listWorkspaceRooms,type WorkspaceAgent,type WorkspaceRoom} from './api';
+import {ApiError,addRoomMember,createProject,createRoom,
+  listWorkspaceAgents,listWorkspaceRooms,removeWorkspaceAgent,type WorkspaceAgent,type WorkspaceRoom} from './api';
 import {connectionOf} from './Welcome';
 
 /**
@@ -13,22 +13,35 @@ import {connectionOf} from './Welcome';
  * contains; nothing here is inferred.
  */
 export function Home({workspace,onNavigate}:{
-  workspace:{companyId:string;name:string};onNavigate:(to:string)=>void}){
+  workspace:{companyId:string;name:string;accessScope?:'workspace'|'room_only'}|null;onNavigate:(to:string)=>void}){
   const [rooms,setRooms]=useState<WorkspaceRoom[]|null>(null);
   const [agents,setAgents]=useState<WorkspaceAgent[]>([]);
   const [creating,setCreating]=useState(false);
   const [addingAgent,setAddingAgent]=useState(false);
 
   const load=useCallback(async()=>{
+    if(!workspace){setRooms([]);setAgents([]);return}
     const [foundRooms,foundAgents]=await Promise.all([
       listWorkspaceRooms(workspace.companyId).catch(()=>[]),
       listWorkspaceAgents(workspace.companyId).catch(()=>[]),
     ]);
     setRooms(foundRooms);setAgents(foundAgents);
-  },[workspace.companyId]);
+  },[workspace?.companyId]);
   useEffect(()=>{void load()},[load]);
 
   if(rooms===null)return <main className="home"><p className="auth-quiet" role="status">Loading your workspace…</p></main>;
+
+  if(!workspace)return <main className="home empty-home">
+    <section className="empty-home-card">
+      <p className="eyebrow">Home</p><h1>Nothing has been created for you.</h1>
+      <p>Create a room only when you mean to, join a room you were invited to, or connect the Hermes runtime already running on this Mac.</p>
+      <div className="empty-home-actions">
+        <button type="button" className="home-primary" onClick={()=>onNavigate('/welcome')}>Create room</button>
+        <button type="button" onClick={()=>onNavigate('/join')}>Join room</button>
+        <a className="home-secondary" href="multiplayerai://connect-runtime">Connect existing agent</a>
+      </div>
+    </section>
+  </main>;
 
   return <main className="home">
     <header className="home-head">
@@ -36,16 +49,17 @@ export function Home({workspace,onNavigate}:{
       <p className="home-lead">Your rooms, and the agents you have connected to them.</p>
     </header>
 
-    <section className="home-section" aria-labelledby="home-rooms">
+    <section className="home-section" aria-labelledby="home-rooms" data-onboarding="rooms">
       <div className="home-section-head">
         <h2 id="home-rooms">Rooms</h2>
-        {rooms.length>0&&!creating&&
+        {workspace.accessScope!=='room_only'&&rooms.length>0&&!creating&&
           <button type="button" className="home-action" onClick={()=>setCreating(true)}><Plus size={13}/>Create room</button>}
       </div>
 
       {rooms.length===0&&!creating&&<div className="home-empty">
         <p>No rooms yet. A room is where your agents work together on one objective.</p>
-        <button type="button" className="home-primary" onClick={()=>setCreating(true)}><Plus size={14}/>Create your first room</button>
+        {workspace.accessScope!=='room_only'&&<button type="button" className="home-primary" onClick={()=>setCreating(true)}><Plus size={14}/>Create room</button>}
+        <button type="button" onClick={()=>onNavigate('/join')}>Join room</button>
       </div>}
 
       {creating&&<CreateRoom companyId={workspace.companyId} agents={agents}
@@ -66,21 +80,19 @@ export function Home({workspace,onNavigate}:{
       </ul>}
     </section>
 
-    <section className="home-section" aria-labelledby="home-agents">
+    <section className="home-section" aria-labelledby="home-agents" data-onboarding="agents">
       <div className="home-section-head">
         <h2 id="home-agents">Agents</h2>
-        {agents.length>0&&!addingAgent&&
+        {workspace.accessScope!=='room_only'&&agents.length>0&&!addingAgent&&
           <button type="button" className="home-action" onClick={()=>setAddingAgent(true)}><Plus size={13}/>Connect existing agent</button>}
       </div>
 
-      {agents.length===0&&!addingAgent&&<div className="home-empty">
+      {workspace.accessScope!=='room_only'&&agents.length===0&&!addingAgent&&<div className="home-empty">
         <p>No agents yet. Multiplayer AI does not run agents for you — connect one you already run.</p>
         <button type="button" className="home-primary" onClick={()=>setAddingAgent(true)}><Plus size={14}/>Connect an existing agent</button>
       </div>}
 
-      {addingAgent&&<ConnectExistingAgent companyId={workspace.companyId}
-        onCancel={()=>setAddingAgent(false)}
-        onAdded={async()=>{setAddingAgent(false);await load()}}/>}
+      {addingAgent&&<ConnectExistingAgent onCancel={()=>setAddingAgent(false)}/>}
 
       {agents.length>0&&<ul className="home-agents">
         {agents.map(agent=>{
@@ -95,6 +107,10 @@ export function Home({workspace,onNavigate}:{
             <span className="home-agent-rooms">
               {agent.rooms?.length ? agent.rooms.map(room=>room.name).join(', ') : 'No room yet'}
             </span>
+            <button type="button" className="danger-link" onClick={async()=>{
+              if(!confirm(`Remove ${agent.display_name}? This revokes its active credentials and sessions, and removes it from every room. Historical events remain.`))return;
+              await removeWorkspaceAgent(workspace.companyId,agent.principal_id);await load();
+            }}>Remove agent</button>
           </li>;
         })}
       </ul>}
@@ -162,35 +178,14 @@ function CreateRoom({companyId,agents,onCancel,onCreated}:{
   </form>;
 }
 
-/** Registering an identity for an agent the person already runs. Connecting it happens on its Mac. */
-function ConnectExistingAgent({companyId,onCancel,onAdded}:{
-  companyId:string;onCancel:()=>void;onAdded:()=>Promise<void>}){
-  const [name,setName]=useState('');
-  const [busy,setBusy]=useState(false);
-  const [problem,setProblem]=useState('');
-  const field=useRef<HTMLInputElement>(null);
-  useEffect(()=>{field.current?.focus()},[]);
-
-  return <form className="home-form" onSubmit={async event=>{
-    event.preventDefault();
-    if(!name.trim()||busy)return;
-    setBusy(true);setProblem('');
-    try{await addWorkspaceAgent(companyId,name.trim());await onAdded()}
-    catch(failure){setProblem(failure instanceof ApiError?failure.message:'That did not work.');setBusy(false)}
-  }}>
-    <label className="field">
-      <span className="field-label">Agent name</span>
-      <input ref={field} value={name} placeholder="Research agent" maxLength={100} disabled={busy}
-        onChange={event=>setName(event.target.value)}/>
-    </label>
-    <small className="home-note">
-      Names an agent you already run. Put it in a room, then connect it from the Mac it runs on
-      by opening Multiplayer AI on the Mac it runs on.
-    </small>
-    {problem&&<p className="form-error" role="alert">{problem}</p>}
+/** Discovery and validation happen on the Mac that actually owns the runtime. */
+function ConnectExistingAgent({onCancel}:{onCancel:()=>void}){
+  return <section className="home-form">
+    <h3>Connect the runtime on this Mac</h3>
+    <p className="home-note">The Mac app will discover Hermes, show its real version and endpoint, and test it before anything is enrolled.</p>
     <div className="home-form-actions">
-      <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
-      <button disabled={busy||!name.trim()}>{busy?'Adding…':'Add agent'}</button>
+      <button type="button" onClick={onCancel}>Cancel</button>
+      <a className="home-primary" href="multiplayerai://connect-runtime">Detect Hermes</a>
     </div>
-  </form>;
+  </section>;
 }
