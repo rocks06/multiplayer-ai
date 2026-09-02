@@ -6,7 +6,7 @@ const pool=new pg.Pool({connectionString:url});
 try{
  const result=await migrate(pool);
  if(result.initialized)console.log('Database initialized from schema.sql');
- for(const name of result.repaired)console.log(`Repaired ${name}: recorded as applied but its tables were absent`);
+ for(const name of result.repaired)console.log(`Repaired ${name}: recorded as applied, but nothing it creates existed`);
  for(const name of result.applied)console.log(`Applied ${name}`);
  if(!result.initialized&&!result.applied.length&&!result.repaired.length)console.log('Database already up to date');
 }finally{await pool.end()}

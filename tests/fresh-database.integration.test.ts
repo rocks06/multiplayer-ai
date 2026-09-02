@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as pg from "pg";
-import { migrate, baselineOf, declaredTables } from "../packages/db/src/migrator.js";
+import { migrate, baselineOf, declaredTables, declaredObjects, requiredObjects } from "../packages/db/src/migrator.js";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -111,6 +111,45 @@ describe("initialising a database that has nothing in it", () => {
     expect((await pool.query(`SELECT to_regclass('public.auth_rate_limits') name`)).rows[0]?.name).toBe("auth_rate_limits");
   });
 
+  /**
+   * The incident this exists to prevent, reproduced exactly.
+   *
+   * Migration 0013 was recorded as applied while both of its unique indexes were absent. The
+   * repair pass only ever looked for missing *tables*, so a migration whose whole contribution is
+   * an index could sit there marked done with nothing to show for it, and the guarantee it was
+   * supposed to add silently did not exist. Nothing noticed until a test tried to violate that
+   * guarantee and succeeded — luck, not health checking.
+   */
+  it("re-applies a migration recorded as applied whose unique indexes are gone", async () => {
+    await migrate(pool, process.cwd());
+    await pool.query(`DROP INDEX external_agent_sessions_one_live`);
+    await pool.query(`DROP INDEX external_agent_credentials_one_active`);
+    expect((await pool.query(`SELECT 1 FROM schema_migrations WHERE name='0013_one_live_binding.sql'`)).rowCount).toBe(1);
+
+    const repair = await migrate(pool, process.cwd());
+    expect(repair.repaired).toContain("0013_one_live_binding.sql");
+    expect(repair.applied).toContain("0013_one_live_binding.sql");
+    for (const index of ["external_agent_sessions_one_live", "external_agent_credentials_one_active"]) {
+      expect((await pool.query(`SELECT to_regclass('public.'||$1) n`, [index])).rows[0].n).toBe(index);
+    }
+  });
+
+  /**
+   * Half present and half missing is not a migration that failed to run. It is a database
+   * somebody has been inside, and re-running the migration could as easily finish the damage as
+   * repair it, so it is named and refused rather than guessed at.
+   */
+  it("refuses to guess when a migration is only partly present", async () => {
+    await migrate(pool, process.cwd());
+    // The table 0009 created is still there; the index it created is not.
+    await pool.query(`DROP INDEX auth_rate_limits_window_idx`);
+
+    await expect(migrate(pool, process.cwd()))
+      .rejects.toThrow(/0009_auth_rate_limits\.sql.*auth_rate_limits_window_idx/s);
+    // Refusing means refusing: it did not half-run anything on the way out.
+    expect((await pool.query(`SELECT 1 FROM schema_migrations WHERE name='0009_auth_rate_limits.sql'`)).rowCount).toBe(1);
+  });
+
   /** An edited migration is still refused; repairing false claims must not weaken that. */
   it("still refuses a migration that changed after it was applied", async () => {
     await migrate(pool, process.cwd());
@@ -133,5 +172,55 @@ describe("the baseline schema.sql declares", () => {
     expect(declaredTables("CREATE TABLE IF NOT EXISTS auth_rate_limits(a int);")).toEqual(["auth_rate_limits"]);
     expect(declaredTables("create table Foo(a int); CREATE TABLE bar(b int);").sort()).toEqual(["bar", "foo"]);
     expect(declaredTables("ALTER TABLE messages ADD COLUMN x int;")).toEqual([]);
+  });
+});
+
+describe("what a migration declares", () => {
+  it("reads tables, named indexes and named constraints", () => {
+    const actions = declaredObjects(`
+      CREATE TABLE IF NOT EXISTS thing(id int);
+      CREATE UNIQUE INDEX IF NOT EXISTS thing_one ON thing(id) WHERE id > 0;
+      ALTER TABLE thing ADD CONSTRAINT thing_check CHECK (id > 0);`);
+    expect(actions.map(a => `${a.action} ${a.kind} ${a.name}`)).toEqual([
+      "create table thing", "create index thing_one", "create constraint thing_check",
+    ]);
+  });
+
+  it("ignores statements that only alter an existing object", () => {
+    expect(declaredObjects("ALTER TABLE thing ADD COLUMN extra text;")).toEqual([]);
+  });
+
+  /**
+   * A migration that replaces an object in place proves nothing by that object. The constraint is
+   * present whether or not the migration ran, because it was there beforehand — which is exactly
+   * how 0013 looked: its two CHECK constraints were older than it, and only its indexes were
+   * really its own. Counting a replacement as proof condemns every healthy database that upgraded
+   * from the snapshot.
+   */
+  it("takes no proof from an object a migration only replaces", () => {
+    const required = requiredObjects([{ name: "0001.sql", sql: `
+      ALTER TABLE t DROP CONSTRAINT t_check;
+      ALTER TABLE t ADD CONSTRAINT t_check CHECK (x > 0);` }]);
+    expect(required.get("0001.sql")).toBeUndefined();
+  });
+
+  /** Order still decides ownership: a plain create after an earlier migration's drop is proof. */
+  it("credits the migration that last created an object", () => {
+    const required = requiredObjects([
+      { name: "0001.sql", sql: "CREATE UNIQUE INDEX one ON t(a);" },
+      { name: "0002.sql", sql: "DROP INDEX one;" },
+      { name: "0003.sql", sql: "CREATE UNIQUE INDEX one ON t(a,b);" },
+    ]);
+    expect(required.get("0001.sql")).toBeUndefined();
+    expect(required.get("0003.sql")).toEqual([{ kind: "index", name: "one" }]);
+  });
+
+  /** An object a later migration removes belongs to nobody, and is required by nobody. */
+  it("stops requiring an object once a later migration drops it", () => {
+    const required = requiredObjects([
+      { name: "0001.sql", sql: "CREATE UNIQUE INDEX old_idx ON t(a);" },
+      { name: "0002.sql", sql: "DROP INDEX IF EXISTS old_idx;" },
+    ]);
+    expect(required.get("0001.sql")).toBeUndefined();
   });
 });

@@ -11,6 +11,12 @@ const {Pool}=pg;
 const connectionString=process.env.DATABASE_URL;
 if(!connectionString)throw new Error("DATABASE_URL is required for agent gateway integration tests");
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+/** Wait for a condition the server reaches on its own, rather than guessing how long it takes. */
+async function until(condition:()=>Promise<boolean>,timeoutMs=2000){
+ const deadline=Date.now()+timeoutMs;
+ while(Date.now()<deadline){if(await condition())return;await sleep(10);}
+ throw new Error("condition was still false after "+timeoutMs+"ms");
+}
 
 describe("Agent Gateway v1",()=>{
  let pool:pg.Pool,app:ReturnType<typeof buildApp>,baseUrl:string;
@@ -248,6 +254,13 @@ describe("Agent Gateway v1",()=>{
 
   expect((await c.heartbeat("working")).status).toBe(200);
   expect((await mine()).agent_runtime_status).toBe("working");
+
+  /* Waking is itself a room event, and the client acks it — which touches last_seen_at. Backdate
+     before that ack lands and the ack undoes it, so the session reads connected again and this
+     assertion fails only when the machine is busy. Wait for the ack to be durable first: nothing
+     else is coming, so after it there is no writer left to race with. */
+  await c.waitFor(frame=>frame.type==="room.event"&&frame.event.event_type==="agent.woke");
+  await until(async()=>Number((await pool.query(`SELECT last_ack_room_seq FROM external_agent_sessions WHERE id=$1`,[c.sessionId])).rows[0].last_ack_room_seq)>=c.tracker.contiguousSeq);
 
   // A session the Gateway still calls connected but which stopped reporting must not read
   // as live — this is the state that made a vanished connector look healthy.
