@@ -9,12 +9,17 @@ const secret = (prefix: string) => `${prefix}_${randomBytes(32).toString("base64
 const SIGN_IN_TTL_MINUTES = 15;
 const SESSION_TTL_DAYS = 30;
 
+import type { SignInReturn } from "./sign-in-link.js";
+export type { SignInReturn };
+
 export interface SignInLink {
   user_id: string;
   email: string;
   /** The raw single-use token. Held only long enough to deliver; never stored. */
   token: string;
   expires_at: string;
+  /** Where the person signing in has to end up. Absent means the app, as it always did. */
+  return_to?: SignInReturn;
 }
 
 /**
@@ -72,22 +77,22 @@ export class AuthService {
     catch (failure) { this.onDeliveryFailure(failure); }
   }
 
-  private async mintToken(userId: string, email: string): Promise<SignInLink> {
+  private async mintToken(userId: string, email: string, returnTo?: SignInReturn): Promise<SignInLink> {
     const id = uuidv7(), token = secret("mpsi");
     const row = await this.pool.query<{ expires_at: string }>(
       `INSERT INTO user_auth_tokens(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+($4||' minutes')::interval) RETURNING expires_at`,
       [id, userId, hash(token), String(SIGN_IN_TTL_MINUTES)],
     );
-    return { user_id: userId, email, token, expires_at: row.rows[0]!.expires_at };
+    return { user_id: userId, email, token, expires_at: row.rows[0]!.expires_at, return_to: returnTo };
   }
 
   /**
    * Public entry point. Always reports the same result whether or not the address exists, so
    * this cannot be used to discover who has an account.
    */
-  async requestSignInLink(email: string) {
+  async requestSignInLink(email: string, returnTo?: SignInReturn) {
     const user = await this.pool.query<{ id: string; email: string }>(`SELECT id,email FROM users WHERE lower(email)=lower($1)`, [email]);
-    if (user.rowCount) await this.deliverQuietly(await this.mintToken(user.rows[0]!.id, user.rows[0]!.email));
+    if (user.rowCount) await this.deliverQuietly(await this.mintToken(user.rows[0]!.id, user.rows[0]!.email, returnTo));
     return { status: "accepted" as const };
   }
 
@@ -99,7 +104,7 @@ export class AuthService {
    * discover whether an address has an account. No company is created — naming a workspace is an
    * authenticated act that belongs to onboarding, after the link is redeemed.
    */
-  async signUp(input: { name: string; email: string }) {
+  async signUp(input: { name: string; email: string; returnTo?: SignInReturn }) {
     const email = input.email.trim().toLowerCase();
     const name = input.name.trim();
     const existing = await this.pool.query<{ id: string; email: string }>(
@@ -107,7 +112,7 @@ export class AuthService {
 
     if (existing.rowCount) {
       // Already an account: behave exactly as asking for a sign-in link does.
-      await this.deliverQuietly(await this.mintToken(existing.rows[0]!.id, existing.rows[0]!.email));
+      await this.deliverQuietly(await this.mintToken(existing.rows[0]!.id, existing.rows[0]!.email, input.returnTo));
       return { status: "accepted" as const };
     }
 
@@ -121,7 +126,7 @@ export class AuthService {
       ? inserted.rows[0]!
       : (await this.pool.query<{ id: string; email: string }>(`SELECT id,email FROM users WHERE lower(email)=lower($1)`, [email])).rows[0]!;
 
-    await this.deliverQuietly(await this.mintToken(user.id, user.email));
+    await this.deliverQuietly(await this.mintToken(user.id, user.email, input.returnTo));
     return { status: "accepted" as const };
   }
 

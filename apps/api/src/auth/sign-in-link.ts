@@ -28,13 +28,37 @@ const CUSTOM_SCHEME = /^([a-z][a-z0-9+.-]*):\/\//i;
  * A custom-scheme destination has no server to hide anything from, so it uses a query, which is
  * what the app's own URL handling already reads.
  */
-export function buildSignInLink(publicAppUrl: string, token: string): string {
-  const base = publicAppUrl.trim().replace(/\/+$/, "");
+export function buildSignInLink(
+  publicAppUrl: string, token: string, returnTo?: SignInReturn,
+): string {
+  /* Where signing in began decides where it must finish.
+
+     A person who started in a browser — following a room invitation, with the invite secret held
+     in that tab — has to come back to that tab, authenticated. Sending them to the page that hands
+     tokens to the Mac app instead spends the single-use token somewhere their browser will never
+     hear about, and the invitation they were in the middle of accepting is simply lost. It is not
+     a redirect that went astray; the session was established in the wrong place entirely.
+
+     So a web return is built against the origin the browser is already on, which is also the
+     origin that serves the invitation. Everything else keeps the existing destination. */
+  const base = (returnTo?.kind === "web" ? returnTo.origin : publicAppUrl).trim().replace(/\/+$/, "");
   const encoded = encodeURIComponent(token);
   if (/^https?:\/\//i.test(base)) return `${base}/signin#token=${encoded}`;
   if (CUSTOM_SCHEME.test(base)) return `${base}?token=${encoded}`;
   throw new Error("PUBLIC_APP_URL must be an http(s) URL or a custom scheme such as multiplayerai://auth");
 }
+
+/**
+ * Which context asked for this link, stated rather than guessed.
+ *
+ * There is no way to infer it after the fact: a link built for the Mac app and a link built for a
+ * browser were identical, so one of the two flows was always going to be wrong. The app is the
+ * default because that is the long-standing behaviour, and only a caller that knows it is a
+ * browser says so.
+ */
+export type SignInReturn =
+  | { kind: "app" }
+  | { kind: "web"; origin: string };
 
 /** Which half of the link carries the token, for the tests and for anyone reasoning about it. */
 export function carrierOf(publicAppUrl: string): Carrier {

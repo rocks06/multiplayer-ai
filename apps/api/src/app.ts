@@ -11,7 +11,7 @@ import { RealtimeHub, type RealtimeOptions } from "./realtime/realtime-hub.js";
 import { AgentRuntimeService } from "./agent-runtime/runtime-service.js";
 import { AgentGatewayService } from "./agent-gateway/gateway-service.js";
 import { registerAgentGatewayRoutes } from "./agent-gateway/gateway-routes.js";
-import { AuthService, type SignInLinkDelivery } from "./auth/auth-service.js";
+import { AuthService, type SignInLinkDelivery, type SignInReturn } from "./auth/auth-service.js";
 import { RoomInviteService } from "./invites/room-invite-service.js";
 import { deliveryMode, resolveSignInDelivery, type DeliveryEnvironment } from "./auth/delivery-config.js";
 import { assertProductionSafe, isProduction } from "./production-guard.js";
@@ -49,6 +49,8 @@ export interface AppOptions {
   environment?: DeliveryEnvironment;
   /** Counts the public authentication routes. Defaults to one backed by this database. */
   rateLimits?: RateLimitStore;
+  /** The origin serving the web app, where a browser sign-in must return. Defaults to WEB_APP_URL. */
+  webAppUrl?: string;
 }
 const idem = (request:any) => { const key=request.headers["idempotency-key"]; if(typeof key!=="string") throw new DomainError("idempotency_key_required","Idempotency-Key is required",400); return key; };
 
@@ -61,6 +63,14 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
      address, and a per-caller limit would lock out everybody at once instead of one abuser. */
   const app=Fastify({logger:false,trustProxy:production});
   const allowHeaderPrincipal=options.allowHeaderPrincipal ?? process.env.ALLOW_HEADER_PRINCIPAL==="1";
+  /* Where a browser sign-in has to come back to.
+
+     Read from configuration and never from the request, because the alternative is trusting a
+     Host or Origin header to decide where a valid single-use token gets emailed — and anyone can
+     send a request with any Host. A caller may say it is a browser; it may not say where. */
+  const webAppUrl=(options.webAppUrl ?? environmentForGuard.WEB_APP_URL)?.trim().replace(/\/+$/,"");
+  const returnFor=(context:"web"|"app"|undefined):SignInReturn|undefined=>
+    context==="web"&&webAppUrl?{kind:"web",origin:webAppUrl}:undefined;
   const cookieSecure=options.cookieSecure ?? process.env.AUTH_COOKIE_SECURE!=="0";
   /* Delivery is settled at startup, not on the first sign-in. A deployment that asked for real
      email and cannot send it fails here, loudly, rather than accepting sign-ups and writing
@@ -126,8 +136,8 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
      person: it exists so "check your email" is only shown when an email is actually sent, and the
      developer wording about a workspace operator only when that is genuinely what happens. */
   app.get('/v1/app-config',async()=>({sign_in_delivery:mode}));
-  app.post('/v1/auth/sign-up',async req=>{const x=body(z.object({name:z.string().min(1).max(100),email:z.string().email()}),req.body);await withinAuthLimits(req,x.email);return auth.signUp(x)});
-  app.post('/v1/auth/sign-in-links',async req=>{const x=body(z.object({email:z.string().email()}),req.body);await withinAuthLimits(req,x.email);return auth.requestSignInLink(x.email)});
+  app.post('/v1/auth/sign-up',async req=>{const x=body(z.object({name:z.string().min(1).max(100),email:z.string().email(),context:z.enum(['web','app']).optional()}),req.body);await withinAuthLimits(req,x.email);return auth.signUp({name:x.name,email:x.email,returnTo:returnFor(x.context)})});
+  app.post('/v1/auth/sign-in-links',async req=>{const x=body(z.object({email:z.string().email(),context:z.enum(['web','app']).optional()}),req.body);await withinAuthLimits(req,x.email);return auth.requestSignInLink(x.email,returnFor(x.context))});
   app.post('/v1/auth/sessions',async(req,reply)=>{const x=body(z.object({token:z.string().min(8)}),req.body);const created=await auth.createSession(x.token);writeSessionCookie(reply,created.session_token,SESSION_MAX_AGE,cookieSecure);return auth.identity(created.user_id)});
   app.delete('/v1/auth/sessions/current',async(req,reply)=>{const result=await auth.revokeSession(readSessionCookie(req));writeSessionCookie(reply,'',0,cookieSecure);return result});
   app.get('/v1/auth/me',async req=>{const session=await auth.resolveSession(readSessionCookie(req));return auth.identity(session.userId)});

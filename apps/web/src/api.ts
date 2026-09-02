@@ -85,8 +85,13 @@ export function roomFromLocation():{companyId:string;roomId:string}|null{
 
 export interface SignedInIdentity {user:{id:string;email:string;display_name:string};companies:Array<{company_id:string;company_name:string;principal_id:string;display_name:string;access_scope?:'workspace'|'room_only'}>}
 
+/* `context:'web'` is the whole of the invite fix on this side.
+
+   Without it the server cannot tell a browser from the Mac app, so every link went to the page
+   that hands tokens to the app — spending the single-use token somewhere this tab would never
+   hear about, and stranding the invitation it was in the middle of accepting. */
 export async function requestSignInLink(email:string){
-  const response=await fetch('/v1/auth/sign-in-links',{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify({email})});
+  const response=await fetch('/v1/auth/sign-in-links',{method:'POST',headers:{'content-type':'application/json'},credentials:'same-origin',body:JSON.stringify({email,context:'web'})});
   if(!response.ok){
     const body=await response.json().catch(()=>({})) as ApiErrorShape;
     throw new Error(body.error?.message??'Could not issue a sign-in link');
@@ -175,7 +180,9 @@ export const addRoomMember=(companyId:string,roomId:string,principalId:string,re
 
 /** Creating an account: the same magic link signing in uses, for someone who has none yet. */
 export const signUp=(name:string,email:string)=>
-  send<{status:string}>('/v1/auth/sign-up',{method:'POST',body:JSON.stringify({name,email})});
+  // Same reason as signing in: creating an account from an invitation must come back to the tab
+  // holding that invitation, not to the Mac app.
+  send<{status:string}>('/v1/auth/sign-up',{method:'POST',body:JSON.stringify({name,email,context:'web'})});
 
 export const signOut=()=>send<unknown>('/v1/auth/sessions/current',{method:'DELETE'});
 

@@ -29,7 +29,7 @@ export class ResendSignInLinkDelivery implements SignInLinkDelivery {
   constructor(private readonly options: ResendOptions) {}
 
   async deliver(link: SignInLink): Promise<void> {
-    const url = buildSignInLink(this.options.publicAppUrl, link.token);
+    const url = buildSignInLink(this.options.publicAppUrl, link.token, link.return_to);
     const send = this.options.fetch ?? globalThis.fetch;
     const log = this.options.log ?? ((line: string) => console.log(line));
 

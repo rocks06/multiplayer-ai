@@ -1,18 +1,21 @@
 import {useEffect,useState} from 'react';
 import {acceptRoomInvite,currentIdentity,previewRoomInvite,type RoomInvitePreview} from './api';
 import {rememberIntent} from './SignIn';
+import {rememberAcross} from './pending-invite';
 
 const INVITE_KEY='mpai:pending-room-invite';
+/* Held where the tab the magic link opens can find it — see pending-invite.ts. The secret comes
+   out of the address bar immediately either way, so a shared or bookmarked URL carries nothing. */
 function takeToken(){
   const fromHash=location.hash.startsWith('#')?decodeURIComponent(location.hash.slice(1)):'';
   if(fromHash){
-    try{sessionStorage.setItem(INVITE_KEY,fromHash)}catch{}
+    rememberAcross.write(INVITE_KEY,fromHash);
     history.replaceState({},'',location.pathname);
     return fromHash;
   }
-  try{return sessionStorage.getItem(INVITE_KEY)??''}catch{return ''}
+  return rememberAcross.read(INVITE_KEY)??'';
 }
-function forgetToken(){try{sessionStorage.removeItem(INVITE_KEY)}catch{}}
+function forgetToken(){rememberAcross.forget(INVITE_KEY)}
 
 type State=
   |{step:'loading'}

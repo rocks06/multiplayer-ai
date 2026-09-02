@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
 import {currentIdentity,redeemSignInToken,requestSignInLink,signInDelivery,type SignInDelivery,type SignedInIdentity} from './api';
+import {rememberAcross} from './pending-invite';
 
 const INTENT_KEY='mpai:after-sign-in';
 
@@ -7,8 +8,20 @@ const INTENT_KEY='mpai:after-sign-in';
    immediately so a shared or bookmarked link cannot replay it, and the redemption is a single
    module-scoped promise rather than per-mount work, so a remount attaches to the same result
    instead of racing it or discarding it. */
+/* The token may arrive in either half of the URL, and which one is not this page's choice.
+
+   A link built for a browser carries it in the fragment, deliberately: a fragment is never sent to
+   a server, so it stays out of host logs and out of reach of a corporate scanner that fetches the
+   URL before its owner clicks — and a scanner that follows a query-string magic link spends it.
+   Reading only the query string is why an invited person's link established no session here at
+   all: the token was sitting in the hash, three characters away, being ignored. */
+const tokenFromLocation=()=>{
+  const fragment=new URLSearchParams(String(location.hash||'').replace(/^#/,'')).get('token');
+  return fragment||new URLSearchParams(location.search).get('token');
+};
+
 const redemption=(()=>{
-  const token=new URLSearchParams(location.search).get('token');
+  const token=tokenFromLocation();
   if(!token)return null;
   history.replaceState({},'',location.pathname);
   return redeemSignInToken(token).then(
@@ -18,10 +31,10 @@ const redemption=(()=>{
 })();
 
 /** Remember where someone was heading so signing in returns them there. */
-export function rememberIntent(path:string){try{sessionStorage.setItem(INTENT_KEY,path)}catch{}}
+export function rememberIntent(path:string){rememberAcross.write(INTENT_KEY,path)}
 /** Set the ordinary post-auth destination without replacing a more specific flow such as an invite. */
-export function rememberDefaultIntent(path:string){try{if(!sessionStorage.getItem(INTENT_KEY))sessionStorage.setItem(INTENT_KEY,path)}catch{}}
-function takeIntent(){try{const value=sessionStorage.getItem(INTENT_KEY);sessionStorage.removeItem(INTENT_KEY);return value}catch{return null}}
+export function rememberDefaultIntent(path:string){if(!rememberAcross.read(INTENT_KEY))rememberAcross.write(INTENT_KEY,path)}
+function takeIntent(){const value=rememberAcross.read(INTENT_KEY);rememberAcross.forget(INTENT_KEY);return value}
 
 type Phase=
  |{step:'checking'}
