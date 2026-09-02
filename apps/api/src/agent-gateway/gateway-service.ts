@@ -28,7 +28,8 @@ export interface GatewayIdentity {
 }
 
 export class AgentGatewayService {
-  constructor(private readonly pool:DbPool) {}
+  /** The room log, so a connection's life is visible where the work is, not only in a server log. */
+  constructor(private readonly pool:DbPool, private readonly rooms?:{recordAgentEvent:(client:any,input:{companyId:string;roomId:string;agentPrincipalId:string;eventType:string;payload:Record<string,unknown>})=>Promise<void>}) {}
 
   private bearer(header:unknown) {
     if(typeof header!=="string" || !header.startsWith("Bearer ")) throw new DomainError("gateway_unauthenticated","Bearer token is required",401);
@@ -45,6 +46,15 @@ export class AgentGatewayService {
       if(!actor.rowCount) throw new DomainError("permission_denied","An active company human must provision machine credentials",403);
       const agent=await c.query<{agent_id:string}>(`SELECT p.agent_id FROM principals p JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id WHERE p.company_id=$1 AND p.id=$2 AND p.kind='agent' AND p.status='active' AND a.status='active'`,[input.companyId,input.agentPrincipalId]);
       if(!agent.rowCount) throw new DomainError("agent_not_found","Active company agent principal not found",404);
+      /* One runtime, one credential. Re-enrolling or moving rooms is the same machine coming
+         back, not a second one, so the credential it used before is retired rather than left
+         active beside the new one — which is what let a machine keep working against a room it
+         had supposedly left. The principal is untouched: the agent's identity survives, only its
+         key changes. */
+      await c.query(
+        `UPDATE external_agent_credentials SET status='superseded',revoked_at=now()
+         WHERE company_id=$1 AND agent_principal_id=$2 AND status='active'`,
+        [input.companyId,input.agentPrincipalId]);
       const id=uuidv7(),token=secret("magc");
       await c.query(`INSERT INTO external_agent_credentials(id,company_id,agent_principal_id,token_hash,token_prefix,label,created_by_principal_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,[id,input.companyId,input.agentPrincipalId,hash(token),token.slice(0,12),input.label,input.actorId]);
       await c.query("COMMIT");
@@ -114,6 +124,13 @@ export class AgentGatewayService {
       if(!rooms.rowCount) throw new DomainError("enrollment_room_required","Add this agent to a room before connecting it",409);
       // A code that names a room may only ever produce that room, never a substitute.
       if(token.room_id && rooms.rows.length!==1) throw new DomainError("enrollment_room_invalid","This agent is no longer a worker in that room",409);
+      /* Same rule on the enrollment-code path: a machine redeeming a code is that agent coming
+         back, so whatever key it held before is retired in this transaction. Without it, an
+         agent moved between rooms kept a live credential for the room it had left. */
+      await c.query(
+        `UPDATE external_agent_credentials SET status='superseded',revoked_at=now()
+         WHERE company_id=$1 AND agent_principal_id=$2 AND status='active'`,
+        [token.company_id,token.agent_principal_id]);
       const credentialId=uuidv7(),credential=secret("magc");
       const label=input.deviceLabel?`${token.label} (${input.deviceLabel})`:token.label;
       await c.query(`INSERT INTO external_agent_credentials(id,company_id,agent_principal_id,token_hash,token_prefix,label,created_by_principal_id) SELECT $1,$2,$3,$4,$5,$6,created_by_principal_id FROM agent_enrollment_tokens WHERE id=$7`,[credentialId,token.company_id,token.agent_principal_id,hash(credential),credential.slice(0,12),label,token.id]);
@@ -152,13 +169,58 @@ export class AgentGatewayService {
     return {protocol:"agent-gateway.v1",company_id:auth.company_id,agent_principal_id:auth.agent_principal_id,rooms:rooms.rows.map((r:any)=>({...r,last_event_seq:Number(r.last_event_seq)}))};
   }
 
+  /**
+   * Open a session, and retire whatever this agent had before it.
+   *
+   * One runtime is one agent, so a second live session is not a second worker — it is the same
+   * machine reconnecting, or a stale row from a connection that went away without saying so.
+   * Leaving both meant every presence query resolved the pair by whichever heartbeat landed last,
+   * so an agent flickered between connected and absent with nothing wrong with the connection.
+   * Retiring happens in the same transaction as the insert, so there is never an instant with two
+   * live rows and never one with none.
+   *
+   * The old socket is told rather than left to discover it: the superseded session's next
+   * authentication fails, which is what closes it, and the notify below closes it sooner.
+   */
   async openSession(authorization:unknown,roomId:string,runtimeStatus:"idle"|"working"="idle") {
     const auth=await this.authenticateCredential(authorization);
-    const member=await this.pool.query(`SELECT 1 FROM room_members WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' AND role='worker_agent'`,[auth.company_id,roomId,auth.agent_principal_id]);
-    if(!member.rowCount) throw new DomainError("room_access_denied","Active worker-agent room membership is required",403);
-    const id=uuidv7(),token=secret("mags");
-    await this.pool.query(`INSERT INTO external_agent_sessions(id,credential_id,company_id,agent_principal_id,room_id,session_token_hash,status,runtime_status) VALUES($1,$2,$3,$4,$5,$6,'connected',$7)`,[id,auth.id,auth.company_id,auth.agent_principal_id,roomId,hash(token),runtimeStatus]);
-    return {protocol:"agent-gateway.v1",session_id:id,session_token:token,company_id:auth.company_id,room_id:roomId,agent_principal_id:auth.agent_principal_id,status:"connected",runtime_status:runtimeStatus};
+    const c=await this.pool.connect();
+    try {
+      await c.query("BEGIN");
+      const member=await c.query(`SELECT 1 FROM room_members WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' AND role='worker_agent' FOR UPDATE`,[auth.company_id,roomId,auth.agent_principal_id]);
+      if(!member.rowCount) throw new DomainError("room_access_denied","Active worker-agent room membership is required",403);
+      const superseded=await c.query<{id:string;room_id:string}>(
+        `UPDATE external_agent_sessions SET status='superseded',disconnected_at=now()
+         WHERE company_id=$1 AND agent_principal_id=$2 AND status='connected' RETURNING id,room_id`,
+        [auth.company_id,auth.agent_principal_id]);
+      const retiredCredentials=await c.query<{id:string}>(
+        `SELECT id FROM external_agent_credentials WHERE company_id=$1 AND agent_principal_id=$2
+           AND status='superseded' AND revoked_at > now()-interval '1 minute'`,
+        [auth.company_id,auth.agent_principal_id]);
+      const id=uuidv7(),token=secret("mags");
+      await c.query(`INSERT INTO external_agent_sessions(id,credential_id,company_id,agent_principal_id,room_id,session_token_hash,status,runtime_status) VALUES($1,$2,$3,$4,$5,$6,'connected',$7)`,[id,auth.id,auth.company_id,auth.agent_principal_id,roomId,hash(token),runtimeStatus]);
+      // Whoever is holding those sockets should stop now, not at their next failed request.
+      for(const row of superseded.rows) await c.query(`SELECT pg_notify('agent_sessions',$1)`,[JSON.stringify({session_id:row.id,reason:"superseded"})]);
+
+      /* What happened, in the rooms it happened to. A replaced session is recorded in the room it
+         was serving, which is the only room where its disappearance is visible. */
+      if(this.rooms){
+        for(const row of superseded.rows){
+          await this.rooms.recordAgentEvent(c,{companyId:auth.company_id,roomId:row.room_id,
+            agentPrincipalId:auth.agent_principal_id,eventType:"agent.session.superseded",
+            payload:{session_id:row.id,replaced_by:id,reason:row.room_id===roomId?"reconnected":"moved"}});
+        }
+        const movedFrom=superseded.rows.find(row=>row.room_id!==roomId);
+        await this.rooms.recordAgentEvent(c,{companyId:auth.company_id,roomId,
+          agentPrincipalId:auth.agent_principal_id,
+          eventType:movedFrom?"agent.session.moved":(superseded.rowCount?"agent.reconnected":"agent.session.connected"),
+          payload:{session_id:id,room_id:roomId,
+            ...(movedFrom?{moved_from_room_id:movedFrom.room_id}:{}),
+            ...(retiredCredentials.rowCount?{credential_replaced:true}:{})}});
+      }
+      await c.query("COMMIT");
+      return {protocol:"agent-gateway.v1",session_id:id,session_token:token,company_id:auth.company_id,room_id:roomId,agent_principal_id:auth.agent_principal_id,status:"connected",runtime_status:runtimeStatus,superseded:superseded.rows.map(r=>r.id)};
+    } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
   }
 
   async authenticateSession(sessionId:string,authorization:unknown,touch=true,allowOffline=false):Promise<GatewayIdentity> {
@@ -187,9 +249,31 @@ export class AgentGatewayService {
     return {protocol:"agent-gateway.v1",session_id:row.id,company_id:identity.companyId,room_id:identity.roomId,agent_principal_id:identity.principalId,status:row.status,runtime_status:row.runtime_status,last_ack_room_seq:Number(row.last_ack_room_seq),room_last_event_seq:Number(cursor.rows[0]!.last_event_seq),connected_at:row.connected_at,disconnected_at:row.disconnected_at,last_seen_at:row.last_seen_at};
   }
 
+  /**
+   * A heartbeat, and the one transition inside it worth recording.
+   *
+   * An agent going from idle to working is it waking up and starting on something — the moment a
+   * person watching wants to see, and the proof that an addressed message actually reached a
+   * runtime rather than merely being stored. Only the transition is logged: recording every
+   * heartbeat would bury the room's history in a metronome.
+   */
   async heartbeat(sessionId:string,authorization:unknown,runtimeStatus:"idle"|"working") {
     const identity=await this.authenticateSession(sessionId,authorization,false);
-    await this.pool.query(`UPDATE external_agent_sessions SET runtime_status=$2,last_seen_at=now() WHERE id=$1`,[sessionId,runtimeStatus]);
+    const c=await this.pool.connect();
+    try {
+      await c.query("BEGIN");
+      const before=await c.query<{runtime_status:string;room_id:string}>(
+        `UPDATE external_agent_sessions SET runtime_status=$2,last_seen_at=now() WHERE id=$1
+         RETURNING (SELECT runtime_status FROM external_agent_sessions WHERE id=$1) AS runtime_status,room_id`,
+        [sessionId,runtimeStatus]);
+      const woke=runtimeStatus==="working" && before.rows[0]?.runtime_status!=="working";
+      if(woke && this.rooms){
+        await this.rooms.recordAgentEvent(c,{companyId:identity.companyId,roomId:identity.roomId,
+          agentPrincipalId:identity.principalId,eventType:"agent.woke",
+          payload:{session_id:sessionId}});
+      }
+      await c.query("COMMIT");
+    } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
     return {session_id:sessionId,status:"connected",runtime_status:runtimeStatus,last_seen_at:new Date().toISOString(),agent_principal_id:identity.principalId};
   }
 

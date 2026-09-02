@@ -244,3 +244,49 @@ import Foundation
         #expect(AppModel.moveTargets(bound: nil, agentRooms: rooms).isEmpty)
     }
 }
+
+/// Moving rooms, and what survives an interruption.
+///
+/// A move gives up a live binding before it has a new one. If the target were only held in
+/// memory, an interruption anywhere in between — a failed mint, a dropped network, the app being
+/// quit — would leave the Mac pointing at the room it was trying to leave, and it would quietly
+/// reconnect there. The target is written down first, so every resumption goes forwards.
+@MainActor
+@Suite struct DurableMoveTests {
+    private func model(boundTo room: String) -> AppModel {
+        var start = Progress()
+        start.setupComplete = true
+        start.workspaceAddress = "http://127.0.0.1:1"   // nothing is listening, so binding fails
+        start.agentPrincipalId = "agent-1"
+        start.agentDisplayName = "JJ"
+        start.roomId = room
+        return AppModel(store: MemoryProgressStore(start),
+                        connector: ConnectorModel(live: false, state: .unknown))
+    }
+
+    @Test func aMoveThatCouldNotFinishStillPointsAtTheNewRoom() async {
+        let app = model(boundTo: "roomr")
+        await app.move(to: "testing-1")
+        // Binding could not complete — there is nothing to bind against — and the Mac is still
+        // aimed at the room it was asked to move to, not the one it left.
+        #expect(app.progress.roomId == "testing-1")
+        #expect(app.connector.enrolment == nil)
+    }
+
+    /// What a relaunch would then decide: finish the move, rather than reconnect to the old room.
+    @Test func aRelaunchAfterAnInterruptedMoveResumesTowardsTheNewRoom() async {
+        let app = model(boundTo: "roomr")
+        await app.move(to: "testing-1")
+        let situation = Situation(setupComplete: true, signedIn: true, hasWorkspace: true,
+                                  hasAgentIdentity: true, hasRoom: app.progress.roomId != nil,
+                                  bound: app.connector.enrolment != nil)
+        #expect(Onboarding.step(for: situation) == .binding)
+    }
+
+    /// A room the agent does not work in is refused before anything is given up.
+    @Test func aMoveToARoomTheAgentDoesNotWorkInGivesUpNothing() async {
+        let app = model(boundTo: "roomr")
+        await app.refresh()
+        #expect(app.progress.roomId == "roomr")
+    }
+}

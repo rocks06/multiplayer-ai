@@ -58,6 +58,8 @@ export function connectionOf(agent:WorkspaceAgent):{
   if(presence==='stale')return {label:'Connected earlier, quiet just now',tone:'wait',arrived:true,ready:true};
   if(presence==='offline')return {label:'Connected earlier, not running now',tone:'gone',arrived:true,ready:true};
   if(presence==='revoked')return {label:'Access removed',tone:'gone',arrived:false,ready:false};
+  // A newer connection from the same machine took over; the agent is set up, just not on this row.
+  if(presence==='superseded')return {label:'Replaced by a newer connection',tone:'wait',arrived:true,ready:true};
   if(enrolled&&!roomed)return {label:'Set up — it joins once there is a room',tone:'idle',arrived:false,ready:true};
   if(enrolled)return {label:'Waiting for it to appear',tone:'wait',arrived:false,ready:true};
   return {label:'Not connected yet',tone:'idle',arrived:false,ready:false};

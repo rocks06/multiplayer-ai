@@ -124,7 +124,7 @@ async function send<T>(path:string,init:RequestInit={}):Promise<T>{
 export interface WorkspaceAgent {
   agent_id:string;principal_id:string;display_name:string;status:'active'|'paused'|'archived';
   owner_display_name:string|null;
-  connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'never';runtime_status:string|null;last_seen_at:string|null;room_id:string|null;room_name:string|null};
+  connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'superseded'|'never';runtime_status:string|null;last_seen_at:string|null;room_id:string|null;room_name:string|null};
   rooms:Array<{room_id:string;name:string}>|null;
 }
 export interface WorkspaceRoom {room_id:string;name:string;project_id:string;project_name:string;objective?:string}

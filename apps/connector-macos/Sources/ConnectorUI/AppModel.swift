@@ -101,6 +101,17 @@ public final class AppModel {
     /// than a second binding: the old credential goes, and a new one is minted for the new room.
     public func move(to roomId: String) async {
         guard roomId != connector.enrolment?.roomId || connector.enrolment == nil else { return }
+        // A room the agent does not work in would be refused by the workspace after this Mac had
+        // already given up the binding it had. Refusing here costs nothing and loses nothing.
+        guard agentRooms.isEmpty || agentRooms.contains(where: { $0.id == roomId }) else { return }
+        /* Order matters, and this is the order.
+
+           The target is written down first, so a move interrupted anywhere after this point
+           resumes towards the new room rather than falling back to the old one — on the next
+           refresh, on a Gateway reconnect, or after the app is quit and reopened. Signing out
+           then retires the old credential and session before a new one exists, so there is never
+           a moment with two live bindings; the workspace enforces that too, but this Mac should
+           not be relying on being caught. */
         write { $0.roomId = roomId }
         await connector.signOut()
         await bind()
@@ -498,6 +509,7 @@ public final class AppModel {
               let agentPrincipalId = progress.agentPrincipalId,
               let roomId = progress.roomId else { return }
         let room = rooms.first { $0.roomId == roomId }
+        let roomName = room?.name ?? agentRooms.first { $0.id == roomId }?.name
         let label = "\(progress.agentDisplayName ?? "Agent") on \(Host.current().localizedName ?? "this Mac")"
         do {
             let credential = try await client.mintCredential(companyId: company.companyId,
@@ -506,7 +518,7 @@ public final class AppModel {
             try Keychain.saveCredential(credential)
             let enrolment = Keychain.Enrolment(
                 baseURL: workspaceAddress, roomId: roomId,
-                roomName: room?.name, projectName: room?.projectName,
+                roomName: roomName, projectName: room?.projectName,
                 agentPrincipalId: agentPrincipalId, agentDisplayName: progress.agentDisplayName)
             Keychain.saveEnrolment(enrolment)
             connector.enrolment = enrolment

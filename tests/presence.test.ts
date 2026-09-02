@@ -121,3 +121,22 @@ describe('an agent whose session is in another room', () => {
     expect(described.label).toBe('Never connected');
   });
 });
+
+/**
+ * A binding that a newer one replaced.
+ *
+ * Reconnecting supersedes the previous session. That is neither revoked, which a person did, nor
+ * offline, which a network did — and reporting either would send somebody looking for a problem
+ * that does not exist. It has its own word.
+ */
+describe('a superseded session', () => {
+  const base = { principal_id: 'p1', display_name: 'JJ', kind: 'agent' as const,
+                 role: 'worker_agent' as const, responsibilities: '' };
+  const empty = { tasks: [], decisions: [], members: [] };
+
+  it('is named for what happened to it', () => {
+    const described = describePresence({ ...base, agent_presence: 'superseded' }, empty);
+    expect(described.label).toBe('Replaced by a newer connection');
+    expect(described.label).not.toMatch(/revoked|offline/i);
+  });
+});

@@ -5,7 +5,7 @@ export type PresenceTone='live'|'wait'|'idle'|'gone'|'stop';
 
 export interface AgentPresence{
   /** Whether the Gateway can reach it at all, straight from durable session state. */
-  reachable:'connected'|'stale'|'offline'|'revoked'|'never';
+  reachable:'connected'|'stale'|'offline'|'revoked'|'superseded'|'never';
   /** What it is doing, in words a person can act on. */
   label:string;
   tone:PresenceTone;
@@ -34,6 +34,10 @@ export function describePresence(
   const seen=member.agent_last_seen_at??null;
 
   if(reachable==='revoked')return {reachable,label:'Access revoked',tone:'stop',since:seen};
+  /* Replaced by a newer connection from the same runtime — which is what reconnecting looks like
+     from the outside. Not revoked, which a person did, and not offline, which a network did;
+     saying either would be untrue and would send somebody looking for a problem that is not there. */
+  if(reachable==='superseded')return {reachable,label:'Replaced by a newer connection',tone:'wait',since:seen};
   /* Connected, but to a different room. A room-scoped view cannot see that session, so this
      used to read "Never connected" — indistinguishable from a machine that had never appeared,
      and the reason a wrong-room binding looked like a dead agent for hours. */

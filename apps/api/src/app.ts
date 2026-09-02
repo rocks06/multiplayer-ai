@@ -92,7 +92,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const service=new RoomService(pool);
   const agentRuntime=new AgentRuntimeService(pool,service);
   const realtime=new RealtimeHub(pool,service,realtimeOptions);
-  const agentGateway=new AgentGatewayService(pool);
+  const agentGateway=new AgentGatewayService(pool,service);
   app.register(websocket);
   app.setErrorHandler((error,request,reply)=>{ if(error instanceof DomainError) return reply.status(error.statusCode).send({error:{code:error.code,message:error.message,request_id:request.id,details:error.details}}); if(error instanceof z.ZodError) return reply.status(400).send({error:{code:"validation_error",message:"Invalid request",request_id:request.id,details:error.issues}}); request.log.error(error); return reply.status(500).send({error:{code:"internal_error",message:"Internal server error",request_id:request.id}}); });
   /* Liveness: the process is up and answering. Deliberately touches nothing else. */

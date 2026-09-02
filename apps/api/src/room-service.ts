@@ -55,6 +55,29 @@ export class RoomService {
     if(!valid.rowCount)throw new DomainError('stale_agent_run','Agent run lease, generation, status, or membership is no longer valid',409);
   }
 
+  /**
+   * Record something that happened to an agent's connection, in the room it happened to.
+   *
+   * These go in the same log as everything else on purpose. A person watching a room should be
+   * able to see that an agent connected, that a second connection replaced the first, or that it
+   * moved rooms — without reading a server log or inferring it from presence flickering. The
+   * agent is the actor because it is: nobody asked for this on its behalf.
+   *
+   * Facts only. Nothing here estimates progress or predicts a finish, because the system cannot
+   * know either.
+   */
+  async recordAgentEvent(client: DbClient, input: {
+    companyId:string; roomId:string; agentPrincipalId:string; eventType:string; payload:Record<string,unknown>;
+  }) {
+    const actor = await this.actor(client, input.companyId, input.agentPrincipalId);
+    const commandId = uuidv7();
+    await this.appendEvent(client, {
+      companyId: input.companyId, roomId: input.roomId, actor,
+      eventType: input.eventType, entityType: "agent", entityId: input.agentPrincipalId,
+      payload: input.payload, commandId, correlationId: commandId,
+    });
+  }
+
   private async appendEvent(client: DbClient, args: {companyId:string; roomId:string; actor:Actor; eventType:string; entityType:string; entityId:string; entityVersion?:number; payload:unknown; commandId:string; correlationId:string;}) {
     const seqResult = await client.query<{last_event_seq:string}>(`UPDATE rooms SET last_event_seq=last_event_seq+1 WHERE id=$1 AND company_id=$2 RETURNING last_event_seq`, [args.roomId, args.companyId]);
     if (!seqResult.rowCount) throw new DomainError("room_not_found", "Room not found", 404);

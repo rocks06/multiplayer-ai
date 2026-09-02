@@ -76,6 +76,7 @@ export class RealtimeHub {
       listener.removeAllListeners("notification");
       listener.removeAllListeners("error");
       try { await listener.query("UNLISTEN room_events"); } catch {}
+      try { await listener.query("UNLISTEN agent_sessions"); } catch {}
       listener.release();
     }
   }
@@ -133,6 +134,23 @@ export class RealtimeHub {
     }
   }
 
+  /**
+   * A session this one replaced. Close its socket now rather than letting it find out.
+   *
+   * A superseded session still holds an open stream, and until something fails it keeps
+   * acknowledging events as though it were the live one. It would be refused eventually,
+   * but "eventually" is a window in which two sockets both look like the agent. Closing on
+   * the notification makes the handover immediate, and the close code says why, so a
+   * connector can tell being replaced from being shut out.
+   */
+  retire(gatewaySessionId:string, reason:string) {
+    for (const session of [...this.sessions]) {
+      if (session.gatewaySessionId !== gatewaySessionId) continue;
+      this.send(session,{type:"access_revoked",room_id:session.roomId});
+      session.socket.close(4409,reason);
+      this.sessions.delete(session);
+    }
+  }
   wake(companyId:string, roomId:string) {
     for (const session of this.sessions) {
       if (session.companyId === companyId && session.roomId === roomId) void this.pump(session);
@@ -145,10 +163,17 @@ export class RealtimeHub {
       const listener = await this.pool.connect();
       this.listener = listener;
       listener.on("notification", notification => {
-        if (notification.channel !== "room_events" || !notification.payload) return;
+        if (!notification.payload) return;
         try {
-          const wake = JSON.parse(notification.payload) as {company_id:string;room_id:string};
-          this.wake(wake.company_id,wake.room_id);
+          if (notification.channel === "room_events") {
+            const wake = JSON.parse(notification.payload) as {company_id:string;room_id:string};
+            this.wake(wake.company_id,wake.room_id);
+            return;
+          }
+          if (notification.channel === "agent_sessions") {
+            const retired = JSON.parse(notification.payload) as {session_id:string;reason:string};
+            this.retire(retired.session_id, retired.reason);
+          }
         } catch {}
       });
       listener.on("error", () => {
@@ -157,6 +182,7 @@ export class RealtimeHub {
         this.scheduleListenerRetry();
       });
       await listener.query("LISTEN room_events");
+      await listener.query("LISTEN agent_sessions");
     } catch {
       if (this.listener) {
         try { this.listener.release(true); } catch {}
