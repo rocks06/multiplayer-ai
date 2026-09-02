@@ -409,27 +409,50 @@ struct ConnectRuntimeLinkTests {
  */
 @Suite("Whether a discovered runtime can be connected")
 struct RuntimeConnectableTests {
-    private func runtime(available: Bool = true, endpoint: String? = "http://127.0.0.1:8642",
-                         probe: String? = "healthy", externalId: String? = "id-1",
-                         installation: String? = "install-1") -> SidecarState.Runtime {
-        .init(available: available, name: "Hermes Agent", version: "0.19.1", path: nil, reason: nil,
-              runtimeType: "hermes", externalRuntimeId: externalId,
-              connectorInstallationId: installation, endpoint: endpoint,
-              healthEndpoint: endpoint.map { $0 + "/health" }, transport: "http", probeStatus: probe)
+    private func state(_ readiness: String, running: Bool? = nil, reason: String? = nil,
+                       endpoint: String? = "cli:/usr/local/bin/hermes") -> SidecarState.Runtime {
+        .init(available: readiness != "not_installed", name: "Hermes Agent", version: "0.20.5",
+              path: nil, reason: reason, runtimeType: "hermes", externalRuntimeId: "id-1",
+              connectorInstallationId: "install-1", endpoint: endpoint, healthEndpoint: nil,
+              transport: "cli", probeStatus: readiness == "ready" ? "healthy" : "failed",
+              readiness: readiness, serviceRunning: running)
     }
 
-    @Test("a runtime that was found, identified and answered may be connected")
-    func connectable() { #expect(runtime().isConnectable) }
+    /* The six situations a person can actually be in, each said in its own words.
 
-    @Test("anything less may not")
-    func notConnectable() {
-        #expect(runtime(available: false).isConnectable == false)
-        // Installed, but nothing is listening: no endpoint was ever proven.
-        #expect(runtime(endpoint: nil).isConnectable == false)
-        #expect(runtime(probe: "failed").isConnectable == false)
-        // Reachable but anonymous: connecting it could only ever create another duplicate.
-        #expect(runtime(externalId: nil).isConnectable == false)
-        #expect(runtime(installation: nil).isConnectable == false)
+       These were one boolean. A Hermes that was installed but not running, and a Hermes that was
+       running perfectly, produced the same answer — and the connector reported "a binary exists"
+       as healthy, so it enrolled the first one and told its owner everything was fine. */
+    @Test("every state is named truthfully, and only one of them may be connected")
+    func everyState() {
+        #expect(state("ready", running: true).isConnectable)
+        #expect(state("ready", running: true).situation == "Hermes Agent is ready to connect")
+
+        #expect(state("installed_not_running", running: false).isConnectable == false)
+        #expect(state("installed_not_running").situation == "Hermes Agent is installed but not running")
+
+        #expect(state("control_unavailable").isConnectable == false)
+        #expect(state("control_unavailable").situation == "Hermes Agent was found but cannot be controlled")
+
+        #expect(state("unsupported_version").isConnectable == false)
+        #expect(state("unsupported_version").situation == "Hermes Agent is too old for this connector")
+
+        #expect(state("not_installed", endpoint: nil).isConnectable == false)
+        #expect(state("not_installed", endpoint: nil).situation == "Hermes Agent is not installed on this Mac")
     }
+
+    /// A runtime that answers but cannot be identified could only ever create another duplicate.
+    @Test("a ready runtime with no durable identity is still refused")
+    func anonymousIsRefused() {
+        var anonymous = state("ready", running: true)
+        anonymous.externalRuntimeId = nil
+        #expect(anonymous.isConnectable == false)
+        anonymous = state("ready", running: true)
+        anonymous.connectorInstallationId = nil
+        #expect(anonymous.isConnectable == false)
+    }
+
+
+
 }
 }

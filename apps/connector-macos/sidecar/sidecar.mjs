@@ -168,7 +168,12 @@ class Connector {
       transport: detection.transport ?? null,
       processId: detection.processId ?? null,
       configPath: detection.configPath ?? null,
-      probeStatus: detection.available ? 'healthy' : 'failed',
+      readiness: detection.readiness,
+      serviceRunning: detection.serviceRunning ?? null,
+      /* Healthy means the adapter proved it can drive this runtime, and nothing less.
+         It used to mean "a file exists", so an installed-but-unusable Hermes was reported as
+         healthy and enrolled — and the person was told everything was fine while nothing worked. */
+      probeStatus: detection.readiness === 'ready' ? 'healthy' : 'failed',
       reason: detection.reason ?? null,
     };
   }

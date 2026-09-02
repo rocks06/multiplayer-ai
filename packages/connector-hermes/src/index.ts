@@ -84,6 +84,7 @@ export class HermesAdapter implements AgentRuntimeAdapter {
     if (probe.error || probe.status !== 0) {
       return {
         available: false,
+        readiness: "not_installed",
         name: "Hermes Agent",
         reason: `Hermes was not found on this Mac. Install it, or point the connector at its executable.`,
       };
@@ -92,62 +93,99 @@ export class HermesAdapter implements AgentRuntimeAdapter {
     const found = parseVersion(output);
     const path = spawnSync("command", ["-v", this.command], { encoding: "utf8", shell: "/bin/sh" }).stdout?.trim() || this.command;
     if (!found) {
-      return { available: false, name: "Hermes Agent", path, reason: "Hermes responded but its version could not be read." };
+      return { available: false, readiness: "control_unavailable", name: "Hermes Agent", path,
+               reason: "Hermes responded but its version could not be read." };
     }
     const version = found.join(".");
     const minimum = (parseVersion(`v${this.options.minimumVersion ?? DEFAULT_MINIMUM}`) ?? [0, 0, 0]) as readonly number[];
     if (compare(found, minimum) < 0) {
       return {
         available: false,
+        readiness: "unsupported_version",
         name: "Hermes Agent",
         version,
         path,
         reason: `Hermes ${version} is older than the supported minimum ${this.options.minimumVersion ?? DEFAULT_MINIMUM}. Update Hermes and try again.`,
       };
     }
-    const api = await this.discoverApiServer();
+    /* How Hermes is actually driven, and therefore what has to be true before it can be enrolled.
+
+       Work is executed by running `hermes chat` (see `invoke`) — a command, not a request. Hermes
+       exposes no HTTP endpoint for this, and the connector used to go looking for one anyway:
+       reading a port out of config, falling back to a documented-sounding default, and probing
+       /health. On a real installation with the gateway plainly running, that probe found nothing,
+       because there was never anything there to find. The command line is the transport, so the
+       command line is what gets verified. */
+    const control = this.probeControl();
+    if (!control.ok) {
+      return {
+        available: true, readiness: "control_unavailable", name: "Hermes Agent", version, path,
+        transport: "cli", endpoint: `cli:${path}`,
+        reason: control.detail ?? "Hermes is installed but did not answer a status check.",
+      };
+    }
+    const service = this.gatewayState();
     return {
-      available: true, name: "Hermes Agent", version, path,
-      endpoint: api?.endpoint ?? `process://${path}`,
-      healthEndpoint: api?.healthEndpoint,
-      transport: api ? "http" : "process",
-      processId: api?.processId,
-      configPath: api?.configPath,
+      available: true,
+      readiness: service.running ? "ready" : "installed_not_running",
+      name: "Hermes Agent", version, path,
+      transport: "cli",
+      endpoint: `cli:${path}`,
+      serviceRunning: service.running,
+      processId: service.processId,
+      configPath: this.configPath(),
+      ...(service.running ? {} : {
+        reason: "Hermes is installed and answering, but its gateway is not running. Start it with `hermes gateway start`.",
+      }),
     };
   }
 
-  /** Discover Hermes' real endpoint from its own config/process state, then prove it answers. */
-  private async discoverApiServer(): Promise<{endpoint:string;healthEndpoint:string;processId?:number;configPath?:string}|null> {
-    const home=process.env.HERMES_HOME ?? path.join(process.env.HOME ?? "", ".hermes");
-    const configPath=path.join(home,"config.yaml"),envPath=path.join(home,".env");
-    let port=Number(process.env.API_SERVER_PORT ?? "");
-    if(!Number.isInteger(port)||port<1||port>65535){
-      try { const match=fs.readFileSync(envPath,"utf8").match(/^API_SERVER_PORT\s*=\s*["']?(\d+)/m); port=Number(match?.[1]??0); } catch {}
+  /**
+   * Whether this connector can drive the Hermes it just found.
+   *
+   * `hermes status` is Hermes' own health command and costs nothing. It is a far better question
+   * than "does a file exist": a broken install, a half-finished upgrade or a runtime whose
+   * environment is wrong all answer the version flag perfectly well and then cannot do any work.
+   */
+  private probeControl(): { ok: boolean; detail?: string } {
+    const probe = spawnSync(this.command, ["status"], { encoding: "utf8", timeout: 20_000 });
+    if (probe.error) return { ok: false, detail: `Hermes could not be run: ${probe.error.message}` };
+    if (probe.status !== 0) {
+      const said = `${probe.stdout ?? ""}${probe.stderr ?? ""}`.trim().split("\n").at(-1);
+      return { ok: false, detail: said ? `Hermes status reported: ${said}` : "Hermes status exited non-zero." };
     }
-    if(!Number.isInteger(port)||port<1||port>65535){
-      try {
-        const text=fs.readFileSync(configPath,"utf8");
-        const block=text.match(/api_server:\s*[\s\S]{0,800}?(?=\n\S|$)/)?.[0];
-        port=Number(block?.match(/(?:^|\n)\s*port:\s*(\d+)/)?.[1]??0);
-      } catch {}
-    }
-    const processProbe=spawnSync("pgrep",["-f","hermes.*(?:gateway|api_server)|gateway.*hermes"],{encoding:"utf8"});
-    const processId=Number(processProbe.stdout?.trim().split(/\s+/)[0]??0)||undefined;
-    // Hermes documents 8642 as the default API server port. It is only tried when an actual
-    // Hermes service process was found, and never reported unless the health endpoint answers.
-    if((!Number.isInteger(port)||port<1||port>65535)&&processId)port=8642;
-    if(!Number.isInteger(port)||port<1||port>65535)return null;
-    const endpoint=`http://127.0.0.1:${port}`;
-    try {
-      const response=await fetch(`${endpoint}/health`,{signal:AbortSignal.timeout(1200)});
-      if(!response.ok)return null;
-      return {endpoint,healthEndpoint:`${endpoint}/health`,processId,configPath:fs.existsSync(configPath)?configPath:undefined};
-    } catch { return null; }
+    return { ok: true };
   }
 
+  /**
+   * Whether Hermes' own gateway is up.
+   *
+   * Asked of Hermes rather than inferred from a process listing, because the shape of that listing
+   * is not a contract — the gateway runs as a Python module, and pattern-matching somebody's
+   * command line is a guess that breaks the day the launcher changes. A process id is still read
+   * where one is plainly there, but only as detail to show, never as the answer.
+   */
+  private gatewayState(): { running: boolean; processId?: number } {
+    const probe = spawnSync(this.command, ["gateway", "status"], { encoding: "utf8", timeout: 20_000 });
+    const said = `${probe.stdout ?? ""}${probe.stderr ?? ""}`;
+    const running = !probe.error && probe.status === 0 && !/not running|stopped|inactive/i.test(said);
+    const listed = spawnSync("pgrep", ["-f", "hermes.*gateway|gateway.*hermes"], { encoding: "utf8" });
+    const processId = Number(listed.stdout?.trim().split(/\s+/)[0] ?? 0) || undefined;
+    return { running: running || Boolean(processId && /running|active/i.test(said)), processId };
+  }
+
+  /** Where Hermes keeps its configuration, shown as detail when it exists. */
+  private configPath(): string | undefined {
+    const home = process.env.HERMES_HOME ?? path.join(process.env.HOME ?? "", ".hermes");
+    const file = path.join(home, "config.yaml");
+    return fs.existsSync(file) ? file : undefined;
+  }
+
+
+  /** Healthy means drivable, not merely present — the distinction this whole slice turns on. */
   async health(): Promise<RuntimeHealth> {
     const detection = await this.detect();
-    return detection.available
+    return detection.readiness === "ready"
       ? { ok: true, detail: `${detection.name} ${detection.version} · ${detection.endpoint}` }
       : { ok: false, detail: detection.reason };
   }

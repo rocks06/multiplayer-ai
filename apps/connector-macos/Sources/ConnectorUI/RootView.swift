@@ -41,6 +41,7 @@ public struct RootView: View {
                 if !app.moveTargets.isEmpty && !app.movePromptDismissed {
                     RoomBindingNotice(app: app)
                 }
+                if let runtime = app.detectedRuntime { DetectedRuntimeNotice(app: app, runtime: runtime) }
             }
         }
         .frame(minWidth: 720, minHeight: 560)
@@ -150,3 +151,52 @@ struct RoomBindingNotice: View {
     }
 }
 
+/// What detection found on this Mac, stated before anything is created from it.
+///
+/// Connecting used to happen the moment something was found, so an agent identity could be minted
+/// for a runtime that was installed but not running — and the person was told it was healthy.
+/// Every state the adapter can report is named here in its own words, and only one of them offers
+/// a button that creates anything.
+struct DetectedRuntimeNotice: View {
+    @Bindable var app: AppModel
+    let runtime: SidecarState.Runtime
+
+    var body: some View {
+        HStack(spacing: 11) {
+            StateDot(tone: runtime.isConnectable ? .good : .stopped)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(runtime.situation)
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.ink)
+                // The facts it was judged on, so the verdict can be checked rather than trusted.
+                Text(detail).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 16)
+            if runtime.isConnectable {
+                Button("Connect") { Task { await app.confirmRuntimeConnection() } }
+                    .buttonStyle(.borderless).font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Palette.ink).disabled(app.busy)
+            } else {
+                Button("Check again") { Task { await app.detectRuntime() } }
+                    .buttonStyle(.borderless).font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Palette.ink).disabled(app.busy)
+            }
+            Button("Not now") { app.detectedRuntime = nil }
+                .buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Palette.muted)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 1) }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detail: String {
+        var parts: [String] = []
+        if let version = runtime.version { parts.append("version \(version)") }
+        if let endpoint = runtime.endpoint { parts.append(endpoint) }
+        if runtime.serviceRunning == true { parts.append("gateway running") }
+        if let reason = runtime.reason, !runtime.isConnectable { return reason }
+        return parts.isEmpty ? "Nothing further is known about it." : parts.joined(separator: " · ")
+    }
+}

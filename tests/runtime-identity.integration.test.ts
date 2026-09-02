@@ -122,6 +122,49 @@ describe("one agent principal per physical runtime", () => {
     expect(live.rows[0].n).toBe(0);
   });
 
+  /**
+   * The connector is reinstalled; the machine is not.
+   *
+   * A connector installation id changes when the app is replaced, and the runtime id does not —
+   * it is kept outside any build-specific directory for exactly this reason. Treating the
+   * connector as the identity would mint a fresh agent every time the app was updated.
+   */
+  it("reuses the principal when the connector is reinstalled on the same runtime", async () => {
+    const me = await signedInUser();
+    const company = await workspace(me.cookie);
+    const before = await connect(company.company_id, me.cookie, { name: "JJ", ...hermes });
+
+    const after = await connect(company.company_id, me.cookie, {
+      name: "JJ", ...hermes,
+      connector_installation_id: "01a06020-0000-7000-8000-00000000dddd",
+    });
+    expect(after.json().reused).toBe(true);
+    expect(after.json().principal_id).toBe(before.json().principal_id);
+    expect((await call("GET", `/v1/companies/${company.company_id}/agents`, undefined, { cookie: me.cookie })).json().agents).toHaveLength(1);
+  });
+
+  /**
+   * A stale bridge left running from an earlier test must not become a second agent.
+   *
+   * The Air still had an old bridge process running against a previous identity file. Nothing
+   * about it — its process, its arguments, the identity file it was started with — takes part in
+   * deciding who this runtime is, so connecting while it runs changes nothing.
+   */
+  it("is unmoved by whatever else is running on the machine", async () => {
+    const me = await signedInUser();
+    const company = await workspace(me.cookie);
+    const first = await connect(company.company_id, me.cookie, { name: "JJ", ...hermes });
+    // Same runtime, different endpoint string and a different name, as a restart may well report.
+    const again = await connect(company.company_id, me.cookie, {
+      name: "JJ (bridge)", ...hermes, endpoint: "cli:/opt/elsewhere/hermes",
+    });
+    expect(again.json().reused).toBe(true);
+    expect(again.json().principal_id).toBe(first.json().principal_id);
+    const principals = await pool.query(
+      `SELECT count(*)::int n FROM principals WHERE company_id=$1 AND kind='agent'`, [company.company_id]);
+    expect(principals.rows[0].n).toBe(1);
+  });
+
   it("reports the runtime it knows about beside the agent", async () => {
     const me = await signedInUser();
     const company = await workspace(me.cookie);

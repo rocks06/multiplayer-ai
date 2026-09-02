@@ -409,33 +409,58 @@ public final class AppModel {
      * found, identified, and answered a health check — an agent identity minted for a runtime that
      * turns out not to be running is exactly the junk this is meant to stop.
      */
-    public func connectRuntime(createAsNew: Bool = false) async {
-        guard let company else { problem = .init(code: "signed_out",
-            message: "Sign in on this Mac before connecting its runtime.", status: 0,
-            recovery: "Open Multiplayer AI, sign in, and try again."); return }
+    /// What detection found, held so a person can look at it before anything is created.
+    public var detectedRuntime: SidecarState.Runtime?
+
+    /**
+     * Look at what is on this Mac. Creates nothing.
+     *
+     * Detection and enrolment were one step, so clicking Connect existing agent minted an agent
+     * identity for whatever was found — including a Hermes that was installed but not running,
+     * because "a binary exists" was being reported as healthy. Now this only looks, and says what
+     * it saw; nothing is created until a person has read it and agreed.
+     */
+    public func detectRuntime() async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-
+        problem = nil
         connector.begin()
         await connector.sidecar.refresh()
-        let runtime = connector.sidecar.state.runtime
-        guard runtime.isConnectable else {
-            problem = .init(code: "runtime_unreachable",
-                message: runtime.reason ?? "\(runtime.name) is not answering on this Mac.",
-                status: 0,
-                recovery: "Start it, then choose Connect existing agent again.")
+        detectedRuntime = connector.sidecar.state.runtime
+    }
+
+    /**
+     * Bind this Mac to the runtime that was detected, after the person has agreed to it.
+     *
+     * The workspace decides which agent this runtime is. A runtime that has connected before keeps
+     * the principal it already had, whatever it is now called and whichever room it works in — so
+     * a reinstall, a restart, or a stale bridge left running from an earlier test cannot turn one
+     * machine into a second agent.
+     */
+    public func confirmRuntimeConnection(createAsNew: Bool = false) async {
+        guard let company else { problem = .init(code: "signed_out",
+            message: "Sign in on this Mac before connecting its runtime.", status: 0,
+            recovery: "Open Multiplayer AI, sign in, and try again."); return }
+        guard let runtime = detectedRuntime ?? connector.sidecar.state.runtime as SidecarState.Runtime?,
+              runtime.isConnectable else {
+            let found = detectedRuntime ?? connector.sidecar.state.runtime
+            problem = .init(code: "runtime_not_ready", message: found.situation, status: 0,
+                            recovery: found.reason ?? "Start the runtime, then detect it again.")
             return
         }
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
         do {
             let connected = try await client.connectRuntime(
                 companyId: company.companyId,
                 name: progress.agentDisplayName ?? runtime.name,
                 runtime: runtime, createAsNew: createAsNew)
-            // The workspace decides which agent this runtime is; this Mac records the answer.
             write { $0.agentPrincipalId = connected.principalId
                     $0.agentDisplayName = connected.displayName }
             problem = nil
+            detectedRuntime = nil
             await refresh()
         } catch let error as WorkspaceError { problem = error }
         catch { problem = .init(code: "runtime_connect", message: "That did not work.", status: 0,
@@ -445,7 +470,8 @@ public final class AppModel {
     public func receive(authURL raw: String) async {
         if AppModel.isConnectRuntime(raw) {
             guard initialized else { queuedAuthURL = raw; return }
-            return await connectRuntime()
+            // Looking, not creating. Enrolment waits for the person to see what was found.
+            return await detectRuntime()
         }
         /* Recorded because the alternative is guessing. When a sign-in link does not work, the
            first question is whether the app was ever handed it, and that is otherwise invisible
@@ -463,7 +489,7 @@ public final class AppModel {
     private func spendQueuedAuthURL() async {
         guard let waiting = queuedAuthURL else { return }
         queuedAuthURL = nil
-        if AppModel.isConnectRuntime(waiting) { return await connectRuntime() }
+        if AppModel.isConnectRuntime(waiting) { return await detectRuntime() }
         await redeem(waiting)
     }
 

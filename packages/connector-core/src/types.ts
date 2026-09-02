@@ -75,18 +75,48 @@ export interface AgentInvocation {
   logPath: string;
 }
 
+/**
+ * How far along a runtime is, said plainly.
+ *
+ * "Available" was one boolean doing the work of six different situations, and the connector then
+ * reported "a binary exists" as "healthy". A person whose Hermes was installed but unusable was
+ * told it was ready, and a person whose Hermes was running perfectly was told nothing useful at
+ * all. Each of these is a different sentence and a different next step.
+ */
+export type RuntimeReadiness =
+  /** Nothing that answers is installed anywhere this adapter looks. */
+  | "not_installed"
+  /** Found, but older than this connector can drive. */
+  | "unsupported_version"
+  /** Installed and answering, but its background service is not running. */
+  | "installed_not_running"
+  /** Found and answering, but the way this connector drives it does not work. */
+  | "control_unavailable"
+  /** Installed, answering, and controllable. The only state that may be enrolled. */
+  | "ready";
+
 export interface RuntimeDetection {
+  /** Kept as the shorthand for "found at all"; `readiness` is what decisions are made on. */
   available: boolean;
+  readiness: RuntimeReadiness;
   name: string;
   version?: string;
   path?: string;
-  /** The real transport the connector will use; never a guessed display-only port. */
+  /**
+   * How this connector actually reaches the runtime — verified, never assumed.
+   *
+   * For a runtime driven through its command line this is that command, because that is genuinely
+   * the transport. Inventing an http://127.0.0.1:port for something that speaks no HTTP is how a
+   * runtime that was working fine came to look unreachable.
+   */
   endpoint?: string;
   healthEndpoint?: string;
-  transport?: "process" | "http" | "socket";
+  transport?: "process" | "http" | "socket" | "cli";
   processId?: number;
   configPath?: string;
-  /** Why it is unavailable, phrased for a person to act on. */
+  /** Whether the runtime's own background service is up, where it has one. */
+  serviceRunning?: boolean;
+  /** Why it is not ready, phrased for a person to act on. */
   reason?: string;
 }
 

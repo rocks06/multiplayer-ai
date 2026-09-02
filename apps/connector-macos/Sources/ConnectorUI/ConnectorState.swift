@@ -21,21 +21,43 @@ public struct SidecarState: Decodable, Equatable, Sendable {
         public var healthEndpoint: String?
         public var transport: String?
         public var probeStatus: String?
+        /// How far along the runtime is, in the adapter's own words. See RuntimeReadiness.
+        public var readiness: String?
+        public var serviceRunning: Bool?
         public init(available: Bool, name: String, version: String? = nil, path: String? = nil, reason: String? = nil,
                     runtimeType: String? = nil, externalRuntimeId: String? = nil,
                     connectorInstallationId: String? = nil, endpoint: String? = nil,
-                    healthEndpoint: String? = nil, transport: String? = nil, probeStatus: String? = nil) {
+                    healthEndpoint: String? = nil, transport: String? = nil, probeStatus: String? = nil,
+                    readiness: String? = nil, serviceRunning: Bool? = nil) {
             self.available = available; self.name = name; self.version = version
             self.path = path; self.reason = reason
             self.runtimeType = runtimeType; self.externalRuntimeId = externalRuntimeId
             self.connectorInstallationId = connectorInstallationId; self.endpoint = endpoint
             self.healthEndpoint = healthEndpoint; self.transport = transport; self.probeStatus = probeStatus
+            self.readiness = readiness; self.serviceRunning = serviceRunning
         }
 
-        /// Whether this is a runtime we may actually bind to: found, identified, and answering.
+        /// Whether this is a runtime we may actually bind to.
+        ///
+        /// Only `ready` qualifies. Installed-but-not-running and found-but-not-controllable are
+        /// both real, common, and emphatically not connectable — enrolling either mints an agent
+        /// identity for something that cannot do any work.
         public var isConnectable: Bool {
-            available && endpoint != nil && probeStatus == "healthy"
+            readiness == "ready" && endpoint != nil
                 && externalRuntimeId != nil && connectorInstallationId != nil
+        }
+
+        /// What to tell the person, for every state the adapter can report. Never "healthy"
+        /// because a file happened to exist.
+        public var situation: String {
+            switch readiness {
+            case "ready": return "\(name) is ready to connect"
+            case "installed_not_running": return "\(name) is installed but not running"
+            case "control_unavailable": return "\(name) was found but cannot be controlled"
+            case "unsupported_version": return "\(name) is too old for this connector"
+            case "not_installed": return "\(name) is not installed on this Mac"
+            default: return reason ?? "\(name) could not be checked"
+            }
         }
     }
     public struct Sync: Decodable, Equatable, Sendable {
