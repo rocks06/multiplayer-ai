@@ -72,6 +72,11 @@ public struct WorkspaceAlert: Equatable, Sendable {
         case .reconnecting:
             return .init(title: "Reconnecting", detail: "Picking up where your agent left off.",
                          tone: .working, offersReconnect: false)
+        // Replaced by a newer connection for the same agent — ordinarily this Mac itself, moments
+        // ago. It resolves on its own, so it reads as reconnecting and offers nothing to press.
+        case .replaced:
+            return .init(title: "Reconnecting", detail: "Your agent came back on a newer connection.",
+                         tone: .working, offersReconnect: false)
         case .offline:
             return .init(title: "Your agent is offline",
                          detail: "It is not running on this Mac right now. Nothing it had done is lost.",

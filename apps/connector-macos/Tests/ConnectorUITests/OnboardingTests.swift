@@ -289,4 +289,62 @@ import Foundation
         await app.refresh()
         #expect(app.progress.roomId == "roomr")
     }
+
+/**
+ * When binding may mint a credential, and when it must not.
+ *
+ * Minting retires the credential before it, so binding a Mac that is already bound destroys the
+ * binding that works. `move` calls `bind`, and the binding screen it lands on calls `bind` again
+ * from its `.task`: two credentials in the same instant, the second retiring the first, and the
+ * running agent left holding a key the workspace had already replaced. That is what a Mac that
+ * connected, worked for a few seconds, and then announced its access had been removed was doing.
+ */
+@Suite("Whether binding mints a new credential")
+struct BindDecisionTests {
+    private func enrolment(room: String = "room-1", agent: String = "jj") -> Keychain.Enrolment {
+        .init(baseURL: "http://example.test", roomId: room, roomName: "TESTING #1",
+              projectName: nil, agentPrincipalId: agent, agentDisplayName: "JJ")
+    }
+
+    @Test("a Mac already bound to this room and agent mints nothing")
+    func alreadyBound() {
+        #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-1", agentPrincipalId: "jj",
+                                    hasCredential: true, credentialProblem: nil, gateway: "live") == false)
+    }
+
+    @Test("a Mac with no binding, or no credential to present, mints one")
+    func nothingToKeep() {
+        #expect(AppModel.shouldMint(existing: nil, roomId: "room-1", agentPrincipalId: "jj",
+                                    hasCredential: false, credentialProblem: nil, gateway: nil))
+        #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-1", agentPrincipalId: "jj",
+                                    hasCredential: false, credentialProblem: nil, gateway: "live"))
+    }
+
+    @Test("moving to another room, or becoming another agent, mints one")
+    func aDifferentJob() {
+        #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-2", agentPrincipalId: "jj",
+                                    hasCredential: true, credentialProblem: nil, gateway: "live"))
+        #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-1", agentPrincipalId: "coleman",
+                                    hasCredential: true, credentialProblem: nil, gateway: "live"))
+    }
+
+    /// Otherwise a Mac whose credential another machine replaced could never mint a new one, and
+    /// "Try again" would quietly do nothing however often it was pressed.
+    @Test("a binding the workspace is refusing is replaced rather than kept")
+    func refusedBindingIsReplaced() {
+        #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-1", agentPrincipalId: "jj",
+                                    hasCredential: true, credentialProblem: nil, gateway: "auth_required"))
+        #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-1", agentPrincipalId: "jj",
+                                    hasCredential: true, credentialProblem: .missing, gateway: "live"))
+    }
+
+    /// Being replaced resolves itself — the sidecar restarts with the newer credential — so it is
+    /// emphatically not a reason to mint another one and replace something all over again.
+    @Test("being superseded does not mint another credential")
+    func supersededDoesNotMint() {
+        #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-1", agentPrincipalId: "jj",
+                                    hasCredential: true, credentialProblem: nil,
+                                    gateway: "superseded") == false)
+    }
+}
 }

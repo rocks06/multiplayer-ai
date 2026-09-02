@@ -146,7 +146,11 @@ export class RealtimeHub {
   retire(gatewaySessionId:string, reason:string) {
     for (const session of [...this.sessions]) {
       if (session.gatewaySessionId !== gatewaySessionId) continue;
-      this.send(session,{type:"access_revoked",room_id:session.roomId});
+      /* Say which of the two this is. Both used to send access_revoked, so a Mac that had just
+         rebound itself was told its access had been removed and asked for a new code — while the
+         room went on showing it connected. Supersession is ordinary and recoverable; revocation
+         is not, and only one of them should ever reach a person. */
+      this.send(session,{type:"session_superseded",room_id:session.roomId,reason});
       session.socket.close(4409,reason);
       this.sessions.delete(session);
     }

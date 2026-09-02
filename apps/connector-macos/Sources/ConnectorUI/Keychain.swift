@@ -59,6 +59,9 @@ public enum Keychain {
         case found(String)
         case missing                 // nothing is stored under this service and account
         case unreadable(OSStatus)    // something is stored, and this build cannot read it
+
+        /// Whether a credential can actually be presented, without unwrapping the secret to ask.
+        public var isFound: Bool { if case .found = self { return true }; return false }
     }
 
     /// Turning what the Keychain returned into one of those three. Split out from the lookup

@@ -272,6 +272,27 @@ describe("Agent Gateway v1",()=>{
   c.close();
  });
 
+ /**
+  * Being replaced must not be reported as being shut out.
+  *
+  * Both used to send `access_revoked`, which the runtime treats as terminal and the supervisor
+  * classified by searching the message for "revoked". So a Mac that had just re-bound itself told
+  * its owner that its access had been removed and asked for a new enrollment code — while the room
+  * went on showing the agent connected. One frame, two entirely different situations.
+  */
+ it("tells a replaced session it was replaced, not that its access was revoked",async()=>{
+  const f=await companyFixture(),a=await agent(f,"JJ","jj");
+  const first=await external(a,f.room.id);await first.connect(0);
+  // The same agent comes back on a newer connection, which is what a rebind looks like.
+  const second=await external(a,f.room.id);await second.connect(0);
+
+  const frame=await first.waitFor(frame=>frame.type==="session_superseded"||frame.type==="access_revoked");
+  expect(frame.type).toBe("session_superseded");
+  expect(frame.reason).toBe("superseded");
+  // And the newer one is untouched.
+  expect((await second.heartbeat("working")).status).toBe(200);
+ });
+
  it("forces stale and slow clients to resynchronize instead of dropping or reordering events",async()=>{
   await app.close();await start({maxReplayEvents:1,maxUnackedEvents:1,pollIntervalMs:15});const f=await companyFixture(),a=await agent(f,"Slow AI","slow");const c=await external(a,f.room.id);
   await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"one"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-one"});await post(`/v1/companies/${f.company.id}/rooms/${f.room.id}/messages`,{body:"two"},{"x-principal-id":f.owner.principal_id,"idempotency-key":"pre-two"});

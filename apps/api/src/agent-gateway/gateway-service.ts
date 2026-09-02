@@ -38,6 +38,33 @@ export class AgentGatewayService {
     return token;
   }
 
+  /**
+   * Retire the sessions a replaced credential was running, in the transaction that replaced it.
+   *
+   * `authenticateSession` requires the owning credential to be active, so the instant a credential
+   * is superseded every session it opened is refused — but the rows still said 'connected'. Home
+   * went on reporting a working agent that could not make a single authenticated call, which is
+   * the disagreement between the room and the Mac that made this look like two separate faults.
+   * The session ends when the credential ends, and everyone hears about it at once.
+   */
+  private async retireSessionsOfReplacedCredential(
+    c:{query:DbPool["query"]}, companyId:string, agentPrincipalId:string, replacedBy:string,
+  ) {
+    const retired=await c.query<{id:string;room_id:string}>(
+      `UPDATE external_agent_sessions SET status='superseded',disconnected_at=now(),last_seen_at=now()
+       WHERE company_id=$1 AND agent_principal_id=$2 AND status='connected' RETURNING id,room_id`,
+      [companyId,agentPrincipalId]);
+    for(const row of retired.rows){
+      // Being replaced is not being shut out, and the reason travels so the connector can tell.
+      await c.query(`SELECT pg_notify('agent_sessions',$1)`,
+        [JSON.stringify({session_id:row.id,reason:"credential_replaced"})]);
+      if(this.rooms) await this.rooms.recordAgentEvent(c,{companyId,roomId:row.room_id,
+        agentPrincipalId,eventType:"agent.session.superseded",
+        payload:{session_id:row.id,reason:"credential_replaced",credential_id:replacedBy}});
+    }
+    return retired.rows;
+  }
+
   async createCredential(input:{companyId:string;actorId:string;agentPrincipalId:string;label:string}) {
     const c=await this.pool.connect();
     try {
@@ -57,6 +84,7 @@ export class AgentGatewayService {
         [input.companyId,input.agentPrincipalId]);
       const id=uuidv7(),token=secret("magc");
       await c.query(`INSERT INTO external_agent_credentials(id,company_id,agent_principal_id,token_hash,token_prefix,label,created_by_principal_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,[id,input.companyId,input.agentPrincipalId,hash(token),token.slice(0,12),input.label,input.actorId]);
+      await this.retireSessionsOfReplacedCredential(c,input.companyId,input.agentPrincipalId,id);
       await c.query("COMMIT");
       return {id,company_id:input.companyId,agent_principal_id:input.agentPrincipalId,label:input.label,credential_token:token};
     } catch(e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
@@ -135,6 +163,7 @@ export class AgentGatewayService {
       const label=input.deviceLabel?`${token.label} (${input.deviceLabel})`:token.label;
       await c.query(`INSERT INTO external_agent_credentials(id,company_id,agent_principal_id,token_hash,token_prefix,label,created_by_principal_id) SELECT $1,$2,$3,$4,$5,$6,created_by_principal_id FROM agent_enrollment_tokens WHERE id=$7`,[credentialId,token.company_id,token.agent_principal_id,hash(credential),credential.slice(0,12),label,token.id]);
       await c.query(`UPDATE agent_enrollment_tokens SET status='consumed',consumed_at=now(),device_label=$2,credential_id=$3 WHERE id=$1`,[token.id,input.deviceLabel??null,credentialId]);
+      await this.retireSessionsOfReplacedCredential(c,token.company_id,token.agent_principal_id,credentialId);
       const name=await c.query<{display_name:string}>(`SELECT display_name FROM principals WHERE company_id=$1 AND id=$2`,[token.company_id,token.agent_principal_id]);
       await c.query("COMMIT");
       return {protocol:"agent-gateway.v1",credential_id:credentialId,credential_token:credential,company_id:token.company_id,agent_principal_id:token.agent_principal_id,agent_display_name:name.rows[0]?.display_name??null,rooms:rooms.rows};

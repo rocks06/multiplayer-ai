@@ -10,4 +10,4 @@ export {
   type RelevanceLookups,
 } from "./relevance.js";
 export { WORKFLOW_STEPS, taskStepKey, type WorkflowStep } from "./idempotency.js";
-export { ConnectorRuntime, type ConnectorRuntimeOptions } from "./runtime.js";
+export { ConnectorRuntime, needsRestart, type ConnectorRuntimeOptions } from "./runtime.js";

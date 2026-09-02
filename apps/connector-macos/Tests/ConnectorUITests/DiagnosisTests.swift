@@ -29,6 +29,27 @@ struct DiagnosisTests {
         #expect(Diagnosis.health(of: state()) == .connected)
     }
 
+    /* Being replaced is not being locked out, and only one of them should reach a person.
+
+       The Mac reported "Sign-in needed — this Mac's access was removed or expired. Sign out and
+       enter a new code from your workspace" seconds after connecting, because its own rebind had
+       replaced it and nothing could tell the two apart. Nothing had been removed; no code was
+       needed; and the room went on showing the agent working the whole time. */
+    @Test("being replaced by a newer connection is not a sign-in problem")
+    func replaced() {
+        let superseded = state(gateway: "superseded", running: false)
+        #expect(Diagnosis.health(of: superseded) == .replaced)
+        #expect(Diagnosis.health(of: superseded).title == "Reconnecting")
+        #expect(Diagnosis.workspaceDetail(superseded) == "Reconnecting")
+    }
+
+    /// A credential the workspace genuinely refuses still says so, or the real fault would hide
+    /// behind the calmer one.
+    @Test("a refused credential still asks for a sign-in")
+    func refusedCredentialStillAsks() {
+        #expect(Diagnosis.health(of: state(gateway: "auth_required", running: false)) == .authRequired)
+    }
+
     @Test("a live connection with no runtime is not called connected")
     func liveButNoRuntime() {
         // The workspace row still says Connected, because it is — but the headline may not,

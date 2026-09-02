@@ -33,6 +33,10 @@ const isTerminal = (error: unknown) =>
   message(error).includes("Gateway access revoked") ||
   ((error as any)?.status === 401 && (error as any)?.body?.error?.code === "gateway_unauthenticated");
 
+/** Terminal says stop; this says what to tell the person, and they are different questions. */
+const terminalReason = (error: unknown): "unauthenticated" | "superseded" =>
+  (error as any)?.reason === "superseded" ? "superseded" : "unauthenticated";
+
 const isSessionRejected = (error: unknown) =>
   (error as any)?.body?.error?.code === "gateway_session_invalid" ||
   message(error).includes("gateway_session_invalid");
@@ -120,7 +124,17 @@ export class EventStream {
               if (frame.type === "resync_required") { this.callbacks.onResync(); socket.close(); return; }
               if (frame.type === "access_revoked") {
                 this.callbacks.onConnectionState("access_revoked");
-                reject(new GatewayError("Gateway access revoked", undefined, undefined, true));
+                reject(new GatewayError("Gateway access revoked", undefined, undefined, true, "unauthenticated"));
+                return;
+              }
+              /* This agent came back on a newer connection, so this one stands down. Ending the
+                 loop is right — one runtime is one agent — but it is not an authentication
+                 failure, and the person must not be asked for a new enrollment code because their
+                 own Mac reconnected. */
+              if (frame.type === "session_superseded") {
+                this.callbacks.onConnectionState("superseded");
+                reject(new GatewayError("Replaced by a newer connection for this agent",
+                                        undefined, undefined, true, "superseded"));
                 return;
               }
               if (frame.type === "protocol_error") reject(new GatewayError(`Gateway protocol error: ${frame.code}`));
@@ -130,6 +144,13 @@ export class EventStream {
           socket.once("error", reject);
         });
 
+        // Superseded can arrive as a bare close if the frame is lost in the teardown, and a
+        // reconnect here would open a second session and retire the one that just replaced us.
+        if (closure && closure.code === 4409) {
+          this.callbacks.onConnectionState("superseded");
+          throw new GatewayError("Replaced by a newer connection for this agent",
+                                 undefined, undefined, true, "superseded");
+        }
         // A rejected subscription can close before, or instead of, delivering protocol_error,
         // so the close code is authoritative for "this session is unusable".
         if (closure && (closure.code === 4401 || closure.code === 4403)) {
@@ -140,7 +161,11 @@ export class EventStream {
       } catch (error) {
         this.callbacks.onConnectionState("reconnecting");
         this.callbacks.onError(message(error));
-        if (isTerminal(error)) throw error;
+        if (isTerminal(error)) {
+          // Carry the reason out with the error, so the supervisor never has to read the message.
+          if (!(error as any)?.reason) (error as any).reason = terminalReason(error);
+          throw error;
+        }
         // Retrying a session id the Gateway no longer accepts can never succeed.
         if (isSessionRejected(error)) this.client.clearSession();
         connectDelay = Math.min(connectDelay * 2, ceiling);

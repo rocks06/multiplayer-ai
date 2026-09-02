@@ -204,3 +204,22 @@ export class ConnectorRuntime {
     this.save();
   }
 }
+
+/**
+ * Whether a new configuration means the running runtime must be torn down and started again.
+ *
+ * A different room or a different agent is plainly a different job. A different *credential* is
+ * one too, and that was the part missed: minting a credential retires the one before it, while a
+ * runtime already started holds its own copy of the old config — so re-binding in the same room
+ * left it authenticating forever with a key the workspace had just replaced. On a real Mac that
+ * looked like the agent connecting, working for a few seconds, and then losing its access.
+ */
+export function needsRestart(
+  current: { roomId: string; agentPrincipalId: string; credential: string } | null | undefined,
+  next: { roomId: string; agentPrincipalId: string; credential: string },
+): boolean {
+  if (!current) return false;   // nothing is running yet; there is nothing to tear down
+  return current.roomId !== next.roomId
+    || current.agentPrincipalId !== next.agentPrincipalId
+    || current.credential !== next.credential;
+}

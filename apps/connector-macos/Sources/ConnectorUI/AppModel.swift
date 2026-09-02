@@ -504,10 +504,53 @@ public final class AppModel {
     /// machine the agent runs on, so the app asks the workspace for this agent's credential
     /// directly and puts it in the Keychain. An enrollment code exists for the case this is not
     /// — a Mac nobody is signed in on — and stays available for exactly that.
+    /// Whether binding has to mint a new credential, or whether this Mac already holds the one
+    /// it needs. Pure, so the rule that cost a working binding can be stated and checked without
+    /// a Keychain, a workspace, or a Mac.
+    nonisolated public static func shouldMint(existing: Keychain.Enrolment?, roomId: String,
+                                              agentPrincipalId: String, hasCredential: Bool,
+                                              credentialProblem: CredentialProblem?,
+                                              gateway: String?) -> Bool {
+        guard let existing, existing.roomId == roomId,
+              existing.agentPrincipalId == agentPrincipalId, hasCredential else { return true }
+        // A binding the workspace is refusing is not one worth keeping. Without this, a Mac whose
+        // credential another machine had replaced could never mint a new one, and "Try again"
+        // would quietly do nothing for as long as anyone kept pressing it.
+        return credentialProblem != nil || gateway == "auth_required"
+    }
+
+    /// One mint at a time. Concurrent callers are not a hypothetical: a move and the screen it
+    /// lands on both ask to bind, within the same run loop turn.
+    private var binding = false
+
     public func bind() async {
         guard let company,
               let agentPrincipalId = progress.agentPrincipalId,
               let roomId = progress.roomId else { return }
+
+        /* Binding twice is what broke this Mac.
+
+           Minting a credential retires the one before it, so calling this while already bound
+           kills the binding that is working. And it was called freely: `move` calls it, and then
+           the binding screen it lands on calls it again from `.task` — two credentials in the
+           same instant, the second retiring the first, and the runtime left holding a key the
+           workspace had already replaced. A Mac that connected, worked, and then reported that
+           its access had been removed was watching itself do this.
+
+           So a Mac that already holds this exact binding, and is not being refused for it, mints
+           nothing: it makes sure the runtime is up and returns, which is all the callers wanted. */
+        if !AppModel.shouldMint(existing: connector.enrolment, roomId: roomId,
+                                agentPrincipalId: agentPrincipalId,
+                                hasCredential: Keychain.readCredential().isFound,
+                                credentialProblem: connector.sidecar.credentialProblem,
+                                gateway: connector.sidecar.state.gateway) {
+            connector.begin()
+            await connector.sidecar.resumeSession()
+            return
+        }
+        guard !binding else { return }
+        binding = true
+        defer { binding = false }
         let room = rooms.first { $0.roomId == roomId }
         let roomName = room?.name ?? agentRooms.first { $0.id == roomId }?.name
         let label = "\(progress.agentDisplayName ?? "Agent") on \(Host.current().localizedName ?? "this Mac")"

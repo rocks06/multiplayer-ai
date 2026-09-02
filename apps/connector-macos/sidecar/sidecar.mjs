@@ -131,6 +131,7 @@ class Connector {
     this.startedAt = new Date().toISOString();
     this.lastError = null;
     this.authFailed = false;
+    this.superseded = false;
     this.adapter = new hermes.HermesAdapter({ command: this.hermesCommand });
   }
 
@@ -157,7 +158,7 @@ class Connector {
       enrolled: Boolean(this.config),
       running: Boolean(this.runtime),
       startedAt: this.startedAt,
-      gateway: this.authFailed ? 'auth_required' : connection,
+      gateway: this.authFailed ? 'auth_required' : this.superseded ? 'superseded' : connection,
       runtime,
       sync: {
         lastContiguousSeq: state.last_contiguous_seq ?? null,
@@ -171,13 +172,12 @@ class Connector {
   async publish() { emit(await this.snapshot()); }
 
   configure(payload) {
-    /* Being told to be a different agent, or to work in a different room, is not a settings
-       change — it is a different job. A runtime already running is still the old one, and
-       `connect` would leave it exactly where it is, so it is stopped here rather than left
-       working in a room this Mac has moved on from. */
-    const moved = this.config
-      && (this.config.roomId !== payload.roomId
-          || this.config.agentPrincipalId !== payload.agentPrincipalId);
+    /* Being told to be a different agent, to work in a different room, or to present a different
+       credential is not a settings change — it is a different job. A runtime already running is
+       still the old one, and `connect` would leave it exactly where it is, so it is stopped here
+       rather than left working in a room this Mac has moved on from, or against a key the
+       workspace has already replaced. */
+    const moved = core.needsRestart(this.config, payload);
     if (moved) this.disconnect();
 
     this.config = {
@@ -190,6 +190,7 @@ class Connector {
       projectName: payload.projectName ?? null,
     };
     this.authFailed = false;
+    this.superseded = false;
   }
 
   async connect() {
@@ -197,6 +198,7 @@ class Connector {
     if (this.runtime) return;
     this.lastError = null;
     this.authFailed = false;
+    this.superseded = false;
 
     const selfPath = process.execPath;
     this.runtime = new core.ConnectorRuntime({
@@ -222,12 +224,27 @@ class Connector {
 
     this.watch = setInterval(() => { publishSession(); void this.publish() }, 2000);
     log('connector starting');
+    /* Whose failure this is.
+
+       A runtime that ends terminally does so asynchronously, and by the time it does the sidecar
+       may already have started its replacement — a rebind is exactly that sequence. Without this
+       check the outgoing runtime's rejection cleared `this.runtime` out from under the incoming
+       one and published its state, leaving a live runtime nobody was holding. */
+    const mine = this.runtime;
     void this.runtime.start().catch((failure) => {
+      if (this.runtime !== mine) return;
       const message = String(failure?.message ?? failure);
-      // A refused credential is a different problem from a network that is down, and the person
-      // has to be told which one it is.
-      this.authFailed = /401|403|unauthor|forbidden|revoked|invalid/i.test(message);
-      this.lastError = message;
+      /* A refused credential is a different problem from a network that is down, and the person
+         has to be told which one it is. Being replaced is a third thing and belongs to neither:
+         the runtime read `reason` from the error rather than searching the sentence, because
+         "Gateway access revoked" contains "revoked" and so did being replaced by our own newer
+         connection — which is how a working Mac came to ask its owner for a new enrollment code. */
+      const reason = failure?.reason;
+      this.superseded = reason === 'superseded';
+      this.authFailed = reason
+        ? reason === 'unauthenticated'
+        : /401|403|unauthor|forbidden|revoked|invalid/i.test(message);
+      this.lastError = this.superseded ? null : message;
       log(`connector stopped: ${message}`);
       this.runtime = null;
       void this.publish();

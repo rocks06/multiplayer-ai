@@ -65,6 +65,50 @@ describe("one live binding per agent", () => {
   const principals = async (f: any) => (await pool.query(
     `SELECT id FROM principals WHERE company_id=$1 AND kind='agent'`, [f.company.id])).rows;
 
+  /**
+   * The failure this was reported as: JJ connects, works for a few seconds, then the Mac says its
+   * access was removed while the room goes on showing it connected and working.
+   *
+   * Minting a credential retires the one before it, and `authenticateSession` requires the owning
+   * credential to be active — so every session of the replaced credential was refused from that
+   * instant. Nothing wrote that down. The rows still said 'connected', so Home reported a live
+   * agent that could not make a single authenticated call, and the two surfaces disagreed for as
+   * long as anyone cared to look.
+   */
+  it("ends the sessions a replaced credential was running", async () => {
+    const f = await fixture();
+    const first = await mint(f);
+    const session = (await openSession(first.credential_token, f.roomA.id)).json();
+    expect((await call("POST", `/v1/agent-gateway/v1/sessions/${session.session_id}/heartbeat`,
+      { runtime_status: "working" }, { authorization: `Bearer ${session.session_token}` })).statusCode).toBe(200);
+
+    await mint(f);   // a second bind, for the same agent on the same Mac
+
+    // The session is refused...
+    const refused = await call("GET", `/v1/agent-gateway/v1/sessions/${session.session_id}`,
+      undefined, { authorization: `Bearer ${session.session_token}` });
+    expect(refused.statusCode).toBe(401);
+    // ...so it must not still be claiming to be live.
+    const row = (await pool.query(`SELECT status FROM external_agent_sessions WHERE id=$1`, [session.session_id])).rows[0];
+    expect(row.status).toBe("superseded");
+    expect(await liveSessions(f)).toHaveLength(0);
+  });
+
+  /** The same rule on the enrollment-code path, which mints a credential just as surely. */
+  it("ends the sessions a redeemed enrollment code replaces", async () => {
+    const f = await fixture();
+    const first = await mint(f);
+    const session = (await openSession(first.credential_token, f.roomA.id)).json();
+
+    const code = (await call("POST", `/v1/companies/${f.company.id}/agents/${f.agent.principal_id}/enrollments`,
+      { label: "JJ's Mac", room_id: f.roomA.id }, f.head)).json();
+    expect((await call("POST", "/v1/agent-gateway/v1/enroll",
+      { code: code.enrollment_code, device_label: "Air" })).statusCode).toBe(200);
+
+    const row = (await pool.query(`SELECT status FROM external_agent_sessions WHERE id=$1`, [session.session_id])).rows[0];
+    expect(row.status).toBe("superseded");
+  });
+
   it("survives a reconnect storm with exactly one live session", async () => {
     const f = await fixture();
     const credential = await mint(f);

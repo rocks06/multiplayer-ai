@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  needsRestart,
   eventKey,
   isActionableCandidate,
   isRelevantActionable,
@@ -178,5 +179,36 @@ describe("a runtime built on another binding's durable state", () => {
     });
     expect(runtime.snapshotState.session_id).toBe("mine");
     expect(runtime.snapshotState.last_contiguous_seq).toBe(7);
+  });
+});
+
+/**
+ * When the sidecar must tear the runtime down instead of leaving it running.
+ *
+ * The credential clause is the one that was missing. `configure` compared only the room and the
+ * agent, so a rebind in the same room updated the stored config and left the live runtime holding
+ * the previous credential — which minting the new one had just retired. It authenticated with a
+ * dead key until something gave up, and the Mac reported that its access had been removed seconds
+ * after it had successfully connected.
+ */
+describe("deciding whether a reconfiguration restarts the runtime", () => {
+  const config = { roomId: "room-1", agentPrincipalId: "jj", credential: "magc_one" };
+
+  it("leaves an unchanged configuration alone", () => {
+    expect(needsRestart(config, { ...config })).toBe(false);
+  });
+
+  it("restarts when the credential has been replaced", () => {
+    expect(needsRestart(config, { ...config, credential: "magc_two" })).toBe(true);
+  });
+
+  it("restarts for a different room or a different agent", () => {
+    expect(needsRestart(config, { ...config, roomId: "room-2" })).toBe(true);
+    expect(needsRestart(config, { ...config, agentPrincipalId: "coleman" })).toBe(true);
+  });
+
+  it("has nothing to restart before anything is configured", () => {
+    expect(needsRestart(null, config)).toBe(false);
+    expect(needsRestart(undefined, config)).toBe(false);
   });
 });

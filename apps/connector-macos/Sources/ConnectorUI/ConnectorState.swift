@@ -61,6 +61,9 @@ public enum Health: Equatable, Sendable {
     case offline
     case runtimeUnavailable
     case authRequired
+    /// This agent is live on a newer connection — usually this Mac a moment ago, after a rebind.
+    /// Not a fault, and emphatically not a reason to ask anyone for a new enrollment code.
+    case replaced
 
     public var title: String {
         switch self {
@@ -70,6 +73,7 @@ public enum Health: Equatable, Sendable {
         case .offline: return "Offline"
         case .runtimeUnavailable: return "Runtime unavailable"
         case .authRequired: return "Sign-in needed"
+        case .replaced: return "Reconnecting"
         }
     }
 
@@ -77,6 +81,7 @@ public enum Health: Equatable, Sendable {
     public var tone: Tone {
         switch self {
         case .connected: return .good
+        case .replaced: return .working
         case .reconnecting: return .working
         case .notConnected, .offline: return .idle
         case .runtimeUnavailable, .authRequired: return .stopped
@@ -118,6 +123,8 @@ public enum Diagnosis {
         if problem != nil { return .authRequired }
         guard state.enrolled else { return .notConnected }
         if state.gateway == "auth_required" { return .authRequired }
+        // Checked before `running`, because standing down is exactly what a replaced runtime does.
+        if state.gateway == "superseded" { return .replaced }
         if !state.running { return .offline }
         switch state.gateway {
         case "live":
@@ -136,6 +143,7 @@ public enum Diagnosis {
         if problem != nil { return "Sign-in needed" }
         if !state.enrolled { return "Not set up" }
         if state.gateway == "auth_required" { return "Sign-in needed" }
+        if state.gateway == "superseded" { return "Reconnecting" }
         if !state.running { return "Not running" }
         switch state.gateway {
         case "live": return "Connected"

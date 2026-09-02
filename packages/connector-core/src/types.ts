@@ -118,11 +118,21 @@ export type ConnectionState =
   | "resync_required"
   | "session_rejected"
   | "access_revoked"
+  | "superseded"
   | "offline";
 
 export class GatewayError extends Error {
-  constructor(message: string, readonly status?: number, readonly body?: any, readonly terminal = false) {
+  /* Why this stopped, as a value rather than a sentence.
+     The supervisor used to decide whether a credential was dead by matching the message against
+     /401|403|unauthor|forbidden|revoked|invalid/. "Gateway access revoked" contains "revoked", so
+     an agent that had merely been replaced by its own newer connection was reported to the person
+     as access removed, with a request for a new enrollment code. Prose is not a status. */
+  constructor(message: string, readonly status?: number, readonly body?: any,
+              readonly terminal = false, readonly reason?: TerminalReason) {
     super(message);
     this.name = "GatewayError";
   }
 }
+
+/** The two ways a connection ends for good, and they are not the same to a person. */
+export type TerminalReason = "unauthenticated" | "superseded";
