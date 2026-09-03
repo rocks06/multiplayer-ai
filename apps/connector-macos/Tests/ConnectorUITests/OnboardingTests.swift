@@ -455,4 +455,46 @@ struct RuntimeConnectableTests {
 
 
 }
+
+/**
+ * Handing a room over from a browser to this Mac.
+ *
+ * Accepting an invitation left the person working in Safari, and the room was invisible in the app
+ * afterwards. Membership belongs to the server, so the link needs to carry only which room — the
+ * secret is spent by then, and the app confirms the membership by asking rather than believing.
+ */
+@Suite("The shared-room handoff link")
+struct SharedRoomLinkTests {
+    private let company = "01a05ac3-6c61-71bf-8f64-f15d073d67d9"
+    private let room = "01a06014-fab4-7345-8bbf-d78da6b63475"
+
+    @Test("carries the two ids and nothing else")
+    func carriesIds() {
+        let link = AppModel.sharedRoomLink("multiplayerai://room?company=\(company)&room=\(room)")
+        #expect(link?.company == company)
+        #expect(link?.room == room)
+    }
+
+    @Test("is recognised however the link is spelled")
+    func spelling() {
+        #expect(AppModel.sharedRoomLink("multiplayerai:///room?company=\(company)&room=\(room)") != nil)
+    }
+
+    /// A link that can name an arbitrary destination is a link that can send the app anywhere.
+    @Test("refuses anything that is not a pair of ids")
+    func refusesRubbish() {
+        #expect(AppModel.sharedRoomLink("multiplayerai://room?company=../../etc&room=\(room)") == nil)
+        #expect(AppModel.sharedRoomLink("multiplayerai://room?company=\(company)") == nil)
+        #expect(AppModel.sharedRoomLink("multiplayerai://room") == nil)
+        #expect(AppModel.sharedRoomLink("https://example.test/room?company=\(company)&room=\(room)") == nil)
+    }
+
+    /// The other two links on this scheme must keep working, and must not be mistaken for a room.
+    @Test("is not confused with sign-in or runtime links")
+    func notTheOthers() {
+        #expect(AppModel.sharedRoomLink("multiplayerai://auth?token=mpsi_abc") == nil)
+        #expect(AppModel.sharedRoomLink("multiplayerai://connect-runtime") == nil)
+        #expect(AppModel.isConnectRuntime("multiplayerai://room?company=\(company)&room=\(room)") == false)
+    }
+}
 }

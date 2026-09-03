@@ -391,6 +391,50 @@ public final class AppModel {
     /// its first look at the world. It deliberately does not depend on a view having run: the
     /// first version of this waited for `RootView`'s task to call back, and a link that arrived
     /// on a cold launch was queued and then never spent, because that call never came.
+    /**
+     * A room somebody has just been let into, handed over from the browser.
+     *
+     * Only the two ids travel. The invite secret is spent by the time this link is built — the
+     * membership already exists on the server — so there is nothing here worth intercepting, and
+     * nothing this Mac has to be told that it cannot ask the workspace for itself.
+     *
+     * Both are checked for shape before they are put in a URL. A link that can name an arbitrary
+     * path is a link that can send the app somewhere it was never meant to go.
+     */
+    nonisolated public static func sharedRoomLink(_ raw: String) -> (company: String, room: String)? {
+        guard let url = URLComponents(string: raw), url.scheme == "multiplayerai" else { return nil }
+        // Three slashes give an empty host rather than none, so both halves are checked.
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard url.host == "room" || path == "room" else { return nil }
+        let items = url.queryItems ?? []
+        guard let company = items.first(where: { $0.name == "company" })?.value,
+              let room = items.first(where: { $0.name == "room" })?.value,
+              AppModel.looksLikeId(company), AppModel.looksLikeId(room) else { return nil }
+        return (company, room)
+    }
+
+    nonisolated static func looksLikeId(_ value: String) -> Bool {
+        value.count == 36 && value.allSatisfy { $0.isHexDigit || $0 == "-" }
+    }
+
+    /**
+     * Open a room this Mac has just been invited into.
+     *
+     * Membership is the server's to know, so this asks it rather than believing the link: the
+     * refresh reloads the identity, and with it every workspace this person belongs to. A person
+     * who is not signed in on this Mac lands on sign-in and arrives at the room afterwards,
+     * because the destination is written down before anything else happens.
+     */
+    public func openSharedRoom(company: String, room: String) async {
+        remember(path: "/rooms/\(company)/\(room)")
+        await refresh()
+        // Tell the web view to go there; it was loaded before any of this was known.
+        entryReloads += 1
+    }
+
+    /// Bumped when the workspace view must return to `entryURL`. Watched by the web view.
+    public var entryReloads = 0
+
     /// Whether an incoming link is the web asking this Mac to introduce its runtime, rather than a
     /// sign-in link. Pure, because URL shapes are exactly the thing that is wrong at 2am.
     nonisolated public static func isConnectRuntime(_ raw: String) -> Bool {
@@ -468,6 +512,10 @@ public final class AppModel {
     }
 
     public func receive(authURL raw: String) async {
+        if let shared = AppModel.sharedRoomLink(raw) {
+            guard initialized else { queuedAuthURL = raw; return }
+            return await openSharedRoom(company: shared.company, room: shared.room)
+        }
         if AppModel.isConnectRuntime(raw) {
             guard initialized else { queuedAuthURL = raw; return }
             // Looking, not creating. Enrolment waits for the person to see what was found.
@@ -489,6 +537,9 @@ public final class AppModel {
     private func spendQueuedAuthURL() async {
         guard let waiting = queuedAuthURL else { return }
         queuedAuthURL = nil
+        if let shared = AppModel.sharedRoomLink(waiting) {
+            return await openSharedRoom(company: shared.company, room: shared.room)
+        }
         if AppModel.isConnectRuntime(waiting) { return await detectRuntime() }
         await redeem(waiting)
     }

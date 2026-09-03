@@ -120,10 +120,21 @@ struct WorkspaceWebView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ view: WKWebView, context: Context) {}
+    /* The view is loaded once, before this Mac knows where it is meant to be.
+
+       A room handed over from a browser arrives afterwards, so something has to send the view
+       there. The counter is watched rather than the path: returning to the same room deliberately
+       — a second click on Open in Multiplayer AI — has to work as plainly as the first. */
+    func updateNSView(_ view: WKWebView, context: Context) {
+        guard context.coordinator.loadedEntry != app.entryReloads else { return }
+        context.coordinator.loadedEntry = app.entryReloads
+        view.load(URLRequest(url: app.entryURL))
+    }
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        /// Which entry load this view has already performed, so one is not repeated on every draw.
+        var loadedEntry = 0
         private let app: AppModel
         private var loaded = false
         init(app: AppModel) { self.app = app }

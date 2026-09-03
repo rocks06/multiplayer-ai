@@ -145,6 +145,61 @@ describe("signing in from a room invitation", () => {
     expect(snapshot.members.filter((m: any) => m.kind === "human")).toHaveLength(2);
   });
 
+  /**
+   * The handoff, as the native app experiences it.
+   *
+   * Once the invitation is accepted the membership belongs to the server, and that is the whole
+   * point: the app is a fresh client with no browser storage, no invite secret and no local
+   * record of any of this. It signs in, asks who it is, and the shared room is simply there.
+   */
+  it("makes the room visible to a client that saw none of the browser flow", async () => {
+    const a = await invitation();
+    await call("POST", "/v1/auth/sign-up", { name: "Account B", email: "handoff@example.com", context: "web" });
+    const browser = cookieFrom(await call("POST", "/v1/auth/sessions",
+      { token: delivery.delivered.at(-1)!.token }));
+    const accepted = await call("POST", "/v1/room-invites/accept",
+      { token: a.invite.invite_token }, { cookie: browser });
+    expect(accepted.statusCode).toBe(200);
+    // Exactly what the deep link carries — two ids, and no secret.
+    expect(accepted.json().company_id).toBe(a.company.company_id);
+    expect(accepted.json().room_id).toBe(a.room.id);
+
+    /* A different session entirely: this is the Mac app signing in on its own, holding nothing
+       the browser had. Everything it knows, it asks for. */
+    await call("POST", "/v1/auth/sign-in-links", { email: "handoff@example.com" });
+    const native = cookieFrom(await call("POST", "/v1/auth/sessions",
+      { token: delivery.delivered.at(-1)!.token }));
+
+    const me = (await call("GET", "/v1/auth/me", undefined, { cookie: native })).json();
+    const shared = me.companies.find((c: any) => c.company_id === a.company.company_id);
+    expect(shared).toBeDefined();
+    // Room-only, which is what puts it under Shared rooms rather than among their own.
+    expect(shared.access_scope).toBe("room_only");
+
+    const rooms = (await call("GET", `/v1/companies/${a.company.company_id}/rooms`,
+      undefined, { cookie: native })).json();
+    expect(rooms.rooms.map((r: any) => r.room_id)).toContain(a.room.id);
+
+    // And the room opens, with the history that was already in it.
+    const snapshot = await call("GET", `/v1/companies/${a.company.company_id}/rooms/${a.room.id}/snapshot`,
+      undefined, { cookie: native });
+    expect(snapshot.statusCode).toBe(200);
+    expect(snapshot.json().room.name).toBe("TESTING #1");
+  });
+
+  /** Accepting twice must not make somebody a member twice over. */
+  it("does not add a second membership when the same person accepts again", async () => {
+    const a = await invitation();
+    await call("POST", "/v1/auth/sign-up", { name: "B", email: "twice@example.com", context: "web" });
+    const b = cookieFrom(await call("POST", "/v1/auth/sessions", { token: delivery.delivered.at(-1)!.token }));
+    expect((await call("POST", "/v1/room-invites/accept", { token: a.invite.invite_token }, { cookie: b })).statusCode).toBe(200);
+    await call("POST", "/v1/room-invites/accept", { token: a.invite.invite_token }, { cookie: b });
+
+    const members = await pool.query(
+      `SELECT count(*)::int n FROM room_members WHERE room_id=$1 AND status='active'`, [a.room.id]);
+    expect(members.rows[0].n).toBe(2);
+  });
+
   it("keeps the invitation single-use", async () => {
     const a = await invitation();
     await call("POST", "/v1/auth/sign-up", { name: "B", email: "b2@example.com", context: "web" });
