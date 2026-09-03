@@ -5,13 +5,17 @@ import SwiftUI
 /// in Advanced Diagnostics, which a person has to open on purpose.
 public struct MenuView: View {
     @Bindable var model: ConnectorModel
+    /// Detection lives on the app, not the connector, so the menu is handed the one thing it needs.
+    var detect: (() -> Void)?
 
-    public init(model: ConnectorModel) { self.model = model }
+    public init(model: ConnectorModel, detect: (() -> Void)? = nil) {
+        self.model = model; self.detect = detect
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if model.enrolment == nil {
-                EnrolView(model: model)
+                UnenrolledView(model: model, detect: detect)
             } else if model.showingDiagnostics {
                 DiagnosticsView(model: model)
             } else {
@@ -134,6 +138,57 @@ public struct DetailRow: View {
                 .font(.system(size: 12))
                 .foregroundStyle(warning ? Color.orange : Color.primary)
                 .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
+/**
+ * What an unconnected Mac is offered first.
+ *
+ * This used to be the enrollment-code field and nothing else, so the ordinary case — the agent is
+ * running on this very Mac, and the person is signed in on it — was presented as though it needed
+ * a code copied from somewhere else. There was no code to copy: the workspace's Connect existing
+ * agent does same-device detection and never issues one. Two flows that never met.
+ *
+ * Detection is the offer. A code is still the honest answer for a Mac nobody is signed in on, or
+ * a runtime on a machine with no screen, so it stays — one deliberate click away.
+ */
+struct UnenrolledView: View {
+    @Bindable var model: ConnectorModel
+    var detect: (() -> Void)?
+    @State private var manual = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 13) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Multiplayer AI")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .kerning(0.6)
+                Text("Connect your agent")
+                    .font(.system(size: 17, weight: .medium, design: .serif))
+            }
+
+            if manual {
+                EnrolView(model: model)
+                Button("Back") { manual = false }
+                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
+            } else {
+                Text("Multiplayer AI can look for an agent runtime already running on this Mac.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let detect {
+                    Button("Detect existing agent") { detect() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.busy)
+                }
+
+                Button("Connect manually with a code") { manual = true }
+                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
+            }
         }
     }
 }

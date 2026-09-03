@@ -465,13 +465,27 @@ public final class AppModel {
      * it saw; nothing is created until a person has read it and agreed.
      */
     public func detectRuntime() async {
+        // Pressing it twice is not a reason to say nothing; the first answer is still coming.
         guard !busy else { return }
         busy = true
         defer { busy = false }
         problem = nil
         connector.begin()
         await connector.sidecar.refresh()
-        detectedRuntime = connector.sidecar.state.runtime
+        let found = connector.sidecar.state.runtime
+        /* "We could not ask" is not "it is not installed", and saying the second when the first is
+           true sends somebody off to reinstall something that was never missing. The helper is
+           what does the looking; if it did not answer, that is the thing to report. */
+        guard found.readiness != nil else {
+            detectedRuntime = nil
+            problem = .init(code: "detect_unavailable",
+                            message: "Multiplayer AI could not check this Mac for an agent runtime.",
+                            status: 0,
+                            recovery: connector.sidecar.lastLaunchFailure
+                                ?? "Its background helper did not answer. Quit Multiplayer AI and open it again.")
+            return
+        }
+        detectedRuntime = found
     }
 
     /**
@@ -505,6 +519,17 @@ public final class AppModel {
                     $0.agentDisplayName = connected.displayName }
             problem = nil
             detectedRuntime = nil
+            // Learn which rooms this agent works in before deciding where to put it.
+            await refresh()
+            /* And then actually connect it. Recording the principal is not connecting anything:
+               a connector binds to a room, and until one is chosen no credential is minted and
+               nothing starts. Where the answer is not in doubt it is taken; where it is, the
+               room-binding notice already asks, and where there is no room at all the runtime is
+               connected to the workspace and says so rather than pretending to be working. */
+            if let room = AppModel.roomToAdopt(current: progress.roomId, agentRooms: agentRooms) {
+                if progress.roomId != room { write { $0.roomId = room } }
+                await bind()
+            }
             await refresh()
         } catch let error as WorkspaceError { problem = error }
         catch { problem = .init(code: "runtime_connect", message: "That did not work.", status: 0,
@@ -652,6 +677,22 @@ public final class AppModel {
     /// machine the agent runs on, so the app asks the workspace for this agent's credential
     /// directly and puts it in the Keychain. An enrollment code exists for the case this is not
     /// — a Mac nobody is signed in on — and stays available for exactly that.
+    /**
+     * Which room a runtime that has just been connected should start working in.
+     *
+     * A runtime is connected to a workspace; work happens in a room, and a connector binds to one.
+     * Connecting used to stop at the principal, so nothing was ever bound: no credential was
+     * minted, the connector never started, and a person who had just been told their runtime was
+     * found watched it stay disconnected forever with nothing further offered.
+     *
+     * One room is not a choice, so it is taken. Several is a decision that belongs to a person,
+     * and none is a truthful state of its own rather than a failure.
+     */
+    nonisolated public static func roomToAdopt(current: String?, agentRooms: [AgentRoom]) -> String? {
+        if let current, agentRooms.contains(where: { $0.id == current }) { return current }
+        return agentRooms.count == 1 ? agentRooms.first?.id : nil
+    }
+
     /// Whether a launch should carry an unfinished move the rest of the way.
     ///
     /// A Mac that recorded a room, gave up its old binding, and was then quit has everything it

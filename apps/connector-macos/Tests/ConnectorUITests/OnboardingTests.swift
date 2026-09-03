@@ -497,4 +497,91 @@ struct SharedRoomLinkTests {
         #expect(AppModel.isConnectRuntime("multiplayerai://room?company=\(company)&room=\(room)") == false)
     }
 }
+
+/**
+ * Finishing the job after a runtime is confirmed.
+ *
+ * Connecting used to stop at recording the principal. A connector binds to a *room*, so until one
+ * was chosen no credential was minted and nothing started — the person was told their runtime had
+ * been found and then watched it stay disconnected with nothing further offered. That is the whole
+ * of "detects but does not connect".
+ */
+@Suite("Which room a newly connected runtime starts in")
+struct RoomToAdoptTests {
+    private let a = AgentRoom(id: "room-a", name: "A")
+    private let b = AgentRoom(id: "room-b", name: "B")
+
+    /// One room is not a choice, so it is taken and the connector can start.
+    @Test("a single room is adopted without asking")
+    func single() { #expect(AppModel.roomToAdopt(current: nil, agentRooms: [a]) == "room-a") }
+
+    /// Several is a decision, and the existing room-binding notice is where it is made.
+    @Test("several rooms are left to the person")
+    func several() { #expect(AppModel.roomToAdopt(current: nil, agentRooms: [a, b]) == nil) }
+
+    /// No room is a truthful state of its own, not a failure and not something to invent.
+    @Test("no room adopts nothing")
+    func none() { #expect(AppModel.roomToAdopt(current: nil, agentRooms: []) == nil) }
+
+    /// A runtime that already works somewhere stays there rather than being moved by a reconnect.
+    @Test("a room already bound is kept")
+    func keepsCurrent() {
+        #expect(AppModel.roomToAdopt(current: "room-b", agentRooms: [a, b]) == "room-b")
+    }
+
+    /// Unless it is no longer a room this agent works in, in which case it is not a valid binding.
+    @Test("a room the agent no longer works in is not kept")
+    func staleCurrent() {
+        #expect(AppModel.roomToAdopt(current: "room-gone", agentRooms: [a]) == "room-a")
+        #expect(AppModel.roomToAdopt(current: "room-gone", agentRooms: [a, b]) == nil)
+    }
+}
+
+/**
+ * The three things people mean by connected, which the product used to blur.
+ *
+ * "Hermes found" sat on screen while nothing was bound and no work could reach it. Software being
+ * present on a disk says nothing about whether this workspace can put it to work.
+ */
+@Suite("Detected, ready, and connected are different")
+struct RuntimeConnectionTests {
+    private func runtime(_ readiness: String?) -> SidecarState.Runtime {
+        .init(available: readiness != nil && readiness != "not_installed", name: "Hermes Agent",
+              version: "0.20.5", path: nil, reason: nil, runtimeType: "hermes",
+              externalRuntimeId: "id-1", connectorInstallationId: "install-1",
+              endpoint: "cli:/usr/local/bin/hermes", healthEndpoint: nil, transport: "cli",
+              probeStatus: readiness == "ready" ? "healthy" : "failed",
+              readiness: readiness, serviceRunning: readiness == "ready")
+    }
+
+    @Test("a runtime that is merely present is never called connected")
+    func presentIsNotConnected() {
+        for readiness in ["installed_not_running", "control_unavailable", "unsupported_version"] {
+            let state = RuntimeConnection.of(runtime: runtime(readiness), enrolled: false, health: .offline)
+            #expect(state.isConnected == false)
+            #expect(state.headline != "Connected to Multiplayer AI")
+        }
+    }
+
+    @Test("ready is not connected either")
+    func readyIsNotConnected() {
+        let state = RuntimeConnection.of(runtime: runtime("ready"), enrolled: false, health: .offline)
+        #expect(state == .ready)
+        #expect(state.isConnected == false)
+    }
+
+    /// Connected is bound *and* live, and is never inferred from finding a process on this Mac.
+    @Test("connected means bound to this workspace and working")
+    func connected() {
+        #expect(RuntimeConnection.of(runtime: runtime("ready"), enrolled: true, health: .connected) == .connected)
+        // Enrolled but not live is not connected, however healthy the local runtime looks.
+        #expect(RuntimeConnection.of(runtime: runtime("ready"), enrolled: true, health: .offline) == .ready)
+    }
+
+    @Test("nothing installed says so")
+    func absent() {
+        #expect(RuntimeConnection.of(runtime: runtime("not_installed"), enrolled: false, health: .offline) == .absent)
+        #expect(RuntimeConnection.of(runtime: runtime(nil), enrolled: false, health: .offline) == .absent)
+    }
+}
 }

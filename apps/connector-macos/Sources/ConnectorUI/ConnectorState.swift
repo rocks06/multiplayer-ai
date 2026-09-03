@@ -158,6 +158,47 @@ public enum CredentialProblem: Equatable, Sendable {
     }
 }
 
+/**
+ * The three different things people mean by "connected", kept apart.
+ *
+ * A runtime being installed on this Mac, a runtime being usable, and a runtime working for
+ * Multiplayer AI are three separate facts, and the product used to blur them: "Hermes found" sat
+ * on screen while nothing was bound and no work could reach it. Finding software on a disk says
+ * nothing about whether this workspace can put it to work.
+ */
+public enum RuntimeConnection: Equatable, Sendable {
+    /// Nothing that answers is installed.
+    case absent
+    /// Found on this Mac, but not usable yet — not running, too old, or not controllable.
+    case detected(String)
+    /// Found, controllable, and waiting to be connected to a workspace.
+    case ready
+    /// Bound to this workspace and running.
+    case connected
+
+    public var headline: String {
+        switch self {
+        case .absent: return "No agent runtime found on this Mac"
+        case .detected(let situation): return situation
+        case .ready: return "Ready to connect"
+        case .connected: return "Connected to Multiplayer AI"
+        }
+    }
+
+    /// Only one of these means the workspace can reach it, and it is never inferred from a file.
+    public var isConnected: Bool { self == .connected }
+
+    /// What the app knows, from what it found and what it is actually bound to.
+    public static func of(runtime: SidecarState.Runtime, enrolled: Bool, health: Health) -> RuntimeConnection {
+        if enrolled && health == .connected { return .connected }
+        switch runtime.readiness {
+        case "ready": return .ready
+        case nil, "not_installed": return .absent
+        default: return .detected(runtime.situation)
+        }
+    }
+}
+
 public enum Diagnosis {
     /// A connection that has been refused is not the same problem as one that has dropped, and
     /// neither is the same as a runtime that was never installed. Whichever most stops the agent

@@ -29,7 +29,12 @@ struct MultiplayerAIApp: App {
         // The status surface. Supporting, not the product: everything it offers is available in
         // the window, and closing the window does not take it away.
         MenuBarExtra {
-            MenuView(model: app.connector).frame(width: 320)
+            /* Detecting brings the window forward: the result is shown there, and somebody who
+               pressed a button must never be left wondering whether anything happened. */
+            MenuView(model: app.connector) {
+                NSApp.activate(ignoringOtherApps: true)
+                Task { await app.detectRuntime() }
+            }.frame(width: 320)
         } label: {
             Image(nsImage: MenuBarIcon.image(for: app.connector.health))
         }

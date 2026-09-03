@@ -271,4 +271,36 @@ describe("What the product ships", () => {
       .filter(file => /confirm\(/.test(fs.readFileSync(path.join(root, file), "utf8")));
     expect(guarded.length).toBeGreaterThan(0);
   });
+
+  /**
+   * The ordinary way in is detection, not a code.
+   *
+   * An unconnected Mac was shown an enrollment-code field and nothing else, so the common case —
+   * the agent is running on this very Mac and the person is signed in on it — was presented as
+   * though a code had to be copied from somewhere. There was none to copy: the workspace's
+   * Connect existing agent does same-device detection and never issues one.
+   */
+  it("offers to detect before it asks for a code", () => {
+    const menu = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/ConnectorUI/MenuView.swift"), "utf8");
+    expect(menu).toContain("Detect existing agent");
+    // The code path survives for Macs nobody is signed in on, one deliberate click away.
+    expect(menu).toContain("Connect manually with a code");
+    expect(menu.indexOf("Detect existing agent")).toBeLessThan(menu.indexOf("Connect manually"));
+
+    /* And it is actually wired to something. The button only renders when an action is handed in,
+       so a menu that is never given one shows nothing at all — which is indistinguishable, from
+       the outside, from the silent no-op this replaces. */
+    const shell = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/MultiplayerAI/MultiplayerAIApp.swift"), "utf8");
+    expect(shell).toMatch(/MenuView\(model: app\.connector\) \{[\s\S]{0,200}detectRuntime\(\)/);
+  });
+
+  /** Finding software on a disk is not the same as this workspace being able to use it. */
+  it("never treats a detected runtime as a connected one", () => {
+    const state = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/ConnectorUI/ConnectorState.swift"), "utf8");
+    // Connected is only ever reached from being enrolled and live, never from local detection.
+    expect(state).toMatch(/if enrolled && health == \.connected \{ return \.connected \}/);
+  });
 });
