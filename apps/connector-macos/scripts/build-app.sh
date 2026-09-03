@@ -91,27 +91,44 @@ if [ -n "$identity" ]; then
   sign=(codesign --force --options runtime --timestamp --sign "$identity")
 else
   echo "  no Developer ID certificate found — signing locally (notarisation still gated)"
-  sign=(codesign --force --sign -)
+  # Hardened Runtime even here, so a local build fails the same way a shipped one would.
+  # Without it the helper's JIT problem is invisible until after notarisation, which is to say
+  # until it is already in front of external users.
+  sign=(codesign --force --options runtime --sign -)
 fi
 # macOS keeps re-applying com.apple.provenance to files as the build touches them, and codesign
 # refuses to sign over it. Clearing immediately before each attempt usually wins the race; a
 # couple of retries make it reliable rather than occasionally red.
 sign_path() {
-  local target="$1"
+  local target="$1" entitlements="${2:-}"
+  local -a args=("${sign[@]}")
+  [ -n "$entitlements" ] && args+=(--entitlements "$entitlements")
   for attempt in 1 2 3; do
     xattr -cr "$app" 2>/dev/null || true
-    if "${sign[@]}" "$target" 2>/dev/null; then return 0; fi
+    if "${args[@]}" "$target" 2>/tmp/mpai-codesign.err; then return 0; fi
   done
+  # The last error is what matters, and hiding it turns a one-line fix into an afternoon.
   echo "  could not sign $target" >&2
+  sed 's/^/    /' /tmp/mpai-codesign.err >&2 2>/dev/null || true
   return 1
 }
 
 # Nested code first, so the outer signature covers a settled inside.
-sign_path "$app/Contents/Resources/mpai-connector-sidecar"
+#
+# The helper is a Node single-file executable, so it carries V8, and V8 writes machine code at
+# runtime. Hardened Runtime forbids that: signed with --options runtime and no entitlement, the
+# helper dies with SIGTRAP the instant it starts. Notarisation would pass, the app would install
+# cleanly, and every external user's agent would simply never connect. sidecar.entitlements grants
+# the one thing that fixes it and nothing else — allow-unsigned-executable-memory was tested and
+# makes no difference here, and a weaker runtime that buys nothing is not worth shipping.
+#
+# That file has no comments in it on purpose: the entitlements parser rejects XML comments outright
+# ("AMFIUnserializeXML: syntax error"), which fails signing rather than being ignored.
+sign_path "$app/Contents/Resources/mpai-connector-sidecar" "$here/sidecar.entitlements"
 sign_path "$app"
 
 xattr -cr "$app"
-codesign --verify --deep --strict "$app" && echo "  signature verifies"
+codesign --verify --deep --strict --verbose=2 "$app" && echo "  signature verifies"
 
 echo "• building the disk image"
 staging="$work/dmg"
