@@ -396,6 +396,15 @@ function TaskCreator({agents,onCreate}:{agents:Member[];onCreate:(x:{title:strin
   return <form className="task-form" onSubmit={submit}><input autoFocus aria-label="Task title" placeholder="Task title" value={title} onChange={e=>setTitle(e.target.value)}/><textarea aria-label="Task description" placeholder="What does done look like?" value={description} onChange={e=>setDescription(e.target.value)} rows={2}/><select aria-label="Task owner" value={owner} onChange={e=>setOwner(e.target.value)}><option value="">Unassigned</option>{agents.map(a=><option value={a.principal_id} key={a.principal_id}>{a.display_name}</option>)}</select><div><button type="button" onClick={()=>setOpen(false)}>Cancel</button><button disabled={busy||!title.trim()}>Create task</button></div>{error&&<p className="form-error">{error}</p>}</form>
 }
 
+/** Every workspace the server says this person belongs to, with how they belong to it. */
+function memberships(identity:SignedInIdentity){
+  return identity.companies.map(company=>({
+    companyId:company.company_id,
+    name:company.company_name,
+    accessScope:(company as {access_scope?:'workspace'|'room_only'}).access_scope??'workspace',
+  }));
+}
+
 function RoomRoute({path,navigate}:{path:string;navigate:(to:string)=>void}){
   const room=useMemo(roomFromLocation,[path]);
   const [state,setState]=useState<{status:'loading'}|{status:'no_access'}|{status:'error';message:string}|{status:'ready';identity:RoomIdentity;workspace:{companyId:string;name:string};rooms:WorkspaceRoom[];userId:string}>({status:'loading'});
@@ -476,7 +485,10 @@ function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void})
       const me=await currentIdentity().catch(()=>null);
       if(!alive)return;
       if(!me)return setState({status:'anonymous'});
-      const company=me.companies[0];
+      /* The first workspace is where this person's own things live, but it is not the only one
+         they belong to: being invited to a single room makes them a room-only member of that
+         room's workspace too. Home is handed all of them. */
+      const company=me.companies.find((c:any)=>(c.access_scope??'workspace')!=='room_only')??me.companies[0];
       const workspace=company?{companyId:company.company_id,name:company.company_name,accessScope:company.access_scope??'workspace'}:null;
       const rooms=workspace?await listWorkspaceRooms(workspace.companyId).catch(()=>[]):[];
       if(!alive)return;
@@ -494,7 +506,7 @@ function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void})
 
   const inner=path==='/settings'
     ? state.workspace?<Settings identity={state.identity} workspace={state.workspace}/>:<Home workspace={null} onNavigate={navigate}/>
-    : <Home workspace={state.workspace} onNavigate={navigate}/>;
+    : <Home workspace={state.workspace} memberships={memberships(state.identity)} onNavigate={navigate}/>;
 
   return <Shell workspace={state.workspace} rooms={state.rooms} onNavigate={navigate} onboardingKey={state.workspace?`${state.identity.user.id}:${state.workspace.companyId}`:undefined}>{inner}</Shell>;
 }

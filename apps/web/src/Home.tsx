@@ -12,21 +12,63 @@ import {connectionOf} from './Welcome';
  * things you might want to start. Everything shown comes from what the workspace actually
  * contains; nothing here is inferred.
  */
-export function Home({workspace,onNavigate}:{
-  workspace:{companyId:string;name:string;accessScope?:'workspace'|'room_only'}|null;onNavigate:(to:string)=>void}){
-  const [rooms,setRooms]=useState<WorkspaceRoom[]|null>(null);
+/** One list of rooms. Both sections are the same thing and must not drift apart. */
+function RoomList({rooms,onNavigate}:{rooms:HomeRoom[];onNavigate:(to:string)=>void}){
+  return <ul className="home-rooms">
+    {rooms.map(room=>
+      <li key={`${room.companyId}:${room.room_id}`}>
+        <button type="button" onClick={()=>onNavigate(`/rooms/${room.companyId}/${room.room_id}`)}>
+          <span>
+            <strong>{room.name}</strong>
+            {room.project_name!==room.name&&<small>{room.project_name}</small>}
+          </span>
+          <ChevronRight size={16}/>
+        </button>
+      </li>)}
+  </ul>;
+}
+
+/** A room, and which workspace it came from — a room is only openable with both. */
+export interface HomeRoom extends WorkspaceRoom { companyId:string }
+export interface HomeWorkspace {companyId:string;name:string;accessScope?:'workspace'|'room_only'}
+
+export function Home({workspace,memberships,onNavigate}:{
+  workspace:HomeWorkspace|null;
+  /** Every workspace the server says this person belongs to, however they came to belong to it. */
+  memberships?:HomeWorkspace[];
+  onNavigate:(to:string)=>void}){
+  const [rooms,setRooms]=useState<HomeRoom[]|null>(null);
+  const [shared,setShared]=useState<HomeRoom[]>([]);
   const [agents,setAgents]=useState<WorkspaceAgent[]>([]);
   const [creating,setCreating]=useState(false);
   const [addingAgent,setAddingAgent]=useState(false);
 
+  /* Every workspace this person belongs to, not merely the first one.
+
+     A room somebody is invited to individually makes them a room-only member of *that* workspace,
+     which arrives as a second entry in the identity. Reading only `companies[0]` meant a room
+     joined in a browser could never appear here, however many times the app was relaunched — it
+     was in a workspace Home was not looking at. Which section a room belongs in is the server's
+     answer too: `room_only` access is what makes it shared rather than one of your own. */
+  const scopes=(memberships?.length?memberships:workspace?[workspace]:[]);
+  const key=scopes.map(w=>`${w.companyId}:${w.accessScope??'workspace'}`).join(',');
   const load=useCallback(async()=>{
-    if(!workspace){setRooms([]);setAgents([]);return}
-    const [foundRooms,foundAgents]=await Promise.all([
-      listWorkspaceRooms(workspace.companyId).catch(()=>[]),
-      listWorkspaceAgents(workspace.companyId).catch(()=>[]),
-    ]);
-    setRooms(foundRooms);setAgents(foundAgents);
-  },[workspace?.companyId]);
+    if(!scopes.length){setRooms([]);setShared([]);setAgents([]);return}
+    const found=await Promise.all(scopes.map(async scope=>({
+      scope,
+      rooms:(await listWorkspaceRooms(scope.companyId).catch(()=>[]))
+        .map(room=>({...room,companyId:scope.companyId})),
+    })));
+    const own:HomeRoom[]=[],invited:HomeRoom[]=[];
+    for(const {scope,rooms:list} of found)
+      (scope.accessScope==='room_only'?invited:own).push(...list);
+    // A room belongs to exactly one section; the workspace it is owned in wins.
+    const owned=new Set(own.map(room=>room.room_id));
+    setRooms(own);setShared(invited.filter(room=>!owned.has(room.room_id)));
+    // Agents are workspace-scoped, so only a workspace membership may ask for them.
+    const home=scopes.find(scope=>scope.accessScope!=='room_only');
+    setAgents(home?await listWorkspaceAgents(home.companyId).catch(()=>[]):[]);
+  },[key]);
   useEffect(()=>{void load()},[load]);
 
   if(rooms===null)return <main className="home"><p className="auth-quiet" role="status">Loading your workspace…</p></main>;
@@ -51,7 +93,7 @@ export function Home({workspace,onNavigate}:{
 
     <section className="home-section" aria-labelledby="home-rooms" data-onboarding="rooms">
       <div className="home-section-head">
-        <h2 id="home-rooms">Rooms</h2>
+        <h2 id="home-rooms">Your rooms</h2>
         {workspace.accessScope!=='room_only'&&rooms.length>0&&!creating&&
           <button type="button" className="home-action" onClick={()=>setCreating(true)}><Plus size={13}/>Create room</button>}
       </div>
@@ -66,18 +108,16 @@ export function Home({workspace,onNavigate}:{
         onCancel={()=>setCreating(false)}
         onCreated={room=>onNavigate(`/rooms/${workspace.companyId}/${room.room_id}`)}/>}
 
-      {rooms.length>0&&<ul className="home-rooms">
-        {rooms.map(room=>
-          <li key={room.room_id}>
-            <button type="button" onClick={()=>onNavigate(`/rooms/${workspace.companyId}/${room.room_id}`)}>
-              <span>
-                <strong>{room.name}</strong>
-                {room.project_name!==room.name&&<small>{room.project_name}</small>}
-              </span>
-              <ChevronRight size={16}/>
-            </button>
-          </li>)}
-      </ul>}
+      {rooms.length>0&&<RoomList rooms={rooms} onNavigate={onNavigate}/>}
+    </section>
+
+    {/* Rooms somebody else invited this person into. Kept apart from their own because the two
+        are not the same thing to a person: one they made, one they were asked into. */}
+    <section className="home-section" aria-labelledby="home-shared">
+      <div className="home-section-head"><h2 id="home-shared">Shared rooms</h2></div>
+      {shared.length===0
+        ? <div className="home-empty"><p>Rooms other people invite you into appear here.</p></div>
+        : <RoomList rooms={shared} onNavigate={onNavigate}/>}
     </section>
 
     <section className="home-section" aria-labelledby="home-agents" data-onboarding="agents">

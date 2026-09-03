@@ -107,7 +107,14 @@ struct WorkspaceWebView: NSViewRepresentable {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
-        view.allowsBackForwardNavigationGestures = true
+        /* No swipe navigation.
+
+           A two-finger swipe here walked browser history, and the room UI pushes a history entry
+           per room — so a stray trackpad gesture carried people into and out of rooms they had not
+           chosen. Entering a room is a deliberate act: it happens by selecting one, and leaving
+           happens through Back or Home. This is also why looking for gesture handlers in the web
+           app found nothing; the gesture was never JavaScript's. */
+        view.allowsBackForwardNavigationGestures = false
         view.setValue(false, forKey: "drawsBackground")
         context.coordinator.attach(view)
         return view
@@ -176,6 +183,36 @@ struct WorkspaceWebView: NSViewRepresentable {
         }
 
         /// `target="_blank"` never opens a second window inside the app.
+        /* JavaScript dialogs, which WebKit will not show unless asked to.
+
+           A WKUIDelegate that does not implement these does not fall back to the system: the page's
+           `confirm()` returns false immediately, and nothing appears. Every destructive control in
+           the product is guarded by `if (!confirm(...)) return;`, so Delete room and Remove agent
+           rendered, were pressed, and silently did nothing — while working perfectly in Safari,
+           which has its own dialogs. Nothing was wrong with the request, the API, or the
+           permissions; the question was never asked. */
+        func webView(_ view: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping () -> Void) {
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            completionHandler()
+        }
+
+        func webView(_ view: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                     initiatedByFrame frame: WKFrameInfo,
+                     completionHandler: @escaping (Bool) -> Void) {
+            let alert = NSAlert()
+            alert.messageText = message
+            // Destructive by default here: every caller of confirm() in this product is one.
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Cancel")
+            alert.buttons.first?.hasDestructiveAction = true
+            completionHandler(alert.runModal() == .alertFirstButtonReturn)
+        }
+
         func webView(_ view: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
             if let url = action.request.url { NSWorkspace.shared.open(url) }

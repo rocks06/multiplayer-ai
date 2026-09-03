@@ -235,4 +235,40 @@ describe("What the product ships", () => {
     const offenders = facing.filter(file => shell.test(fs.readFileSync(path.join(root, file), "utf8")));
     expect(offenders).toEqual([]);
   });
+
+  /**
+   * Entering a room is something a person does on purpose.
+   *
+   * A two-finger swipe used to walk browser history, and the room UI pushes an entry per room, so
+   * a stray trackpad gesture carried people into and out of rooms they had not chosen. Looking for
+   * gesture handlers in the web app found none, because the gesture was never JavaScript's — it
+   * was one line of WebKit configuration in the native shell.
+   */
+  it("never enables swipe navigation in the native shell", () => {
+    const shell = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/ConnectorUI/WorkspaceScreen.swift"), "utf8");
+    expect(shell).toMatch(/allowsBackForwardNavigationGestures\s*=\s*false/);
+    expect(shell).not.toMatch(/allowsBackForwardNavigationGestures\s*=\s*true/);
+  });
+
+  /**
+   * Destructive controls have to be able to ask.
+   *
+   * WebKit does not fall back to a system dialog: a WKUIDelegate that does not implement the
+   * confirm panel makes `confirm()` return false immediately, with nothing on screen. Every
+   * destructive control in this product is guarded by `if (!confirm(...)) return;`, so Delete room
+   * and Remove agent rendered, were pressed, and silently did nothing — while working in Safari,
+   * which has dialogs of its own.
+   */
+  it("answers the JavaScript dialogs its own destructive controls depend on", () => {
+    const shell = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/ConnectorUI/WorkspaceScreen.swift"), "utf8");
+    expect(shell).toContain("runJavaScriptConfirmPanelWithMessage");
+    expect(shell).toContain("runJavaScriptAlertPanelWithMessage");
+
+    // And the guards those answer are really there, so this stays tied to the reason for it.
+    const guarded = ["apps/web/src/Home.tsx", "apps/web/src/Work.tsx", "apps/web/src/App.tsx"]
+      .filter(file => /confirm\(/.test(fs.readFileSync(path.join(root, file), "utf8")));
+    expect(guarded.length).toBeGreaterThan(0);
+  });
 });
