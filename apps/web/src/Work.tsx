@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {Check,ChevronDown,Plus,ShieldAlert,X} from 'lucide-react';
 import {ApiError} from './api';
+import {useConfirm} from './Confirm';
 import type {CompanyAgent,Member,Task,TaskStatus} from './types';
 
 /**
@@ -250,6 +251,7 @@ export function AgentControls({member,agent,canManage,actions,onMessage,onConnec
   const [open,setOpen]=useState(false);
   const [confirmingPause,setConfirmingPause]=useState(false);
   const {busy,problem,run}=useAction();
+  const {confirm,dialog}=useConfirm();
   if(!canManage)return null;
   const paused=agent?.status==='paused';
 
@@ -259,10 +261,16 @@ export function AgentControls({member,agent,canManage,actions,onMessage,onConnec
     {open&&<div className="agent-menu">
       <button type="button" onClick={()=>{onMessage(member.principal_id);setOpen(false)}}>Message {member.display_name}</button>
       {member.agent_presence==='never'&&onConnect&&<button type="button" onClick={()=>{onConnect(member);setOpen(false)}}>Connect {member.display_name}</button>}
-      {onDisconnect&&<button type="button" className="danger" onClick={async()=>{
-        if(!confirm(`Disconnect ${member.display_name} from this room? Its active room session and credential will be revoked, but the agent remains in the workspace.`))return;
-        await onDisconnect(member);setOpen(false);
-      }}>Disconnect from room</button>}
+        {onDisconnect&&<button type="button" className="danger" onClick={()=>{
+          setOpen(false);
+          confirm({
+            title:`Disconnect ${member.display_name} from this room?`,
+            detail:'Its session and credential for this room are revoked. The agent stays in the '
+              +'workspace and can be connected again.',
+            action:'Disconnect from room',
+            run:()=>onDisconnect(member),
+          });
+        }}>Disconnect from room</button>}
 
       {!agent&&<p className="agent-note">This agent is not registered to the workspace, so it cannot be paused from here.</p>}
 

@@ -108,7 +108,7 @@ struct WorkspaceWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
-        let view = WKWebView(frame: .zero, configuration: configuration)
+        let view = ProductWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         /* No swipe navigation.
@@ -233,5 +233,28 @@ struct WorkspaceWebView: NSViewRepresentable {
             if let url = action.request.url { NSWorkspace.shared.open(url) }
             return nil
         }
+    }
+}
+
+/**
+ * The product's web view, which is not a browser.
+ *
+ * Right-clicking offered Back, Forward and Reload, and those walk the single page's history in
+ * ways nothing in the interface offers — the same navigation the swipe gesture was removed for,
+ * reachable from a menu instead. They are taken out; everything genuinely useful about a
+ * right-click, such as copying a selection, is left exactly as it was.
+ */
+final class ProductWebView: WKWebView {
+    private static let navigational: Set<String> = [
+        "WKMenuItemIdentifierGoBack", "WKMenuItemIdentifierGoForward", "WKMenuItemIdentifierReload",
+    ]
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        for item in menu.items where Self.navigational.contains(item.identifier?.rawValue ?? "") {
+            menu.removeItem(item)
+        }
+        // Whatever is left may be nothing at all, and an empty menu should not appear.
+        if menu.items.allSatisfy({ $0.isSeparatorItem }) { menu.removeAllItems() }
+        super.willOpenMenu(menu, with: event)
     }
 }

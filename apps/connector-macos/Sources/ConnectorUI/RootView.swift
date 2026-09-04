@@ -42,6 +42,13 @@ public struct RootView: View {
                     RoomBindingNotice(app: app)
                 }
                 if let runtime = app.detectedRuntime { DetectedRuntimeNotice(app: app, runtime: runtime) }
+                /* Whatever went wrong, wherever it happened.
+
+                   Errors were recorded on the model and drawn only by the setup screens, so
+                   anything that failed once the workspace was open — a runtime that could not be
+                   connected, an agent with nowhere to work — set a message that had nowhere to
+                   appear. Pressing Connect and being told nothing was the result. */
+                if let problem = app.problem, app.step == .ready { ProblemNotice(app: app, problem: problem) }
             }
         }
         .frame(minWidth: 720, minHeight: 560)
@@ -198,5 +205,33 @@ struct DetectedRuntimeNotice: View {
         if runtime.serviceRunning == true { parts.append("gateway running") }
         if let reason = runtime.reason, !runtime.isConnectable { return reason }
         return parts.isEmpty ? "Nothing further is known about it." : parts.joined(separator: " · ")
+    }
+}
+
+/// A failure, said where the person is, with the way out beside it.
+struct ProblemNotice: View {
+    @Bindable var app: AppModel
+    let problem: WorkspaceError
+
+    var body: some View {
+        HStack(spacing: 11) {
+            StateDot(tone: .stopped)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(problem.message)
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.ink)
+                if !problem.recovery.isEmpty {
+                    Text(problem.recovery).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 16)
+            Button("Dismiss") { app.problem = nil }
+                .buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Palette.muted)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 1) }
+        .accessibilityElement(children: .combine)
     }
 }

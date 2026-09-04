@@ -616,3 +616,19 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .coachmark-actions{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:5px;margin-top:12px}
 .coachmark-actions button{padding:5px 8px;border-radius:6px;color:inherit;font-size:11px}.coachmark-next{background:var(--surface)!important;color:var(--ink)!important}
 }
+
+/* The product's own confirmation. Restrained: a question, what it will do, and two answers. */
+.confirm-scrim{position:fixed;inset:0;background:rgba(24,22,20,.34);backdrop-filter:blur(2px);
+  display:grid;place-items:center;padding:24px;z-index:60}
+.confirm{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:20px;
+  max-width:420px;width:100%;box-shadow:0 24px 60px rgba(24,22,20,.22)}
+.confirm h2{font-size:16px;font-weight:550;margin:0 0 6px}
+.confirm-detail{font-size:13px;color:var(--muted);line-height:1.5}
+.confirm-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.confirm-actions .danger{background:var(--danger,#8c2f22);color:#fff;border-color:transparent}
+
+/* The day a conversation was on, stated once. Quiet: it is orientation, not content. */
+.day-separator{display:flex;align-items:center;gap:12px;margin:18px 0 10px}
+.day-separator::before,.day-separator::after{content:"";flex:1;height:1px;background:var(--line)}
+.day-separator span{font-size:11px;font-weight:550;letter-spacing:.04em;color:var(--muted);
+  text-transform:uppercase;white-space:nowrap}

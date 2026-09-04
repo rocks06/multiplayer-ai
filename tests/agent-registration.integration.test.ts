@@ -339,4 +339,21 @@ describe("What the product ships", () => {
     expect(screen).toMatch(/VStack\(spacing: 0\)[\s\S]{0,400}WorkspaceWebView/);
     expect(screen).not.toMatch(/ZStack\(alignment: \.top\)[\s\S]{0,200}WorkspaceWebView/);
   });
+
+  /** No browser dialog anywhere destructive: a host that lacks one silently refuses every click. */
+  it("never asks a host for a confirmation dialog it may not have", () => {
+    const offenders = sourceFiles("apps/web/src")
+      .filter(file => file !== "apps/web/src/Confirm.tsx")
+      .filter(file => /(^|[^.\w])confirm\s*\(/.test(fs.readFileSync(path.join(root, file), "utf8")))
+      .filter(file => !/useConfirm/.test(fs.readFileSync(path.join(root, file), "utf8")));
+    expect(offenders).toEqual([]);
+  });
+
+  /** The product is not a browser, and its right-click menu must not navigate its own history. */
+  it("removes browser navigation from the web view's context menu", () => {
+    const screen = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/ConnectorUI/WorkspaceScreen.swift"), "utf8");
+    expect(screen).toContain("willOpenMenu");
+    for (const item of ["GoBack", "GoForward", "Reload"]) expect(screen).toContain(item);
+  });
 });

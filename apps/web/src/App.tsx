@@ -2,6 +2,7 @@ import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Copy,Plus,RefreshCw,Share2,ShieldAlert,Users,X} from 'lucide-react';
 import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,deleteWorkspaceRoom,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
 import SignIn,{rememberIntent} from './SignIn';
+import {useConfirm} from './Confirm';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
 import Welcome,{ConnectAgent} from './Welcome';
@@ -18,6 +19,32 @@ import type {WorkspaceAgent} from './api';
 import './styles.css';
 
 const formatTime=(value:string)=>new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));
+
+/**
+ * Which day something was said.
+ *
+ * A room keeps its history, so a wall of times with no dates reads as though everything happened
+ * this afternoon. The stored timestamp is untouched — this only decides what to write above the
+ * first message of each day, in the reader's own locale and time zone.
+ */
+export function dayLabel(value:string,now=new Date()){
+  const at=new Date(value);
+  const midnight=(d:Date)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime();
+  const days=Math.round((midnight(now)-midnight(at))/86_400_000);
+  if(days===0)return 'Today';
+  if(days===1)return 'Yesterday';
+  // Within the year the year itself is noise; outside it, it is the whole point.
+  return new Intl.DateTimeFormat(undefined,at.getFullYear()===now.getFullYear()
+    ?{month:'short',day:'numeric'}
+    :{year:'numeric',month:'short',day:'numeric'}).format(at);
+}
+
+/** Whether two timestamps fall on different days for the reader. */
+export const startsNewDay=(value:string,previous?:string)=>{
+  if(!previous)return true;
+  const a=new Date(value),b=new Date(previous);
+  return a.getFullYear()!==b.getFullYear()||a.getMonth()!==b.getMonth()||a.getDate()!==b.getDate();
+};
 
 function Mark({member}:{member:Member}){return <span className={`identity-mark ${member.kind}`} aria-hidden="true">{member.display_name.slice(0,1).toUpperCase()}</span>}
 /** One shared clock for the whole rail, coarse enough that labels do not rewrite themselves. */
@@ -265,7 +292,8 @@ function Transcript({messages,members,events,lastEvent}:{messages:Message[];memb
         // Grouping only hides a repeated name; it never implies a relationship.
         const same=previous?.kind==='message'&&previous.message.sender_principal_id===message.sender_principal_id;
         const rel=relationshipOf(message,byId,members);
-        return <article
+          const previousAt=previous?.kind==='message'?previous.message.created_at:undefined;
+          const body=<article
           className={`message ${message.sender_kind} ${rel.direction} ${same?'continued':''} ${focusedReply===message.id?'reply-target':''}`}
           key={message.id} data-message-id={message.id}>
           {!same&&<header>
@@ -284,7 +312,17 @@ function Transcript({messages,members,events,lastEvent}:{messages:Message[];memb
             {rel.showAddress&&<span className={`address ${rel.addressee?.kind}`}>To {rel.addressee?.display_name}</span>}
             <p>{message.body_text}</p>
           </div>
-        </article>})}
+          </article>;
+          /* The day, written once above the first message of it. A room keeps its history, so a
+             column of times with no dates reads as though all of it happened this afternoon. */
+          if(!startsNewDay(message.created_at,previousAt))return body;
+          return <div key={`day-${message.id}`} className="day-group">
+            <div className="day-separator" role="separator">
+              <span>{dayLabel(message.created_at)}</span>
+            </div>
+            {body}
+          </div>;
+        })}
     </div>
     {unseen>0&&<button type="button" className="new-items" onClick={jump}>{unseen} new {unseen===1?'update':'updates'} <ArrowUp size={13}/></button>}
   </div>
@@ -548,6 +586,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
   const {api,snapshot,connection,lastEvent,error,refresh}=useRoomSession(identity);
   const [briefingOpen,setBriefingOpen]=useState(false);
   const [oversightOpen,setOversightOpen]=useState(false);
+  const {confirm,dialog}=useConfirm();
   const oversightTrigger=useRef<HTMLButtonElement>(null);
   const oversightClose=useRef<HTMLButtonElement>(null);
 
@@ -631,7 +670,8 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
   }:null;
 
   return <main className="room-app">
-    <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div>{managers&&<><button className="share-room" onClick={()=>setSharing(true)}><Share2 size={14}/>Share</button><button className="delete-room" onClick={async()=>{if(!confirm(`Delete ${snapshot.room.name}? Members lose access and active room agent sessions and credentials are revoked. Audit history is retained.`))return;await deleteWorkspaceRoom(identity.companyId,identity.roomId);onNavigate('/home')}}>Delete room</button></>}<button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
+    {dialog}
+    <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div>{managers&&<><button className="share-room" onClick={()=>setSharing(true)}><Share2 size={14}/>Share</button><button className="delete-room" onClick={()=>confirm({title:`Delete ${snapshot.room.name}?`,detail:'Everyone loses access, and any agent sessions and credentials scoped to this room are revoked. The room history is kept.',action:'Delete room',run:async()=>{await deleteWorkspaceRoom(identity.companyId,identity.roomId);onNavigate('/home')}})}>Delete room</button></>}<button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
     {briefingOpen&&<section className="briefing"><div><span>Normalized room briefing</span><h2>{snapshot.briefing.project_objective}</h2></div><dl><div><dt>Your role</dt><dd>{snapshot.briefing.joining_principal.role}</dd></div><div><dt>Your responsibility</dt><dd>{snapshot.briefing.joining_principal.responsibilities||'Contribute to the room objective'}</dd></div><div><dt>Active work</dt><dd>{snapshot.briefing.active_tasks.length} tasks · {snapshot.briefing.blockers.length} blocked</dd></div></dl></section>}
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>

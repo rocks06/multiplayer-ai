@@ -3,6 +3,7 @@ import {ChevronRight,Plus} from 'lucide-react';
 import {ApiError,addRoomMember,createProject,createRoom,
   listWorkspaceAgents,listWorkspaceRooms,removeWorkspaceAgent,type WorkspaceAgent,type WorkspaceRoom} from './api';
 import {connectionOf} from './Welcome';
+import {useConfirm} from './Confirm';
 
 /**
  * Home answers one question: where is my work?
@@ -42,6 +43,7 @@ export function Home({workspace,memberships,onNavigate}:{
   const [agents,setAgents]=useState<WorkspaceAgent[]>([]);
   const [creating,setCreating]=useState(false);
   const [addingAgent,setAddingAgent]=useState(false);
+  const {confirm,dialog}=useConfirm();
 
   /* Every workspace this person belongs to, not merely the first one.
 
@@ -83,6 +85,7 @@ export function Home({workspace,memberships,onNavigate}:{
         <a className="home-secondary" href="multiplayerai://connect-runtime">Connect existing agent</a>
       </div>
     </section>
+    {dialog}
   </main>;
 
   return <main className="home">
@@ -147,14 +150,21 @@ export function Home({workspace,memberships,onNavigate}:{
             <span className="home-agent-rooms">
               {agent.rooms?.length ? agent.rooms.map(room=>room.name).join(', ') : 'No room yet'}
             </span>
-            <button type="button" className="danger-link" onClick={async()=>{
-              if(!confirm(`Remove ${agent.display_name}? This revokes its active credentials and sessions, and removes it from every room. Historical events remain.`))return;
-              await removeWorkspaceAgent(workspace.companyId,agent.principal_id);await load();
-            }}>Remove agent</button>
+            <button type="button" className="danger-link" onClick={()=>confirm({
+              title:`Remove ${agent.display_name}?`,
+              detail:'Its credentials and sessions are revoked and it leaves every room. What it '
+                +'already did stays in the room history.',
+              action:'Remove agent',
+              run:async()=>{
+                await removeWorkspaceAgent(workspace.companyId,agent.principal_id);
+                await load();
+              },
+            })}>Remove agent</button>
           </li>;
         })}
       </ul>}
     </section>
+    {dialog}
   </main>;
 }
 

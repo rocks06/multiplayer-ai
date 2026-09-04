@@ -536,9 +536,25 @@ public final class AppModel {
                nothing starts. Where the answer is not in doubt it is taken; where it is, the
                room-binding notice already asks, and where there is no room at all the runtime is
                connected to the workspace and says so rather than pretending to be working. */
+            /* A brand-new agent belongs to no room yet, and a connector binds to a room — so
+               connecting stopped here and the runtime never became Connected, with nothing said.
+               If this workspace has exactly one room, the agent joins it and starts; anything else
+               is a decision, and it is stated rather than left as silence. */
+            if agentRooms.isEmpty, rooms.count == 1, let room = rooms.first {
+                try? await client.addRoomMember(companyId: company.companyId,
+                                                roomId: room.roomId, principalId: connected.principalId)
+                await refresh()
+            }
             if let room = AppModel.roomToAdopt(current: progress.roomId, agentRooms: agentRooms) {
                 if progress.roomId != room { write { $0.roomId = room } }
                 await bind()
+            } else if agentRooms.isEmpty {
+                problem = .init(code: "runtime_no_room",
+                                message: "\(connected.displayName) is connected to this workspace but is not in a room yet.",
+                                status: 0,
+                                recovery: rooms.isEmpty
+                                    ? "Create a room, then add this agent to it."
+                                    : "Open the room you want it to work in and add it there.")
             }
             await refresh()
         } catch let error as WorkspaceError { problem = error }
