@@ -13,12 +13,18 @@ public struct WorkspaceScreen: View {
     public init(app: AppModel) { self.app = app }
 
     public var body: some View {
-        ZStack(alignment: .top) {
-            WorkspaceWebView(app: app).ignoresSafeArea()
+        /* The banner takes its own space rather than floating over the page.
+
+           It used to be laid over the web view, so on an ordinary laptop window it covered the
+           product's own header — the account and settings controls sat underneath it and could not
+           be clicked. A message about the agent being disconnected is not worth losing the
+           navigation to, and something that overlaps what it interrupts is not a banner. */
+        VStack(spacing: 0) {
             if let alert = WorkspaceAlert.current(health: app.connector.health,
                                                   runtime: app.connector.sidecar.state.runtime) {
                 banner(alert)
             }
+            WorkspaceWebView(app: app)
         }
         .background(Palette.paper)
     }
@@ -38,12 +44,10 @@ public struct WorkspaceScreen: View {
                     .foregroundStyle(Palette.ink)
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.line, lineWidth: 1))
-        .shadow(color: .black.opacity(0.12), radius: 18, y: 6)
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: 1) }
         .transition(.move(edge: .top).combined(with: .opacity))
         .animation(.easeOut(duration: 0.22), value: alert)
         .accessibilityElement(children: .combine)

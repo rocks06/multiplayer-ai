@@ -303,4 +303,40 @@ describe("What the product ships", () => {
     // Connected is only ever reached from being enrolled and live, never from local detection.
     expect(state).toMatch(/if enrolled && health == \.connected \{ return \.connected \}/);
   });
+
+  /**
+   * A build can say which source it came from.
+   *
+   * Two rounds of physical testing were spent on fixes that were committed, pushed and green but
+   * simply not in the installed binary — and there was no way to tell from inside the app, so the
+   * evidence pointed at the code instead of at the build. The commit is stamped in, and shown
+   * first in diagnostics, because that is the question that cost the most time.
+   */
+  it("stamps the source commit into the app it builds", () => {
+    const build = fs.readFileSync(
+      path.join(root, "apps/connector-macos/scripts/build-app.sh"), "utf8");
+    expect(build).toContain("MPAIBuildCommit");
+    expect(build).toMatch(/git rev-parse --short HEAD/);
+    // A build made over uncommitted changes matches no commit, and has to say so.
+    expect(build).toMatch(/\+local/);
+
+    const diagnostics = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/ConnectorUI/DiagnosticsView.swift"), "utf8");
+    expect(diagnostics).toContain("AppModel.buildCommit");
+  });
+
+  /**
+   * The disconnection banner may not cover the product.
+   *
+   * Laid over the web view, it sat on top of the page's own header on an ordinary laptop window,
+   * so the account and settings controls underneath it could not be clicked. A message about the
+   * agent is not worth losing the navigation to.
+   */
+  it("gives the workspace banner its own space rather than overlaying the page", () => {
+    const screen = fs.readFileSync(
+      path.join(root, "apps/connector-macos/Sources/ConnectorUI/WorkspaceScreen.swift"), "utf8");
+    // A VStack reserves height; a top-aligned ZStack floats on top of whatever is beneath it.
+    expect(screen).toMatch(/VStack\(spacing: 0\)[\s\S]{0,400}WorkspaceWebView/);
+    expect(screen).not.toMatch(/ZStack\(alignment: \.top\)[\s\S]{0,200}WorkspaceWebView/);
+  });
 });

@@ -17,6 +17,9 @@ workspace="${MPAI_WORKSPACE_URL:-http://127.0.0.1:4100}"
 # The shipping identity by default. A build given a different one keeps its settings and its
 # keychain entirely to itself, which is how a verification build runs beside the real app.
 bundle_id="${MPAI_BUNDLE_ID:-com.multiplayerai.connector}"
+# Recorded so a build can always say which source it came from, and whether that source was clean.
+commit="$(cd "$repo" && git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(cd "$repo" && git status --porcelain 2>/dev/null)" ]; then commit="$commit+local"; fi
 out="$connector/build"
 # The repository may live in an iCloud-synced folder, which continuously re-applies
 # com.apple.FinderInfo to everything inside it — and codesign refuses to sign over that. The
@@ -58,6 +61,10 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <!-- A real application now: it has a window, a Dock icon, and a place in Cmd-Tab. The menu
        bar is still there, but as somewhere to glance rather than as the whole product. -->
   <key>MPAIWorkspaceURL</key><string>$workspace</string>
+  <!-- Which source this build actually is. Two rounds of physical testing were spent on fixes
+       that were already committed but not in the installed binary, and there was no way to tell
+       from inside the app. Now there is. -->
+  <key>MPAIBuildCommit</key><string>$commit</string>
   <!-- Sign-in links open the app rather than a browser, so signing in stays inside it. -->
   <key>CFBundleURLTypes</key>
   <array>

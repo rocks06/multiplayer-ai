@@ -584,4 +584,47 @@ struct RuntimeConnectionTests {
         #expect(RuntimeConnection.of(runtime: runtime(nil), enrolled: false, health: .offline) == .absent)
     }
 }
+
+/**
+ * Not reopening a room that has been deleted.
+ *
+ * The app returns to wherever it was last, which is right until that room is deleted — and then it
+ * reopens a room that is gone, and the deletion looks as though it did not take.
+ */
+@Suite("Whether the room this Mac would reopen still exists")
+struct LastRoomTests {
+    private let company = "company-1"
+    private func room(_ id: String) -> WorkspaceRoom {
+        .init(roomId: id, name: "R", projectId: "p", projectName: "P")
+    }
+
+    @Test("a room that is still there is kept")
+    func kept() {
+        #expect(AppModel.lastRoomStillExists(path: "/rooms/company-1/room-a",
+                                             companyId: company, rooms: [room("room-a")]))
+    }
+
+    @Test("a room that has been deleted is not")
+    func deleted() {
+        #expect(AppModel.lastRoomStillExists(path: "/rooms/company-1/room-a",
+                                             companyId: company, rooms: [room("room-b")]) == false)
+        #expect(AppModel.lastRoomStillExists(path: "/rooms/company-1/room-a",
+                                             companyId: company, rooms: []) == false)
+    }
+
+    /* A shared room lives in somebody else's workspace, and this workspace's room list says
+       nothing about whether it still exists. Judging it here would throw away a perfectly good
+       room every time the app looked at the wrong company. */
+    @Test("a room in another workspace is not judged by this one")
+    func otherWorkspace() {
+        #expect(AppModel.lastRoomStillExists(path: "/rooms/company-2/room-a",
+                                             companyId: company, rooms: []))
+    }
+
+    @Test("nothing recorded is nothing to invalidate")
+    func nothing() {
+        #expect(AppModel.lastRoomStillExists(path: nil, companyId: company, rooms: []))
+        #expect(AppModel.lastRoomStillExists(path: "/home", companyId: company, rooms: []))
+    }
+}
 }

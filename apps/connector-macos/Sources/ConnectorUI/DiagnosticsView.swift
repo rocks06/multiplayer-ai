@@ -65,6 +65,8 @@ public struct DiagnosticsView: View {
             return "—"
         }
         return [
+            // First, because "which build is this?" is the question that has cost the most time.
+            ("App build", AppModel.buildCommit),
             ("Health", Diagnosis.health(of: state).title),
             ("Workspace", Diagnosis.workspaceDetail(state)),
             ("Gateway state", state.gateway),

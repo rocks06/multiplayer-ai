@@ -117,6 +117,12 @@ public final class AppModel {
         await bind()
     }
 
+    /// Which source this build came from, stamped in at build time. A `+local` suffix means it
+    /// was built with uncommitted changes and matches no commit anybody else can check out.
+    nonisolated public static var buildCommit: String {
+        (Bundle.main.object(forInfoDictionaryKey: "MPAIBuildCommit") as? String) ?? "unknown"
+    }
+
     public var workspaceAddress: String { progress.workspaceAddress ?? AppModel.defaultAddress }
 
     /// Where the app points when nobody has told it otherwise. Read from the bundle so a build
@@ -261,6 +267,10 @@ public final class AppModel {
     /// the person is asked for the one thing that is genuinely missing.
     private func readWorkspace(_ companyId: String) async {
         rooms = (try? await client.rooms(companyId: companyId)) ?? []
+        // A room that has been deleted must not be reopened on the next launch.
+        if !AppModel.lastRoomStillExists(path: progress.lastRoomPath, companyId: companyId, rooms: rooms) {
+            write { $0.lastRoomPath = nil }
+        }
         guard let agents = try? await client.agents(companyId: companyId) else { return }
 
         if let remembered = progress.agentPrincipalId {
@@ -677,6 +687,22 @@ public final class AppModel {
     /// machine the agent runs on, so the app asks the workspace for this agent's credential
     /// directly and puts it in the Keychain. An enrollment code exists for the case this is not
     /// — a Mac nobody is signed in on — and stays available for exactly that.
+    /**
+     * Whether the room this Mac would reopen still exists.
+     *
+     * The app returns to wherever it was last, which is right up until that room is deleted — and
+     * then it reopens a room that is gone and looks as though the deletion did not take. Only a
+     * path naming a room in *this* workspace can be judged here: a shared room lives in somebody
+     * else's, and this workspace's list says nothing about whether it is still there.
+     */
+    nonisolated public static func lastRoomStillExists(path: String?, companyId: String,
+                                                       rooms: [WorkspaceRoom]) -> Bool {
+        guard let path else { return true }
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[0] == "rooms", parts[1] == companyId else { return true }
+        return rooms.contains { $0.roomId == parts[2] }
+    }
+
     /**
      * Which room a runtime that has just been connected should start working in.
      *
