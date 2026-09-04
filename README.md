@@ -1,143 +1,166 @@
-# Multiplayer AI — Room Engine
+# Multiplayer AI
 
-Phase 1A is being implemented as incremental, runnable vertical slices.
+**A shared workspace where people and independently operated AI agents can work together.**
 
-## Implemented slices
+[Project website](https://multiplayer-ai.netlify.app) · [v0.2.0 private release demo](https://github.com/rocks06/multiplayer-ai/releases/tag/v0.2.0) · [Agent Gateway specification](docs/agent-gateway-v1.md)
 
-### Slice 1 — Durable room foundation
+Multiplayer AI is an early-stage platform for persistent rooms shared by humans and external AI agents. Instead of placing one assistant behind one chat box, it is building the infrastructure for multiple people and independently owned agents to coordinate in the same durable workspace.
 
-- separate company, human, agent, and principal identities;
-- project/room creation and explicit room membership;
-- manager, contributor, and worker-agent permissions;
-- first-class room and agent-addressed conversation;
-- tasks with assignment, statuses, optimistic versions, and idempotent commands;
-- immutable per-room ordered events;
-- authorized snapshot and event replay endpoints;
-- normalized project briefing for joining/resuming participants.
+Humans remain in control: they define objectives, assign work, review activity, and approve or reject actions. Agents connect through a provider-neutral gateway and operate under their own identities and room permissions.
 
-### Slice 2 — Realtime room synchronization
+> **Current status:** `v0.2.0` is a private release demo and the first externally installable engineering release. The macOS application is signed, notarized, and accepted by Gatekeeper. Physical acceptance testing confirmed installation, authentication, persistent room membership, invitations, and realtime messaging between two human accounts. The complete bring-your-own-agent connection journey is still under development, so this is not yet a product-ready public launch.
 
-- authorized WebSocket room subscriptions;
-- snapshot bootstrap for a new client;
-- durable replay after `after_seq` for a reconnecting client;
-- ordered event delivery from PostgreSQL `room_events`;
-- client acknowledgements using the highest applied contiguous room sequence;
-- duplicate filtering and sequence-gap detection;
-- PostgreSQL `LISTEN/NOTIFY` wakeups with polling fallback;
-- stale/future cursor and slow-client `resync_required` behavior;
-- active membership revocation and connection cleanup;
-- concurrent room isolation.
+## The idea
 
-PostgreSQL remains the source of truth. Notifications only wake the realtime gateway; every delivery/recovery pump reads the durable room event stream after the connection's last sent contiguous sequence. HTTP remains the command channel and no mutation exists only in WebSocket memory.
+AI agents are becoming more capable, but most products still isolate them inside separate tools and single-user conversations. Multiplayer AI is exploring a different model:
 
-### Slice 3 — Durable agent runtime
+- persistent rooms instead of disposable chats;
+- multiple humans collaborating in the same context;
+- independently owned AI agents joining through a common protocol;
+- durable messages, tasks, events, and decisions;
+- explicit permissions and human approval boundaries;
+- realtime coordination without making one model the owner of the workspace.
 
-- durable PostgreSQL `agent_runs` queue, checkpoints, attempts, leases, and terminal status;
-- independent worker process with renewable leases and expired-lease recovery;
-- bounded fake-provider retries and durable retry status;
-- run-local cancellation generations plus agent-wide pause generations;
-- a Phase 1A scheduler-only one-active-run-per-agent/per-room partial index;
-- normalized briefing and authorized room snapshot context assembly;
-- deterministic scripted fake provider with controlled barriers and failures;
-- `room.send_message`, `task.get`, `task.list_eligible`, `task.update_status`, and `task.complete` tools only;
-- tool execution through `RoomService` under the agent principal, never its human owner;
-- in-transaction lease, generation, status, and membership fencing on every room mutation;
-- stable per-run tool idempotency keys and durable `agent_tool_calls` records;
-- durable run queued/started/resumed/retry/completed/failed/cancelled events.
+The long-term goal is a neutral collaboration layer where people can bring the agents they already use and supervise how those agents work together.
 
-The worker does not mutate `messages`, `tasks`, or other room domain tables directly. Mutating tools use the same permissioned, optimistic, idempotent application commands used by human principals. The deterministic provider and its scripted input are development/test infrastructure for Phase 1A—not a general provider API or production model integration.
+## What exists today
 
-### Slice 4 — Human decision and agent resume workflow
+- **Persistent shared rooms** with company, human, agent, and principal identities.
+- **Realtime synchronization** backed by an ordered PostgreSQL event stream with reconnect and replay support.
+- **Room invitations and authentication** for sharing work between human accounts.
+- **Tasks and dependencies** with assignment, optimistic versions, status transitions, and idempotent commands.
+- **Human decision workflows** for agent-proposed actions that require approval or rejection.
+- **Durable agent runtime** with leases, retries, checkpoints, cancellation, and pause/resume behavior.
+- **External Agent Gateway v0.1** for provider-neutral agent sessions, room discovery, messaging, tasks, and decisions.
+- **macOS application and connector** that combine the workspace, Keychain-backed credentials, and local agent runtime integration.
+- **Automated integration and UI coverage** across the room engine, realtime protocol, invitations, authorization, runtime, and connector flows.
 
-- structured, room-scoped decisions with `pending`, `approved`, `rejected`, `cancelled`, and `expired` states;
-- immutable proposed actions protected by a canonical SHA-256 digest;
-- durable `waiting_for_decision` agent runs with released leases and persisted checkpoints/context cursors;
-- `decision.request` and `decision.get` agent tools through the runtime authority boundary;
-- human-only approval/rejection under the resolving human's own principal and current manager permission;
-- optional human notes/instructions and optional decision expiry timestamps;
-- optimistic decision versions and idempotent create/approve/reject/cancel commands;
-- automatic durable requeue after approval or rejection, with one-time resume under normal lease/generation fencing;
-- resumed context containing the original request, exact proposed action, human resolution/note, and authorized room events since the pause;
-- cancellation propagation for manager cancellation, agent pause, membership loss, principal/agent invalidation, and expiry;
-- correctly attributed `decision.*`, `agent.run_waiting_for_decision`, and `agent.run_resumed` room events;
-- scoped HTTP create/read/list/approve/reject/cancel endpoints.
+## v0.2.0 acceptance milestone
 
-A waiting run remains active for the Phase 1A same-agent/room scheduler constraint. Resolution verifies the exact proposed-action digest and expected decision version transactionally before requeueing the run. An agent cannot inherit a supervising human's authority and cannot approve or reject decisions.
+The first physical acceptance pass used two separate Macs and two human accounts against the hosted system.
 
-### Slice 5 — External Agent Gateway v0.1
+### Confirmed
 
-- provider/framework-neutral `agent-gateway.v1` over narrow HTTP queries/commands and WebSocket event transport;
-- one-time, hash-only machine credentials bound to one company and one active agent principal;
-- independently hashed, durable, room-bound gateway sessions with connection state, runtime status, heartbeat, last seen, and monotonic acknowledged room sequence;
-- active credential, principal, agent, company, room-membership, and worker-agent-role validation at every protected gateway boundary;
-- authorized room discovery, normalized snapshots/briefings, task reads/updates/completion, room and agent-addressed messages, and external decision request/read;
-- the existing PostgreSQL-authoritative Slice 2 room event stream reused for ordered delivery, replay, duplicate suppression, gap recovery, access revocation, and slow-client resynchronization;
-- identical RoomService permission results and event attribution for hosted and external agents;
-- deterministic fake external-agent HTTP/WebSocket client and concurrent two-agent integration coverage.
+- public DMG download and normal macOS installation;
+- Developer ID signing, Hardened Runtime, notarization, stapling, and Gatekeeper acceptance;
+- application launch and hosted service readiness;
+- browser authentication and room invitation acceptance;
+- persistent membership in a shared room;
+- realtime two-human messaging without refreshing.
 
-External decision requests use the same durable decision model and room events but do not fabricate an internally hosted `agent_run`; the external runtime observes the resolution and owns its continuation. See [`docs/agent-gateway-v1.md`](docs/agent-gateway-v1.md) for authentication, lifecycle, complete HTTP/WebSocket contracts, reconnect semantics, parity guarantees, an adapter-ready connection flow, and explicit Phase 1A security limitations.
+### Still in progress
 
-## Realtime protocol
+- a complete, understandable flow for connecting an existing local agent;
+- reliable bring-your-own-agent setup for invited participants;
+- remaining room-management and interaction refinements;
+- broader UI and UX polish before a public beta.
 
-Connect to:
+The milestone is intentionally described as a **private release demo**, not a finished public product. The next target is a public beta with the agent connection journey working end to end.
+
+## Architecture
 
 ```text
-GET /v1/companies/:companyId/rooms/:roomId/stream[?after_seq=N]
+macOS app / web client
+          │
+          ▼
+Fastify API + realtime gateway
+          │
+          ├── PostgreSQL rooms, identities, tasks, decisions, events
+          ├── durable internal agent worker
+          └── provider-neutral external Agent Gateway
+                               │
+                               ▼
+                    local or external agent runtime
 ```
 
-Phase 1A local/dev identity is supplied with `x-principal-id`. A `principal_id` query parameter is also accepted temporarily for browser clients that cannot set upgrade headers.
+PostgreSQL is the source of truth. WebSocket notifications wake clients, while ordered room events provide durable replay and recovery. Agent tools execute through the same permissioned application services used by human principals; agents do not receive their owner's authority and do not write directly to domain tables.
 
-> **Authentication technical debt:** Query-string identity is a Phase 1A development convenience only, is not the production authentication design, and must be replaced by a proper short-lived authenticated mechanism before any external deployment.
+## Repository structure
 
-Server frames:
-
-```json
-{"type":"snapshot","room_id":"...","snapshot_seq":12,"snapshot":{}}
-{"type":"resumed","room_id":"...","after_seq":12,"latest_seq":15}
-{"type":"event","room_id":"...","event":{"id":"...","room_seq":13}}
-{"type":"resync_required","room_id":"...","reason":"slow_client","latest_seq":15}
-{"type":"access_revoked","room_id":"..."}
-{"type":"protocol_error","code":"...","message":"..."}
+```text
+apps/
+  api/                 HTTP API, authentication, invitations, and realtime gateway
+  web/                 Shared-room web application
+  marketing/           Public project website
+  worker/              Durable internal agent runtime worker
+  connector-macos/     Native macOS application and local connector
+packages/
+  db/                  PostgreSQL migrations and database access
+  room-engine/         Room domain, permissions, tasks, events, and decisions
+  connector-core/      Provider-neutral external-agent connector
+  connector-hermes/    Hermes-specific adapter
+docs/
+  agent-gateway-v1.md  External Agent Gateway protocol and security model
+tests/                 Integration, realtime, UI, connector, and acceptance coverage
 ```
 
-Client acknowledgement:
+## Local development
 
-```json
-{"type":"ack","room_seq":13}
-```
+### Requirements
 
-The client applies an event only when `room_seq === last_contiguous_seq + 1`, ignores an event at or below its contiguous sequence, and reconnects with `after_seq=last_contiguous_seq` after a gap or disconnect. A `resync_required` response means reconnect without `after_seq` to obtain a fresh snapshot.
+- Node.js 20 or newer
+- `pnpm` 10
+- PostgreSQL 16, or Docker for the included local database
 
-## Run locally
+### Setup
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+git clone https://github.com/rocks06/multiplayer-ai.git
+cd multiplayer-ai
 pnpm install
-DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm db:migrate
-DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm test
-pnpm build
-DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm start
-DATABASE_URL=postgres://postgres:***@127.0.0.1:55432/multiplayer_ai pnpm start:worker
+cp .env.example .env
+docker compose -f infra/docker-compose.yml up -d
+pnpm db:migrate
 ```
 
-The API queues and controls runs; the worker claims and executes them independently. `WORKER_ID`, `AGENT_LEASE_MS`, and `AGENT_POLL_MS` may be set for local runtime testing.
+Run the services in separate terminals:
 
-## Staging blockers
+```bash
+pnpm dev
+pnpm dev:web
+pnpm dev:worker
+```
 
-These are acceptable for the local developer beta and must be closed before any
-internet-accessible deployment:
+The marketing site can be run with:
 
-- `POST /v1/companies` and `POST /v1/companies/:companyId/humans` are **unauthenticated**.
-  They exist so the first account can bootstrap while there is no email transport. They must
-  be authenticated or replaced before staging. The product path does not use them: a signed-in
-  user creates a workspace through the authenticated `POST /v1/workspaces`, which establishes
-  their membership and principal in the same transaction.
-- Sign-in links are delivered by `LoggingSignInLinkDelivery`, which writes the token to the
-  server log, or issued through an authorized company member. A real transport must be added
-  behind `SignInLinkDelivery` before staging.
-- `ALLOW_HEADER_PRINCIPAL` must remain unset in any deployed environment. It restores the
-  Phase 1A `x-principal-id` / `principal_id` development identity path.
-- Any active company human can still administer gateway credentials and enrollment codes;
-  there is no security-administrator role.
+```bash
+pnpm dev:marketing
+```
 
-Real model providers, production-grade human/machine authentication administration, external actions, agent memory, artifacts, SDK/framework adapters, multi-person quorum/approval chains, and the product UI remain subsequent slices.
+## Validation
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm test:ui
+pnpm build
+```
+
+Some integration tests require the local PostgreSQL service and the environment described in `.env.example`.
+
+## Security model
+
+- humans and agents have separate principals and permissions;
+- machine credentials are stored as hashes server-side;
+- macOS connector credentials are stored in Keychain;
+- room access is revalidated across protected gateway boundaries;
+- durable events preserve attribution and ordered recovery;
+- sensitive configuration belongs in local environment variables and must never be committed.
+
+The gateway specification documents the current security boundaries and known pre-public-beta limitations in detail.
+
+## Roadmap
+
+1. Complete the bring-your-own-agent connection journey.
+2. Finish participant and room-management controls.
+3. Improve shared-room navigation and invitation handoff into the native app.
+4. Expand physical acceptance testing across clean machines and accounts.
+5. Prepare the first public beta.
+
+## Founder
+
+Multiplayer AI is designed and built by [Rocco Donadon](https://roccodonadon.netlify.app), a solo founder working on new interfaces and infrastructure for human–AI collaboration.
+
+## Release note
+
+The `v0.2.0` release is preserved as an engineering milestone. It should be evaluated as a private release demo, not as a production-ready public launch.
