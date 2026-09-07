@@ -95,7 +95,23 @@ async function runVerb(verb, argv) {
     args[name] = next === undefined || next.startsWith('--') ? 'true' : next;
     if (args[name] !== 'true') i++;
   }
+  /* Text that a shell cannot eat on the way in.
+
+     These verbs are run as shell commands, and a shell expands `$` inside double quotes: an agent
+     reporting green fees of "$45-55/round, $39 weekday" delivered "5-55/round, 9 weekday", because
+     $4 and $3 are undefined positional parameters. The money was gone before anything of ours saw
+     it. A `--<name>-stdin` flag takes that text off argv entirely, which is the only way to be
+     certain, and the prompt tells agents to use it for anything a person wrote or will read. */
+  const piped = Object.keys(args).some(name => name.endsWith('-stdin'))
+    ? await new Promise((resolve) => {
+        const chunks = [];
+        process.stdin.on('data', chunk => chunks.push(chunk));
+        process.stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8').replace(/\n$/, '')));
+        process.stdin.on('error', () => resolve(''));
+      })
+    : null;
   const need = (name) => {
+    if (args[`${name}-stdin`] !== undefined && piped !== null) return piped;
     const value = args[name];
     if (value === undefined) { console.error(`Missing --${name}`); process.exit(2); }
     return value;

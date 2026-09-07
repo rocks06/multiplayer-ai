@@ -54,6 +54,33 @@ describe('Slice 6 room interface',()=>{
   expect(await screen.findByRole('heading',{name:'Launch room'})).toBeVisible();
  });
 
+
+ /**
+  * An agent that continues is not an agent replying to itself.
+  *
+  * One task produced several messages — progress, a preview, a summary — each threaded onto the
+  * one before it, so the room showed "Replying to <the agent's own name>" under an agent's own
+  * answer. The chaining is the agent's to stop; showing it as a conversation with a mirror is not.
+  */
+ it('never says an agent replied to itself',async()=>{
+  const own=structuredClone(snapshot) as any;
+  const agentId=own.members.find((m:any)=>m.kind==='agent').principal_id;
+  const first=own.messages[0];
+  own.messages=[
+   {...first,id:'m-progress',sender_principal_id:agentId,sender_kind:'agent',sender_name:"Alex's Agent",
+    body_text:'Researching now.',in_reply_to_message_id:null,room_seq:20},
+   {...first,id:'m-result',sender_principal_id:agentId,sender_kind:'agent',sender_name:"Alex's Agent",
+    body_text:'Here is the result.',in_reply_to_message_id:'m-progress',room_seq:21},
+  ];
+  vi.mocked(fetch).mockImplementation(async(url:any)=>String(url).includes('/v1/auth/me')
+   ?new Response(JSON.stringify(identity),{status:200,headers:{'content-type':'application/json'}})
+   :new Response(JSON.stringify(own),{status:200,headers:{'content-type':'application/json'}}));
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  expect(screen.getByText('Here is the result.')).toBeVisible();
+  expect(screen.queryByText(/Replying to Alex's Agent/)).toBeNull();
+ });
+
  it('renders room context, distinct identities, active work, and a priority decision',async()=>{
   render(<RoomApp/>);
   expect(await screen.findByRole('heading',{name:'Launch room'})).toBeVisible();

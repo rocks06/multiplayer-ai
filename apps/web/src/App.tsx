@@ -222,8 +222,13 @@ function relationshipOf(message:Message,byId:Map<string,Message>,members:Member[
     parent,
     addressee,
     showAddress:Boolean(addressee)&&!addressRedundant,
-    // Only claim a reply exists; claim who it answers only when that message is loaded.
-    reply:message.in_reply_to_message_id?{sender:parent?.sender_name,excerpt:parent?.body_text,id:message.in_reply_to_message_id}:undefined,
+    /* Only claim a reply exists; claim who it answers only when that message is loaded — and
+       never when the answer is to the sender's own earlier message. An agent that posts progress
+       and then a result is continuing, not replying to itself, and "Replying to <its own name>"
+       reads as though it is talking to a mirror. */
+    reply:message.in_reply_to_message_id&&parent?.sender_principal_id!==message.sender_principal_id
+      ?{sender:parent?.sender_name,excerpt:parent?.body_text,id:message.in_reply_to_message_id}
+      :undefined,
     direction:message.sender_kind==='agent'?(addressee?.kind==='human'?'to-human':between?'between-agents':'broadcast'):(addressee?'to-agent':'broadcast'),
   };
 }
