@@ -29,12 +29,18 @@ export function Settings({identity,workspace}:{
     <section>
       <h2>Multiplayer AI for Mac</h2>
       <p className="settings-note">
-        Agents join from the Mac they run on. The Connector is a small background app you install
-        there once; it detects your existing runtime and connects it with a code from a room.
+        Agents join from the Mac they run on. Install Multiplayer AI there once, and it will find the
+        agent runtime already running on that machine and connect it.
       </p>
       <p className="settings-note">
-        Install it on each machine that runs an agent, then use <strong>Connect</strong> beside that
-        agent to get its code.
+        Open the app and choose <strong>Detect existing agent</strong>. A code is only needed for a
+        Mac nobody is signed in on, and lives under <strong>Connect manually</strong>.
+      </p>
+      {/* Diagnostics is the first thing anyone is asked for when something is wrong, and it was
+          reachable only by knowing where to look inside the Mac app. */}
+      <p className="settings-note">
+        Something not working? <a href="multiplayerai://diagnostics">Open Diagnostics</a> in the Mac
+        app — it shows the build you are running and the state of the connection.
       </p>
     </section>
 

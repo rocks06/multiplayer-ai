@@ -445,6 +445,14 @@ public final class AppModel {
     /// Bumped when the workspace view must return to `entryURL`. Watched by the web view.
     public var entryReloads = 0
 
+    /// Whether an incoming link is asking to show Diagnostics — the first thing anybody is asked
+    /// for when something is wrong, and previously reachable only by knowing where to look.
+    nonisolated public static func isDiagnostics(_ raw: String) -> Bool {
+        guard let url = URLComponents(string: raw), url.scheme == "multiplayerai" else { return false }
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return url.host == "diagnostics" || path == "diagnostics"
+    }
+
     /// Whether an incoming link is the web asking this Mac to introduce its runtime, rather than a
     /// sign-in link. Pure, because URL shapes are exactly the thing that is wrong at 2am.
     nonisolated public static func isConnectRuntime(_ raw: String) -> Bool {
@@ -563,6 +571,10 @@ public final class AppModel {
     }
 
     public func receive(authURL raw: String) async {
+        if AppModel.isDiagnostics(raw) {
+            connector.showingDiagnostics = true
+            return
+        }
         if let shared = AppModel.sharedRoomLink(raw) {
             guard initialized else { queuedAuthURL = raw; return }
             return await openSharedRoom(company: shared.company, room: shared.room)

@@ -296,12 +296,17 @@ function Transcript({messages,members,events,lastEvent}:{messages:Message[];memb
           const body=<article
           className={`message ${message.sender_kind} ${rel.direction} ${same?'continued':''} ${focusedReply===message.id?'reply-target':''}`}
           key={message.id} data-message-id={message.id}>
-          {!same&&<header>
-            <span className={`sender-glyph ${message.sender_kind}`}>{message.sender_name.slice(0,1)}</span>
-            <strong>{message.sender_name}</strong>
-            <span className="kind-mark">{message.sender_kind==='agent'?'AI':'Human'}</span>
-            <time dateTime={message.created_at}>{formatTime(message.created_at)}</time>
-          </header>}
+          {!same
+            ? <header>
+                <span className={`sender-glyph ${message.sender_kind}`}>{message.sender_name.slice(0,1)}</span>
+                <strong>{message.sender_name}</strong>
+                <span className="kind-mark">{message.sender_kind==='agent'?'AI':'Human'}</span>
+                <time dateTime={message.created_at}>{formatTime(message.created_at)}</time>
+              </header>
+            /* Grouping hides a repeated name, never the time. A run of replies under one
+               timestamp leaves every message below it undated, which is what makes a long
+               conversation impossible to place. */
+            : <time className="message-time" dateTime={message.created_at}>{formatTime(message.created_at)}</time>}
           <div className="message-body">
             {rel.reply&&(rel.reply.excerpt
               ? <button type="button" className="reply-cue" onClick={event=>followReply(rel.reply!.id,event.currentTarget)}>
@@ -553,7 +558,6 @@ function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void})
 function RoomContext({workspace,snapshot}:{workspace:string;snapshot:RoomSnapshot}){
   return <nav className="room-context" aria-label="Workspace context">
     <div className="context-block"><span className="context-label">Workspace</span><p className="context-value">{workspace}</p></div>
-    <div className="context-block"><span className="context-label">Project</span><p className="context-value">{snapshot.room.project_name}</p></div>
     <div className="context-block">
       <span className="context-label">Room</span>
       <p className="context-value context-room">{snapshot.room.name}</p>
@@ -676,7 +680,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
       <RoomContext workspace={workspace} snapshot={snapshot}/>
-      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div><span className="sequence">SEQ {snapshot.snapshot_seq}</span></div><Transcript messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
+      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
       <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
         <div className="sheet-bar">
           <span>Team &amp; work</span>

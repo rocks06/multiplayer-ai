@@ -356,4 +356,32 @@ describe("What the product ships", () => {
     expect(screen).toContain("willOpenMenu");
     for (const item of ["GoBack", "GoForward", "Reload"]) expect(screen).toContain(item);
   });
+
+  /**
+   * A room fills the window; only the conversation scrolls.
+   *
+   * The work table was sized in viewport units inside a grid that already gave it the remaining
+   * space, with a 540px floor on top — so on a laptop the whole page scrolled and the header and
+   * composer slid away with it. Height belongs to the grid.
+   */
+  it("lets the layout own the room's height rather than the viewport", () => {
+    const css = fs.readFileSync(path.join(root, "apps/web/src/styles.css"), "utf8");
+    const worktable = /\.worktable\{[^}]*\}/.exec(css)?.[0] ?? "";
+    expect(worktable).not.toMatch(/100vh/);
+    expect(worktable).not.toMatch(/min-height:\s*540px/);
+    expect(css).toMatch(/body\{[^}]*overflow:hidden/);
+  });
+
+  /** A raw sequence number is a database detail, not something to put in front of a person. */
+  it("shows no raw sequence number in the conversation heading", () => {
+    const app = fs.readFileSync(path.join(root, "apps/web/src/App.tsx"), "utf8");
+    expect(app).not.toContain("SEQ {");
+  });
+
+  /** Every message carries its time, including ones grouped under a repeated name. */
+  it("dates every message, not only the first of a group", () => {
+    const app = fs.readFileSync(path.join(root, "apps/web/src/App.tsx"), "utf8");
+    // The grouped branch renders a time of its own rather than nothing.
+    expect(app).toMatch(/message-time[\s\S]{0,80}formatTime\(message\.created_at\)/);
+  });
 });

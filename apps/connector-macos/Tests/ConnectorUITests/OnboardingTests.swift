@@ -627,4 +627,24 @@ struct LastRoomTests {
         #expect(AppModel.lastRoomStillExists(path: "/home", companyId: company, rooms: []))
     }
 }
+
+/// Diagnostics is what anybody is asked for first when something is wrong, so it needs a way in
+/// from the product rather than only from knowing where to look inside the Mac app.
+@Suite("The diagnostics link")
+struct DiagnosticsLinkTests {
+    @Test("is recognised however it is spelled")
+    func recognised() {
+        #expect(AppModel.isDiagnostics("multiplayerai://diagnostics"))
+        #expect(AppModel.isDiagnostics("multiplayerai:///diagnostics"))
+    }
+
+    @Test("is not confused with the other links on this scheme")
+    func notTheOthers() {
+        #expect(AppModel.isDiagnostics("multiplayerai://connect-runtime") == false)
+        #expect(AppModel.isDiagnostics("multiplayerai://auth?token=mpsi_abc") == false)
+        #expect(AppModel.isDiagnostics("https://example.test/diagnostics") == false)
+        #expect(AppModel.isConnectRuntime("multiplayerai://diagnostics") == false)
+        #expect(AppModel.sharedRoomLink("multiplayerai://diagnostics") == nil)
+    }
+}
 }
