@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { ArtifactService } from "../artifacts/artifact-service.js";
 import { DomainError } from "../../../../packages/domain/src/index.js";
 import type { RoomService } from "../room-service.js";
 import type { AgentRuntimeService } from "../agent-runtime/runtime-service.js";
@@ -15,7 +16,7 @@ const taskStatuses=z.enum(["open","in_progress","blocked","awaiting_decision","c
 /** Resolves the acting human principal for a company, the same way the room routes do. */
 export type ResolveHumanPrincipal = (request:any,companyId:string)=>Promise<string>;
 
-export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGatewayService,rooms:RoomService,runtime:AgentRuntimeService,realtime:RealtimeHub,resolvePrincipal:ResolveHumanPrincipal) {
+export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGatewayService,rooms:RoomService,runtime:AgentRuntimeService,realtime:RealtimeHub,resolvePrincipal:ResolveHumanPrincipal,artifacts:ArtifactService) {
   app.post("/v1/companies/:companyId/agents/:agentPrincipalId/gateway-credentials",async req=>{
     const p=parse(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);
     const x=parse(z.object({label:z.string().min(1).max(100)}),req.body);
@@ -49,9 +50,32 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/snapshot",async req=>{const s=await session(req);return rooms.snapshot(s.companyId,s.roomId,s.principalId)});
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/tasks",async req=>{const s=await session(req);return rooms.listEligibleTasks({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId})});
   app.get("/v1/agent-gateway/v1/sessions/:sessionId/tasks/:taskId",async req=>{const p=parse(sessionParams.extend({taskId:z.string().uuid()}),req.params);const s=await gateway.authenticateSession(p.sessionId,authorization(req));return rooms.getTask({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,taskId:p.taskId})});
+  /* A file an agent produced, delivered to the room rather than described in it.
+
+     An agent that says "saved to /Users/.../report.pdf" has delivered nothing: nobody on another
+     machine can open that, and the file disappears with the laptop. The session already names the
+     company, the room and the agent, so authorization needs nothing further — an agent can only
+     ever put a file in the room it is connected to. */
+  app.post("/v1/agent-gateway/v1/sessions/:sessionId/artifacts",async req=>{
+    const s=await session(req);
+    const q=parse(z.object({filename:z.string().min(1).max(255),content_type:z.string().min(1).max(255).optional()}),req.query);
+    const bytes=req.body as Buffer;
+    if(!Buffer.isBuffer(bytes))throw new DomainError("artifact_empty","Send the file as the request body",400);
+    return artifacts.create({companyId:s.companyId,roomId:s.roomId,principalId:s.principalId,
+      filename:q.filename,contentType:q.content_type??String(req.headers["content-type"]??"application/octet-stream"),
+      body:new Uint8Array(bytes)});
+  });
+
   app.post("/v1/agent-gateway/v1/sessions/:sessionId/messages",async req=>{
-    const s=await session(req);const x=parse(z.object({body:z.string().min(1),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional()}),req.body);
-    return rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,body:x.body,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idempotency(req)});
+    const s=await session(req);const x=parse(z.object({body:z.string().min(1),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional(),artifact_ids:z.array(z.string().uuid()).max(10).optional()}),req.body);
+    const sent=await rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,body:x.body,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idempotency(req)});
+    /* Files are attached after the message exists, and attaching is idempotent — so a failure here
+       is recovered by sending the same message again with the same key: the message is returned
+       unchanged and the attachment finally lands, rather than the room gaining a second copy. */
+    if(x.artifact_ids?.length){
+      await artifacts.attach({companyId:s.companyId,roomId:s.roomId,messageId:(sent as {id:string}).id,artifactIds:x.artifact_ids});
+    }
+    return sent;
   });
   app.patch("/v1/agent-gateway/v1/sessions/:sessionId/tasks/:taskId/status",async req=>{
     const p=parse(sessionParams.extend({taskId:z.string().uuid()}),req.params);const s=await gateway.authenticateSession(p.sessionId,authorization(req));const x=parse(z.object({status:taskStatuses,expected_version:z.number().int().positive()}),req.body);

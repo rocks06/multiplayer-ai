@@ -89,9 +89,9 @@ export class ArtifactService {
   }
 
   /** Attach delivered files to a message. Anything not ready is refused rather than shown. */
-  async attach(client: { query: DbPool["query"] }, input: {
+  async attach(input: {
     companyId: string; roomId: string; messageId: string; artifactIds: string[];
-  }) {
+  }, client: { query: DbPool["query"] } = this.pool) {
     for (const [position, artifactId] of input.artifactIds.entries()) {
       const ready = await client.query(
         `SELECT 1 FROM artifacts WHERE company_id=$1 AND room_id=$2 AND id=$3 AND status='ready'`,

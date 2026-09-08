@@ -96,6 +96,30 @@ export class GatewayClient {
     return this.http<T>(method, this.route(suffix), body, this.session.sessionToken, idempotencyKey);
   }
 
+  /**
+   * Put a file this agent produced into the room.
+   *
+   * A path on the machine that made it is not delivery — nobody else can open it, and it goes away
+   * with the laptop. The bytes travel as the body because there is one file per request; the name
+   * and type are stated separately so nothing has to be parsed out of them.
+   */
+  async uploadArtifact(input: { filename: string; contentType: string; body: Uint8Array }) {
+    await this.ensureSession();
+    const query = `?filename=${encodeURIComponent(input.filename)}`
+      + `&content_type=${encodeURIComponent(input.contentType)}`;
+    const response = await fetch(`${this.config.baseUrl}${this.route("/artifacts")}${query}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.session.sessionToken}`,
+        "content-type": input.contentType,
+      },
+      body: input.body as unknown as BodyInit,
+    });
+    const text = await response.text();
+    if (!response.ok) throw new GatewayError(`Uploading the file failed: ${response.status} ${text.slice(0, 200)}`, response.status);
+    return JSON.parse(text) as { id: string; filename: string; byte_size: number };
+  }
+
   snapshot() { return this.sessionHttp("GET", "/snapshot"); }
   tasks() { return this.sessionHttp("GET", "/tasks"); }
   task(id: string) { return this.sessionHttp("GET", `/tasks/${id}`); }
@@ -104,12 +128,13 @@ export class GatewayClient {
   heartbeat(runtimeStatus: "idle" | "working") { return this.sessionHttp("POST", "/heartbeat", { runtime_status: runtimeStatus }); }
   disconnect() { return this.sessionHttp("POST", "/disconnect", {}); }
 
-  sendMessage(input: { body: string; addressedPrincipalId?: string; taskId?: string; inReplyToMessageId?: string }, idempotencyKey: string) {
+  sendMessage(input: { body: string; addressedPrincipalId?: string; taskId?: string; inReplyToMessageId?: string; artifactIds?: string[] }, idempotencyKey: string) {
     return this.sessionHttp("POST", "/messages", {
       body: input.body,
       ...(input.addressedPrincipalId ? { addressed_principal_id: input.addressedPrincipalId } : {}),
       ...(input.taskId ? { task_id: input.taskId } : {}),
       ...(input.inReplyToMessageId ? { in_reply_to_message_id: input.inReplyToMessageId } : {}),
+      ...(input.artifactIds?.length ? { artifact_ids: input.artifactIds } : {}),
     }, idempotencyKey);
   }
 

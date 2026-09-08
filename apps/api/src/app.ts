@@ -248,7 +248,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
 
   app.get('/v1/companies/:companyId/rooms/:roomId/snapshot',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.snapshot(p.companyId,p.roomId,await principal(req,p.companyId))});
   app.get('/v1/companies/:companyId/rooms/:roomId/events',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const q=body(z.object({after_seq:z.coerce.number().int().min(0).default(0),limit:z.coerce.number().int().positive().max(500).default(100)}),req.query);return service.events(p.companyId,p.roomId,await principal(req,p.companyId),q.after_seq,q.limit)});
-  registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime,principal);
+  registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime,principal,artifacts);
   app.register(async realtimeRoutes=>{
     realtimeRoutes.get('/v1/companies/:companyId/rooms/:roomId/stream',{websocket:true},(socket,req)=>{
       void (async()=>{ try {

@@ -23,7 +23,7 @@ import * as hermes from '../../../dist/packages/connector-hermes/src/index.js';
 
 /* What an agent may do, and the exact shape it is told to use. The names are what this binary
    dispatches on; the surface strings are what the runtime is shown. */
-const VERB_NAMES = ['snapshot', 'tasks', 'task', 'status', 'complete', 'message', 'decision', 'heartbeat'];
+const VERB_NAMES = ['snapshot', 'tasks', 'task', 'status', 'complete', 'message', 'decision', 'heartbeat', 'attach'];
 const COMMAND_SURFACE = [
   'snapshot',
   'tasks',
@@ -92,8 +92,11 @@ async function runVerb(verb, argv) {
     if (!argv[i].startsWith('--')) continue;
     const name = argv[i].slice(2);
     const next = argv[i + 1];
-    args[name] = next === undefined || next.startsWith('--') ? 'true' : next;
-    if (args[name] !== 'true') i++;
+    const value = next === undefined || next.startsWith('--') ? 'true' : next;
+    /* A flag given more than once collects. Overwriting would silently deliver only the last of
+       several files, which is worse than refusing them outright. */
+    args[name] = name in args ? [].concat(args[name], value) : value;
+    if (value !== 'true') i++;
   }
   /* Text that a shell cannot eat on the way in.
 
@@ -130,12 +133,29 @@ async function runVerb(verb, argv) {
     case 'status': result = await client.updateTaskStatus(need('id'), need('status'), version(), need('key')); break;
     case 'complete': result = await client.completeTask(need('id'), version(), need('key')); break;
     case 'heartbeat': result = await client.heartbeat(args['runtime-status'] === 'working' ? 'working' : 'idle'); break;
+    /* Put a file into the room and get back its id, which a message then carries.
+
+       Reading the file here rather than taking bytes on a command line is the point: a path is
+       how an agent names what it made, and everything after this stops being one. */
+    case 'attach': {
+      const file = need('file');
+      const bytes = fs.readFileSync(file);
+      if (!bytes.length) { console.error(`${file} is empty, so there is nothing to deliver.`); process.exit(2); }
+      result = await client.uploadArtifact({
+        filename: args.name || path.basename(file),
+        contentType: args.type || 'application/octet-stream',
+        body: new Uint8Array(bytes),
+      });
+      break;
+    }
     case 'message':
       result = await client.sendMessage({
         body: need('body'),
         addressedPrincipalId: args.to,
         taskId: args.task,
         inReplyToMessageId: args['reply-to'],
+        // Repeatable: --artifact <id> --artifact <id>. One flag reads as one file.
+        artifactIds: [].concat(args.artifact ?? []).filter(Boolean),
       }, need('key'));
       break;
     case 'decision': {

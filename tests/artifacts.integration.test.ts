@@ -146,6 +146,91 @@ describe("artifacts in a room", () => {
     });
   });
 
+  /**
+   * The whole point, from an agent's side.
+   *
+   * An agent that says "saved to /Users/.../report.pdf" has delivered nothing: nobody on another
+   * machine can open that, and it goes away with the laptop. The session already names the company,
+   * the room and the agent, so an agent can only ever put a file in the room it is connected to.
+   */
+  describe("an agent delivering what it made", () => {
+    async function connected(f: any) {
+      const agent = (await call("POST", `/v1/companies/${f.company.id}/agents`, { name: "Research" }, f.head)).json();
+      await call("POST", `/v1/companies/${f.company.id}/rooms/${f.room.id}/members`,
+        { principal_id: agent.principal_id, role: "worker_agent", responsibilities: "" },
+        { ...f.head, "idempotency-key": crypto.randomUUID() });
+      const credential = (await call("POST",
+        `/v1/companies/${f.company.id}/agents/${agent.principal_id}/gateway-credentials`,
+        { label: "its Mac" }, f.head)).json();
+      const session = (await call("POST", "/v1/agent-gateway/v1/sessions", { room_id: f.room.id },
+        { authorization: `Bearer ${credential.credential_token}` })).json();
+      return { agent, session, auth: { authorization: `Bearer ${session.session_token}` } };
+    }
+
+    it("uploads a file and delivers it with one message", async () => {
+      const f = await fixture();
+      const jj = await connected(f);
+
+      const uploaded = await call("POST",
+        `/v1/agent-gateway/v1/sessions/${jj.session.session_id}/artifacts?filename=${encodeURIComponent("Golf_Courses.pdf")}&content_type=application%2Fpdf`,
+        "%PDF-1.4 the real thing", { ...jj.auth, "content-type": "application/octet-stream" });
+      expect(uploaded.statusCode).toBe(200);
+
+      const said = await call("POST", `/v1/agent-gateway/v1/sessions/${jj.session.session_id}/messages`,
+        { body: "Here is the research.", artifact_ids: [uploaded.json().id] },
+        { ...jj.auth, "idempotency-key": crypto.randomUUID() });
+      expect(said.statusCode).toBe(200);
+
+      // The room's own view carries the file, so nothing has to be fetched per message to show it.
+      const snapshot = (await call("GET", `/v1/companies/${f.company.id}/rooms/${f.room.id}/snapshot`,
+        undefined, f.head)).json();
+      const delivered = snapshot.messages.find((m: any) => m.body_text === "Here is the research.");
+      expect(delivered.attachments).toHaveLength(1);
+      expect(delivered.attachments[0]).toMatchObject({ filename: "Golf_Courses.pdf", content_type: "application/pdf" });
+      // And a person in the room can open it, which is what delivery means.
+      const link = await call("GET",
+        `/v1/companies/${f.company.id}/rooms/${f.room.id}/artifacts/${uploaded.json().id}/download`, undefined, f.head);
+      expect(link.statusCode).toBe(200);
+    });
+
+    /** Sending the same message twice must not put the file in the room twice. */
+    it("does not deliver the same file twice on a retry", async () => {
+      const f = await fixture();
+      const jj = await connected(f);
+      const uploaded = (await call("POST",
+        `/v1/agent-gateway/v1/sessions/${jj.session.session_id}/artifacts?filename=r.pdf&content_type=application%2Fpdf`,
+        "%PDF-1.4", { ...jj.auth, "content-type": "application/octet-stream" })).json();
+
+      const key = crypto.randomUUID();
+      const send = () => call("POST", `/v1/agent-gateway/v1/sessions/${jj.session.session_id}/messages`,
+        { body: "Here it is.", artifact_ids: [uploaded.id] }, { ...jj.auth, "idempotency-key": key });
+      await send();
+      await send();
+
+      const rows = await pool.query(`SELECT count(*)::int n FROM message_artifacts`);
+      expect(rows.rows[0].n).toBe(1);
+      const messages = await pool.query(`SELECT count(*)::int n FROM messages WHERE body_text='Here it is.'`);
+      expect(messages.rows[0].n).toBe(1);
+    });
+
+    /** A file from another room cannot be smuggled into this one by id. */
+    it("refuses to attach a file that is not this room's", async () => {
+      const f = await fixture();
+      const jj = await connected(f);
+      const elsewhere = (await call("POST", `/v1/companies/${f.company.id}/projects`, { name: "P2", objective: "O" }, f.head)).json();
+      const otherRoom = (await call("POST", `/v1/companies/${f.company.id}/projects/${elsewhere.id}/rooms`, { name: "Other" }, f.head)).json();
+      const theirs = (await call("POST",
+        `/v1/companies/${f.company.id}/rooms/${otherRoom.id}/artifacts?filename=secret.pdf&content_type=application%2Fpdf`,
+        "%PDF-1.4 not yours", { ...f.head, "content-type": "application/octet-stream" })).json();
+
+      const refused = await call("POST", `/v1/agent-gateway/v1/sessions/${jj.session.session_id}/messages`,
+        { body: "Look at this.", artifact_ids: [theirs.id] },
+        { ...jj.auth, "idempotency-key": crypto.randomUUID() });
+      expect(refused.statusCode).toBeGreaterThanOrEqual(400);
+      expect((await pool.query(`SELECT count(*)::int n FROM message_artifacts`)).rows[0].n).toBe(0);
+    });
+  });
+
   it("refuses an empty file rather than delivering nothing", async () => {
     const f = await fixture();
     expect((await upload(f, "")).statusCode).toBeGreaterThanOrEqual(400);
