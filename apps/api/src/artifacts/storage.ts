@@ -50,8 +50,10 @@ export class SupabaseArtifactStorage implements ArtifactStorage {
   }
   /** Provider errors must never carry the key, and Supabase echoes request context in some. */
   private async fail(what: string, response: Response): Promise<never> {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`${what} failed: ${response.status} ${detail.slice(0, 200)}`);
+    // Upstream bodies may echo Authorization, signed tokens, or request content. HTTP status
+    // is sufficient for an actionable failure; never forward provider text into diagnostics.
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`${what} failed: ${response.status}`);
   }
 
   async put(key: string, body: Uint8Array, contentType: string) {

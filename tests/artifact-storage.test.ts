@@ -76,8 +76,9 @@ describe("verifying the bucket", () => {
     const failing = storage(() => new Response("upstream said: service-key was rejected", { status: 500 }));
     await expect(failing.verify()).rejects.toThrow();
     const message = await failing.verify().catch((error: Error) => error.message);
-    // The provider's own text is echoed, so this proves the key is not in what we construct.
-    expect(String(message)).toContain("Reading the bucket failed: 500");
+    expect(String(message)).toBe("Reading the bucket failed: 500");
+    expect(String(message)).not.toContain("service-key");
+    expect(String(message)).not.toContain("upstream said");
   });
 });
 
