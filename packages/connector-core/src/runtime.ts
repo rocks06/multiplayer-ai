@@ -82,7 +82,7 @@ export class ConnectorRuntime {
       onResync: () => { this.state.last_contiguous_seq = null; this.state.connection = "resync_required"; this.save(); },
       onConnected: () => this.scheduleWake(0),
       onError: detail => { this.state.last_error = detail; this.save(); },
-      runtimeStatus: () => (this.busy ? "working" : "idle"),
+      runtimeStatus: () => (this.state.hermes_running ? "working" : "idle"),
     }, { baseUrl: options.config.baseUrl, ...(options.stream ?? {}) });
   }
 
@@ -121,18 +121,20 @@ export class ConnectorRuntime {
   }
 
   private scheduleWake(delay = this.options.wakeDelayMs ?? 750) {
-    if (this.stopping || this.wakeTimer || this.busy || !this.state.pending_actionable_events.length) return;
+    if (this.stopping || this.state.connection !== "live" || this.wakeTimer || this.busy || !this.state.pending_actionable_events.length) return;
     this.wakeTimer = setTimeout(() => { this.wakeTimer = null; void this.drain(); }, delay);
   }
 
   private async invoke(trigger: ActionableMarker[]) {
-    this.state.hermes_running = true;
-    this.state.last_wake_at = new Date().toISOString();
-    this.save();
-    await this.client.heartbeat("working").catch(() => {});
-    const assignedTasks = await this.client.assignedWork();
     let exitCode = 1;
     try {
+      const assignedTasks = await this.client.assignedWork();
+      if (this.stopping) return exitCode;
+      this.state.hermes_running = true;
+      this.state.last_wake_at = new Date().toISOString();
+      this.save();
+      await this.client.heartbeat("working");
+      if (this.stopping) return exitCode;
       const result = await this.options.adapter.invoke({
         profile: this.options.profile,
         roomId: this.options.config.roomId,
@@ -147,8 +149,8 @@ export class ConnectorRuntime {
       this.state.hermes_running = false;
       this.state.last_hermes_exit = exitCode;
       this.save();
+      if (!this.stopping) await this.client.heartbeat("idle").catch(() => {});
     }
-    await this.client.heartbeat("idle").catch(() => {});
     return exitCode;
   }
 
@@ -192,12 +194,14 @@ export class ConnectorRuntime {
 
   async start() {
     this.stopping = false;
-    await this.stream.run();
+    try { await this.stream.run(); }
+    finally { this.stop(this.state.connection as ConnectionState); }
   }
 
   stop(connection: ConnectionState = "offline") {
     this.stopping = true;
     if (this.wakeTimer) clearTimeout(this.wakeTimer);
+    this.wakeTimer = null;
     this.options.adapter.cancel?.();
     this.stream.stop();
     this.state.connection = connection;

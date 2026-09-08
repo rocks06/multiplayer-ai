@@ -158,6 +158,10 @@ public final class SidecarClient {
         let reply: Data = try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
             stdin.write(data + Data("\n".utf8))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(15))
+                self?.pending.removeValue(forKey: id)?.resume(throwing: SidecarError.refused("The connector did not respond. Retry or open Diagnostics."))
+            }
         }
         return (try? JSONSerialization.jsonObject(with: reply) as? [String: Any]) ?? [:]
     }

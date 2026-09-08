@@ -25,13 +25,13 @@ export interface StreamOptions {
   heartbeatIntervalMs?: number;
 }
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 const message = (error: unknown) => String((error as any)?.message ?? error);
 
-const isTerminal = (error: unknown) =>
+export const isTerminal = (error: unknown) =>
   (error as any)?.terminal === true ||
   message(error).includes("Gateway access revoked") ||
-  ((error as any)?.status === 401 && (error as any)?.body?.error?.code === "gateway_unauthenticated");
+  ["gateway_unauthenticated", "room_access_denied", "room_not_found", "agent_not_found"].includes((error as any)?.body?.error?.code);
 
 /** Terminal says stop; this says what to tell the person, and they are different questions. */
 const terminalReason = (error: unknown): "unauthenticated" | "superseded" =>
@@ -51,6 +51,7 @@ const isSessionRejected = (error: unknown) =>
 export class EventStream {
   private stopping = false;
   private socket: WebSocket | null = null;
+  private cancelDelay: (() => void) | null = null;
 
   constructor(
     private readonly client: GatewayClient,
@@ -60,7 +61,8 @@ export class EventStream {
 
   stop() {
     this.stopping = true;
-    if (this.socket) { try { this.socket.close(); } catch {} }
+    this.cancelDelay?.();
+    if (this.socket) { try { this.socket.terminate(); } catch {} }
   }
 
   async run() {
@@ -74,24 +76,15 @@ export class EventStream {
       let heartbeat: NodeJS.Timeout | null = null;
       let watchdog: NodeJS.Timeout | null = null;
       try {
+        this.callbacks.onConnectionState("reconnecting");
         await this.client.ensureSession();
+        if (this.stopping) break;
         const wsBase = this.options.baseUrl.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
         const cursor = this.callbacks.cursor();
         const url = `${wsBase}${this.client.route("/stream")}${cursor === null ? "" : `?after_seq=${cursor}`}`;
         const socket = new WebSocket(url, { headers: { authorization: `Bearer ${this.client.sessionToken}` } });
         this.socket = socket;
 
-        await new Promise<void>((resolve, reject) => {
-          socket.once("open", () => resolve());
-          socket.once("error", reject);
-        });
-        this.callbacks.onConnectionState("live");
-        connectDelay = baseDelay;
-        this.callbacks.onConnected();
-
-        heartbeat = setInterval(() => {
-          void this.client.heartbeat(this.callbacks.runtimeStatus()).catch(() => {});
-        }, heartbeatInterval);
 
         // A slept laptop or a silently dropped route leaves a half-open socket that never
         // emits close. Unanswered pings are the only reliable signal it is gone.
@@ -107,9 +100,21 @@ export class EventStream {
         }, pingInterval);
 
         const closure = await new Promise<{ code: number } | undefined>((resolve, reject) => {
+          let ready = false;
+          heartbeat = setInterval(() => {
+            if (!ready) return;
+            void this.client.heartbeat(this.callbacks.runtimeStatus()).catch(reject);
+          }, heartbeatInterval);
           socket.on("message", raw => {
             try {
               const frame = JSON.parse(raw.toString());
+              if (frame.type === "session.ready" && !ready) {
+                ready = true;
+                this.callbacks.onConnectionState("live");
+                connectDelay = baseDelay;
+                this.callbacks.onConnected();
+                return;
+              }
               if (frame.type === "room.snapshot") {
                 this.callbacks.onSnapshot(Number(frame.snapshot_seq));
                 return;
@@ -159,21 +164,28 @@ export class EventStream {
           connectDelay = Math.min(connectDelay * 2, ceiling);
         }
       } catch (error) {
-        this.callbacks.onConnectionState("reconnecting");
         this.callbacks.onError(message(error));
         if (isTerminal(error)) {
+          this.callbacks.onConnectionState(terminalReason(error) === "superseded" ? "superseded" : "access_revoked");
           // Carry the reason out with the error, so the supervisor never has to read the message.
           if (!(error as any)?.reason) (error as any).reason = terminalReason(error);
           throw error;
         }
+        this.callbacks.onConnectionState("reconnecting");
         // Retrying a session id the Gateway no longer accepts can never succeed.
         if (isSessionRejected(error)) this.client.clearSession();
         connectDelay = Math.min(connectDelay * 2, ceiling);
       } finally {
         if (heartbeat) clearInterval(heartbeat);
         if (watchdog) clearInterval(watchdog);
+        this.socket?.terminate();
+        this.socket = null;
       }
-      if (!this.stopping) await sleep(connectDelay + Math.floor(Math.random() * 250));
+      if (!this.stopping) await new Promise<void>(resolve => {
+        const finish = () => { clearTimeout(timer); this.cancelDelay = null; resolve(); };
+        const timer = setTimeout(finish, connectDelay + Math.floor(Math.random() * 250));
+        this.cancelDelay = finish;
+      });
     }
   }
 }

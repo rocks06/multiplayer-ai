@@ -20,7 +20,7 @@ public final class ConnectorModel {
     public var busy = false
     public var notice: String?
 
-    public var health: Health { Diagnosis.health(of: sidecar.state, credential: sidecar.credentialProblem) }
+    public var health: Health { busy ? .reconnecting : Diagnosis.health(of: sidecar.state, credential: sidecar.credentialProblem) }
 
     /// A code can only be spent against somewhere real, so both are required before connecting.
     public var addressLooksUsable: Bool { ConnectorModel.usableAddress(workspaceAddress) }
@@ -98,15 +98,32 @@ public final class ConnectorModel {
     }
 
     public func reconnect() async {
+        guard !busy else { return }
         busy = true
+        notice = nil
         defer { busy = false }
         if sidecar.state.running == false { sidecar.start() }
         // When the credential could not be read, the helper was never configured and has nothing
         // to reconnect — asking it to would be a button that does nothing. Retry the read instead,
         // which is the thing that actually might have changed (a Keychain that was locked, an
         // unlock that has since happened).
-        if sidecar.credentialProblem != nil { await sidecar.resumeSession(); return }
-        _ = try? await sidecar.send("reconnect")
+        do {
+            if sidecar.credentialProblem != nil { await sidecar.resumeSession() }
+            else { try await sidecar.send("reconnect") }
+            let deadline = Date().addingTimeInterval(20)
+            repeat {
+                await sidecar.refresh()
+                if sidecar.state.gateway == "live" { return }
+                if sidecar.state.gateway == "auth_required" {
+                    throw SidecarError.refused("This agent's access needs attention. Check its workspace membership in Settings before retrying.")
+                }
+                if sidecar.credentialProblem != nil {
+                    throw SidecarError.refused("The saved credential is unavailable. Unlock the Keychain and retry.")
+                }
+                try await Task.sleep(for: .milliseconds(250))
+            } while Date() < deadline
+            throw SidecarError.refused("The server did not confirm a connection. Check the network and Retry.")
+        } catch { notice = error.localizedDescription }
     }
 
     /// Signing out removes the credential from the Keychain and everything durable the connector

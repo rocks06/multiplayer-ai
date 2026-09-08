@@ -295,10 +295,10 @@ export class AgentGatewayService {
         `UPDATE external_agent_sessions SET runtime_status=$2,last_seen_at=now() WHERE id=$1
          RETURNING (SELECT runtime_status FROM external_agent_sessions WHERE id=$1) AS runtime_status,room_id`,
         [sessionId,runtimeStatus]);
-      const woke=runtimeStatus==="working" && before.rows[0]?.runtime_status!=="working";
-      if(woke && this.rooms){
+      const changed=before.rows[0]?.runtime_status!==runtimeStatus;
+      if(changed && this.rooms){
         await this.rooms.recordAgentEvent(c,{companyId:identity.companyId,roomId:identity.roomId,
-          agentPrincipalId:identity.principalId,eventType:"agent.woke",
+          agentPrincipalId:identity.principalId,eventType:runtimeStatus==="working"?"agent.woke":"agent.idle",
           payload:{session_id:sessionId}});
       }
       await c.query("COMMIT");

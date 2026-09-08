@@ -20,13 +20,20 @@ public struct WorkspaceScreen: View {
            be clicked. A message about the agent being disconnected is not worth losing the
            navigation to, and something that overlaps what it interrupts is not a banner. */
         VStack(spacing: 0) {
-            if let alert = WorkspaceAlert.current(health: app.connector.health,
-                                                  runtime: app.connector.sidecar.state.runtime) {
-                banner(alert)
-            }
+            if let alert = connectionAlert { banner(alert) }
             WorkspaceWebView(app: app)
         }
         .background(Palette.paper)
+    }
+
+    private var connectionAlert: WorkspaceAlert? {
+        if app.connector.busy {
+            return .init(title: "Connecting…", detail: "Waiting for the server to confirm this agent's session.", tone: .working, offersReconnect: false)
+        }
+        if let notice = app.connector.notice {
+            return .init(title: "Needs attention", detail: notice, tone: .idle, offersReconnect: true)
+        }
+        return WorkspaceAlert.current(health: app.connector.health, runtime: app.connector.sidecar.state.runtime)
     }
 
     private func banner(_ alert: WorkspaceAlert) -> some View {
@@ -37,8 +44,10 @@ public struct WorkspaceScreen: View {
                 Text(alert.detail).font(.system(size: 12)).foregroundStyle(Palette.muted)
             }
             Spacer(minLength: 16)
+            if app.connector.busy { ProgressView().controlSize(.small) }
             if alert.offersReconnect {
-                Button("Reconnect") { Task { await app.connector.reconnect() } }
+                Button(app.connector.notice == nil ? "Reconnect" : "Retry") { Task { await app.connector.reconnect() } }
+                    .disabled(app.connector.busy)
                     .buttonStyle(.borderless)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Palette.ink)
