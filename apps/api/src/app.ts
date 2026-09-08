@@ -15,6 +15,8 @@ import { AuthService, type SignInLinkDelivery, type SignInReturn } from "./auth/
 import { RoomInviteService } from "./invites/room-invite-service.js";
 import { deliveryMode, resolveSignInDelivery, type DeliveryEnvironment } from "./auth/delivery-config.js";
 import { assertProductionSafe, isProduction } from "./production-guard.js";
+import { ArtifactService, isPreviewable } from "./artifacts/artifact-service.js";
+import { storageFrom, LocalArtifactStorage, type ArtifactStorage } from "./artifacts/storage.js";
 import { AUTH_LIMITS, PostgresRateLimitStore, clientBucket, emailBucket, overLimit,
   type RateLimitStore } from "./auth/rate-limit.js";
 
@@ -49,6 +51,8 @@ export interface AppOptions {
   environment?: DeliveryEnvironment;
   /** Counts the public authentication routes. Defaults to one backed by this database. */
   rateLimits?: RateLimitStore;
+  /** Where artifact bytes go. Defaults to whatever the environment configures. */
+  artifactStorage?: ArtifactStorage;
   /** The origin serving the web app, where a browser sign-in must return. Defaults to WEB_APP_URL. */
   webAppUrl?: string;
 }
@@ -61,7 +65,16 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const production=isProduction(environmentForGuard);
   /* Behind Render's proxy the socket address is the proxy's. Without this every caller shares one
      address, and a per-caller limit would lock out everybody at once instead of one abuser. */
-  const app=Fastify({logger:false,trustProxy:production});
+  /* Files are large compared with everything else this service handles, so the body limit is
+     raised to match the artifact limit rather than the default 1 MB — and no further, because a
+     limit that only exists in one layer is a limit somebody will find their way around. */
+  const app=Fastify({logger:false,trustProxy:production,bodyLimit:52*1024*1024});
+  const storage:ArtifactStorage=options.artifactStorage??storageFrom(environmentForGuard,production);
+  const artifacts=new ArtifactService(pool,storage);
+  /* Fastify parses JSON and text and refuses everything else, so a PDF arriving as the body would
+     be rejected before any of this saw it. Binary uploads are handed over as-is; the declared type
+     is a claim, and what it is allowed to be is decided in the service, not here. */
+  app.addContentTypeParser('*',{parseAs:'buffer'},(_request,payload,done)=>done(null,payload));
   const allowHeaderPrincipal=options.allowHeaderPrincipal ?? process.env.ALLOW_HEADER_PRINCIPAL==="1";
   /* Where a browser sign-in has to come back to.
 
@@ -206,6 +219,33 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.post('/v1/companies/:companyId/rooms/:roomId/agents/:agentId/pause',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),agentId:z.string().uuid()}),req.params);return agentRuntime.pauseAgent({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),agentId:p.agentId,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/agents/:agentId/resume',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),agentId:z.string().uuid()}),req.params);return agentRuntime.resumeAgent({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),agentId:p.agentId,idempotencyKey:idem(req)})});
   app.patch('/v1/companies/:companyId/rooms/:roomId/tasks/:taskId/assignee',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),taskId:z.string().uuid()}),req.params);const x=body(z.object({assignee_principal_id:z.string().uuid().nullable(),expected_version:z.number().int().positive()}),req.body);return service.reassignTask({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),taskId:p.taskId,assigneePrincipalId:x.assignee_principal_id,expectedVersion:x.expected_version,idempotencyKey:idem(req)})});
+  /* Files in a room, for humans and agents alike.
+
+     Upload is raw bytes with the name and type in the query, rather than multipart: there is one
+     file per request, the body is the file, and that removes a parser from the path every uploaded
+     byte travels through. Membership is checked inside the service on every one of these. */
+  app.post('/v1/companies/:companyId/rooms/:roomId/artifacts',async req=>{
+    const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);
+    const q=body(z.object({filename:z.string().min(1).max(255),content_type:z.string().min(1).max(255).optional()}),req.query);
+    const bytes=req.body as Buffer;
+    if(!Buffer.isBuffer(bytes))throw new DomainError('artifact_empty','Send the file as the request body',400);
+    return artifacts.create({companyId:p.companyId,roomId:p.roomId,
+      principalId:await principal(req,p.companyId),filename:q.filename,
+      contentType:q.content_type??String(req.headers['content-type']??'application/octet-stream'),
+      body:new Uint8Array(bytes)});
+  });
+  app.get('/v1/companies/:companyId/rooms/:roomId/artifacts',async req=>{
+    const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);
+    const found=await artifacts.list(p.companyId,p.roomId,await principal(req,p.companyId));
+    return {artifacts:found.map(a=>({...a,previewable:isPreviewable(a.content_type)}))};
+  });
+  /* A short-lived link, minted only after membership is checked. It expires long before it is
+     worth passing on, which is the whole reason it can be handed to a browser at all. */
+  app.get('/v1/companies/:companyId/rooms/:roomId/artifacts/:artifactId/download',async req=>{
+    const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),artifactId:z.string().uuid()}),req.params);
+    return artifacts.downloadUrl(p.companyId,p.roomId,await principal(req,p.companyId),p.artifactId);
+  });
+
   app.get('/v1/companies/:companyId/rooms/:roomId/snapshot',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.snapshot(p.companyId,p.roomId,await principal(req,p.companyId))});
   app.get('/v1/companies/:companyId/rooms/:roomId/events',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const q=body(z.object({after_seq:z.coerce.number().int().min(0).default(0),limit:z.coerce.number().int().positive().max(500).default(100)}),req.query);return service.events(p.companyId,p.roomId,await principal(req,p.companyId),q.after_seq,q.limit)});
   registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime,principal);
@@ -237,7 +277,10 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
     for(const route of ['/home','/signup','/signin','/join','/settings','/welcome','/welcome/*','/rooms/*','/fixtures/*'])
       app.get(route,async(_request,reply)=>reply.sendFile('index.html'));
   }
-  app.addHook('onReady',async()=>{await realtime.start()});
+  /* The bucket is checked on every boot, not assumed from the day somebody made it. Public is the
+     one setting that decides whether every file in the workspace is readable by anyone who guesses
+     a URL, and it can be changed in a dashboard long after this was configured. */
+  app.addHook('onReady',async()=>{await storage.verify();await realtime.start()});
   app.addHook('onClose',async()=>{await realtime.stop();await pool.end()});
   return app;
 }
