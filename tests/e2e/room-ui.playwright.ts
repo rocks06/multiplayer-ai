@@ -45,6 +45,8 @@ test('signed-out invitee creates an account, resumes the invite, and shares live
 
   const token=await capturedToken(contextB,email);
   await invitee.goto(`/signin?token=${encodeURIComponent(token)}`);
+  // Successful joining offers the accepted native/browser handoff instead of auto-navigation.
+  await invitee.getByRole('button',{name:'Continue in this browser'}).click();
   await expect(invitee).toHaveURL(new RegExp(`/rooms/${fixture.companyId}/${fixture.roomId}$`));
   await expect(invitee.getByRole('status')).toHaveText(/Live/);
   await expect(invitee.getByRole('heading',{name:'Launch room'})).toBeVisible();

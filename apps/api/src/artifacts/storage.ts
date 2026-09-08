@@ -19,6 +19,7 @@ export interface ArtifactStorage {
    * nothing can check membership again, so it is issued per request, after that check, and expires
    * before it can be usefully passed around.
    */
+  read?(key: string): Promise<Uint8Array>;
   signedUrl(key: string, seconds: number): Promise<string>;
   remove(key: string): Promise<void>;
   /** Prove the destination is real and private, before anything is trusted to it. */
@@ -76,6 +77,14 @@ export class SupabaseArtifactStorage implements ArtifactStorage {
     const path = body.signedURL ?? body.signedUrl;
     if (!path) throw new Error("Supabase returned no signed URL");
     return path.startsWith("http") ? path : `${this.base}${path.startsWith("/") ? "" : "/"}${path}`;
+  }
+
+  async read(key: string) {
+    const response = await this.send(`${this.base}/object/authenticated/${this.options.bucket}/${key}`, {
+      headers: this.headers, redirect: 'error', signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) await this.fail('Reading the artifact', response);
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   async remove(key: string) {

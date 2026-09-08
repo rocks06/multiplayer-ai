@@ -17,6 +17,8 @@ import {useRoomSession} from './use-room';
 import type {CompanyAgent,ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
 import type {WorkspaceAgent} from './api';
 import './styles.css';
+import {AttachmentCard,AttachmentComposer,RoomFiles} from './Attachments';
+import type {RoomApi} from './api';
 
 const formatTime=(value:string)=>new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(value));
 
@@ -235,7 +237,7 @@ function relationshipOf(message:Message,byId:Map<string,Message>,members:Member[
 
 const DECISION_VERBS:Record<string,string>={'decision.requested':'asked for a decision','decision.approved':'approved','decision.rejected':'rejected','decision.cancelled':'cancelled a decision','decision.expired':'decision expired'};
 
-function Transcript({messages,members,events,lastEvent}:{messages:Message[];members:Member[];events:RoomEvent[];lastEvent:RoomEvent|null}){
+function Transcript({messages,members,events,lastEvent,api}:{messages:Message[];members:Member[];events:RoomEvent[];lastEvent:RoomEvent|null;api:RoomApi}){
   /* A decision belongs in the room's story: asked here, answered here, in the order it
      happened. Once resolved it stops asking for attention and simply stays as what occurred. */
   const timeline=useMemo(()=>{
@@ -321,6 +323,7 @@ function Transcript({messages,members,events,lastEvent}:{messages:Message[];memb
               : <span className="reply-cue static"><span className="reply-who">Replying to an earlier message</span></span>)}
             {rel.showAddress&&<span className={`address ${rel.addressee?.kind}`}>To {rel.addressee?.display_name}</span>}
             <p>{message.body_text}</p>
+            {message.attachments?.map(file=><AttachmentCard key={file.id} artifact={file} api={api}/>)}
           </div>
           </article>;
           /* The day, written once above the first message of it. A room keeps its history, so a
@@ -685,7 +688,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
       <RoomContext workspace={workspace} snapshot={snapshot}/>
-      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><Composer members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to)=>mutate(()=>api.sendMessage(body,to))} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
+      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript api={api} messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><AttachmentComposer api={api} members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to,ids,key)=>mutate(()=>api.sendMessage(body,to,ids,key))} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
       <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
         <div className="sheet-bar">
           <span>Team &amp; work</span>
@@ -707,6 +710,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
           <SharedWork tasks={snapshot.tasks} members={snapshot.members} agents={agents} canManage={managers} currentId={identity.principalId} actions={actions}>
             <TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/>
           </SharedWork>
+          <RoomFiles api={api} sequence={snapshot.snapshot_seq}/>
           <details className="activity" data-onboarding="live-activity"><summary className="section-label"><span>Live activity</span></summary><ol>{recent.filter(e=>e.event_type!=='message.sent').slice(-5).reverse().map(e=><li key={e.room_seq}><span className={`event-dot ${e.actor_kind}`}/><p><strong>{e.actor_display_name}</strong> {activityText(e)}</p><time>{formatTime(e.created_at)}</time></li>)}</ol></details>
         </div>
       </aside>

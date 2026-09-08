@@ -111,7 +111,7 @@ export class GatewayClient {
       method: "POST",
       headers: {
         authorization: `Bearer ${this.session.sessionToken}`,
-        "content-type": input.contentType,
+        "content-type": "application/octet-stream",
       },
       body: input.body as unknown as BodyInit,
     });

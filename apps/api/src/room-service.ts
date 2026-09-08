@@ -382,7 +382,28 @@ export class RoomService {
     return Number(result.rows[0]!.last_event_seq);
   }
 
-  async sendMessage(input:{companyId:string;roomId:string;actorId:string;addressedPrincipalId?:string;body:string;taskId?:string;inReplyToMessageId?:string;idempotencyKey:string;runGuard?:RunGuard}) { return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId},permission:'message.send'}, async(c)=>{ if(input.addressedPrincipalId) await this.membership(c,input.companyId,input.roomId,input.addressedPrincipalId); if(input.inReplyToMessageId){ const parent=await c.query(`SELECT 1 FROM messages WHERE company_id=$1 AND room_id=$2 AND id=$3`,[input.companyId,input.roomId,input.inReplyToMessageId]); if(!parent.rowCount) throw new DomainError('message_not_found','The message being replied to is not in this room',404); } const id=uuidv7(); await c.query(`INSERT INTO messages(id,company_id,room_id,sender_principal_id,addressed_principal_id,body_text,task_id,in_reply_to_message_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[id,input.companyId,input.roomId,input.actorId,input.addressedPrincipalId??null,input.body,input.taskId??null,input.inReplyToMessageId??null]); const response={id,body_text:input.body,addressed_principal_id:input.addressedPrincipalId??null,in_reply_to_message_id:input.inReplyToMessageId??null}; return {response,event:{type:'message.sent',entityType:'message',entityId:id,payload:response}}; }); }
+  async sendMessage(input:{companyId:string;roomId:string;actorId:string;addressedPrincipalId?:string;body:string;artifactIds?:string[];taskId?:string;inReplyToMessageId?:string;idempotencyKey:string;runGuard?:RunGuard}) {
+    const artifactIds=[...new Set(input.artifactIds??[])];
+    if(!input.body.trim()&&!artifactIds.length)throw new DomainError('message_empty','Write a message or attach a file',400);
+    if(artifactIds.length>10)throw new DomainError('too_many_artifacts','Attach at most ten files per message',400);
+    return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds},permission:'message.send'},async(c)=>{
+      if(input.addressedPrincipalId)await this.membership(c,input.companyId,input.roomId,input.addressedPrincipalId);
+      if(input.inReplyToMessageId){
+        const parent=await c.query(`SELECT 1 FROM messages WHERE company_id=$1 AND room_id=$2 AND id=$3`,[input.companyId,input.roomId,input.inReplyToMessageId]);
+        if(!parent.rowCount)throw new DomainError('message_not_found','The message being replied to is not in this room',404);
+      }
+      const id=uuidv7();
+      await c.query(`INSERT INTO messages(id,company_id,room_id,sender_principal_id,addressed_principal_id,body_text,task_id,in_reply_to_message_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[id,input.companyId,input.roomId,input.actorId,input.addressedPrincipalId??null,input.body,input.taskId??null,input.inReplyToMessageId??null]);
+      // Association and message.sent commit together. Realtime readers cannot see a half-message.
+      for(const [position,artifactId]of artifactIds.entries()){
+        const ready=await c.query(`SELECT 1 FROM artifacts WHERE company_id=$1 AND room_id=$2 AND id=$3 AND status='ready' FOR SHARE`,[input.companyId,input.roomId,artifactId]);
+        if(!ready.rowCount)throw new DomainError('artifact_not_ready','That file is not available in this room',409);
+        await c.query(`INSERT INTO message_artifacts(company_id,room_id,message_id,artifact_id,position) VALUES($1,$2,$3,$4,$5)`,[input.companyId,input.roomId,id,artifactId,position]);
+      }
+      const response={id,body_text:input.body,addressed_principal_id:input.addressedPrincipalId??null,in_reply_to_message_id:input.inReplyToMessageId??null,artifact_ids:artifactIds};
+      return {response,event:{type:'message.sent',entityType:'message',entityId:id,payload:response}};
+    });
+  }
 
   async createTask(input:{companyId:string;roomId:string;actorId:string;title:string;description:string;assigneePrincipalId?:string;idempotencyKey:string}) { return this.command({...input,commandType:'task.create',input:{title:input.title,description:input.description,assigneePrincipalId:input.assigneePrincipalId},permission:'task.create'}, async(c)=>{ if(input.assigneePrincipalId) await this.membership(c,input.companyId,input.roomId,input.assigneePrincipalId); const id=uuidv7(); await c.query(`INSERT INTO tasks(id,company_id,room_id,title,description,created_by_principal_id,assignee_principal_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,[id,input.companyId,input.roomId,input.title,input.description,input.actorId,input.assigneePrincipalId??null]); const response={id,title:input.title,status:'open' as TaskStatus,version:1,assignee_principal_id:input.assigneePrincipalId??null}; return {response,event:{type:'task.created',entityType:'task',entityId:id,entityVersion:1,payload:response}}; }); }
 

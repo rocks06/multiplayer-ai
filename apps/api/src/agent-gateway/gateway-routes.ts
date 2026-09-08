@@ -67,15 +67,8 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
   });
 
   app.post("/v1/agent-gateway/v1/sessions/:sessionId/messages",async req=>{
-    const s=await session(req);const x=parse(z.object({body:z.string().min(1),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional(),artifact_ids:z.array(z.string().uuid()).max(10).optional()}),req.body);
-    const sent=await rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,body:x.body,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idempotency(req)});
-    /* Files are attached after the message exists, and attaching is idempotent — so a failure here
-       is recovered by sending the same message again with the same key: the message is returned
-       unchanged and the attachment finally lands, rather than the room gaining a second copy. */
-    if(x.artifact_ids?.length){
-      await artifacts.attach({companyId:s.companyId,roomId:s.roomId,messageId:(sent as {id:string}).id,artifactIds:x.artifact_ids});
-    }
-    return sent;
+    const s=await session(req);const x=parse(z.object({body:z.string().max(100000),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional(),artifact_ids:z.array(z.string().uuid()).max(10).optional()}),req.body);
+    return rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,body:x.body,artifactIds:x.artifact_ids,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idempotency(req)});
   });
   app.patch("/v1/agent-gateway/v1/sessions/:sessionId/tasks/:taskId/status",async req=>{
     const p=parse(sessionParams.extend({taskId:z.string().uuid()}),req.params);const s=await gateway.authenticateSession(p.sessionId,authorization(req));const x=parse(z.object({status:taskStatuses,expected_version:z.number().int().positive()}),req.body);

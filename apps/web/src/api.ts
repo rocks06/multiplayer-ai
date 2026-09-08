@@ -1,6 +1,6 @@
 import type {ApiErrorShape,CompanyAgent,Decision,RoomIdentity,RoomSnapshot,TaskStatus} from './types';
 
-const commandKey=()=>{
+export const commandKey=()=>{
  const webCrypto=globalThis.crypto;
  if(typeof webCrypto.randomUUID==='function')return webCrypto.randomUUID();
  const bytes=webCrypto.getRandomValues(new Uint8Array(16));
@@ -31,7 +31,19 @@ export class RoomApi {
   snapshot(){return this.request<RoomSnapshot>('/snapshot')}
   createInvite(ttlHours=24){return this.request<{id:string;invite_token:string;invite_path:string;expires_at:string}>('/invites',{method:'POST',body:JSON.stringify({ttl_hours:ttlHours})})}
   decisions(){return this.request<{decisions:Decision[]}>('/decisions?status=pending')}
-  sendMessage(body:string,addressedPrincipalId?:string){return this.request('/messages',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined})})}
+  sendMessage(body:string,addressedPrincipalId?:string,artifactIds:string[]=[],key=commandKey()){return this.request('/messages',{method:'POST',headers:{'idempotency-key':key},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined,artifact_ids:artifactIds})})}
+  artifacts(){return this.request<{artifacts:import('./types').Artifact[]}>('/artifacts')}
+  async uploadArtifact(file:File){
+    const query=new URLSearchParams({filename:file.name,content_type:file.type||'application/octet-stream'});
+    const response=await fetch(`${this.base}/artifacts?${query}`,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/octet-stream'},body:file});
+    if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error?.message??'Upload failed. Retry this file.');}
+    return response.json() as Promise<import('./types').Artifact>;
+  }
+  async artifactBytes(id:string){
+    const response=await fetch(`${this.base}/artifacts/${encodeURIComponent(id)}/content`,{credentials:'same-origin',redirect:'error'});
+    if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error?.message??'File unavailable. Retry or ask the sender to upload it again.');}
+    return response.blob();
+  }
   createTask(input:{title:string;description:string;assigneePrincipalId?:string}){return this.request('/tasks',{method:'POST',headers:{'idempotency-key':commandKey()},body:JSON.stringify({title:input.title,description:input.description,assignee_principal_id:input.assigneePrincipalId||undefined})})}
   updateTask(taskId:string,status:TaskStatus,expectedVersion:number){return this.request(`/tasks/${taskId}/status`,{method:'PATCH',headers:{'idempotency-key':`task-${taskId}-${status}-v${expectedVersion}`},body:JSON.stringify({status,expected_version:expectedVersion})})}
   /** The key is stable per decision and outcome, so a double submission returns the original

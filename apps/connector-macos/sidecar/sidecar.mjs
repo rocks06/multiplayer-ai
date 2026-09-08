@@ -143,7 +143,7 @@ async function runVerb(verb, argv) {
       if (!bytes.length) { console.error(`${file} is empty, so there is nothing to deliver.`); process.exit(2); }
       result = await client.uploadArtifact({
         filename: args.name || path.basename(file),
-        contentType: args.type || 'application/octet-stream',
+        contentType: args.type || ({'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.txt':'text/plain','.md':'text/markdown','.csv':'text/csv','.json':'application/json','.zip':'application/zip'}[path.extname(file).toLowerCase()] ?? 'application/octet-stream'),
         body: new Uint8Array(bytes),
       });
       break;

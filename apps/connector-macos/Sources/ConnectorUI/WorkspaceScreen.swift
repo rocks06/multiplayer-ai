@@ -145,7 +145,7 @@ struct WorkspaceWebView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         /// Which entry load this view has already performed, so one is not repeated on every draw.
         var loadedEntry = 0
         private let app: AppModel
@@ -172,19 +172,49 @@ struct WorkspaceWebView: NSViewRepresentable {
         }
 
         func webView(_ view: WKWebView, decidePolicyFor action: WKNavigationAction,
-                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
             guard let url = action.request.url,
                   let base = URL(string: app.workspaceAddress) else {
                 decisionHandler(.allow); return
             }
             guard WebSession.isInternal(url, base: base) else {
+                // Blob URLs are generated after an authenticated same-origin fetch. Never send
+                // them to another application; only the originating web view can read them.
+                if url.scheme == "blob", let source = action.sourceFrame.request.url,
+                   WebSession.isInternal(source, base: base) {
+                    decisionHandler(action.shouldPerformDownload ? .download : .allow); return
+                }
                 // A link out of the product is a link out of the app. Opening it in this window
                 // would strand someone inside a web page with no way back to their room.
                 decisionHandler(.cancel)
-                NSWorkspace.shared.open(url)
+                if ["https", "http", "mailto"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) }
                 return
             }
-            decisionHandler(.allow)
+            decisionHandler(action.shouldPerformDownload ? .download : .allow)
+        }
+
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            download.delegate = self
+        }
+
+        func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                      suggestedFilename: String, completionHandler: @escaping @MainActor @Sendable (URL?) -> Void) {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = URL(fileURLWithPath: suggestedFilename).lastPathComponent
+            panel.begin { result in completionHandler(result == .OK ? panel.url : nil) }
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            let alert = NSAlert(); alert.messageText = "Download failed"
+            alert.informativeText = error.localizedDescription; alert.runModal()
+        }
+
+        func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                     initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable ([URL]?) -> Void) {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = false; panel.canChooseFiles = true
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.begin { result in completionHandler(result == .OK ? panel.urls : nil) }
         }
 
         func webView(_ view: WKWebView, didFinish navigation: WKNavigation!) {
@@ -217,7 +247,7 @@ struct WorkspaceWebView: NSViewRepresentable {
            permissions; the question was never asked. */
         func webView(_ view: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
                      initiatedByFrame frame: WKFrameInfo,
-                     completionHandler: @escaping () -> Void) {
+                     completionHandler: @escaping @MainActor @Sendable () -> Void) {
             let alert = NSAlert()
             alert.messageText = message
             alert.addButton(withTitle: "OK")
@@ -227,7 +257,7 @@ struct WorkspaceWebView: NSViewRepresentable {
 
         func webView(_ view: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
                      initiatedByFrame frame: WKFrameInfo,
-                     completionHandler: @escaping (Bool) -> Void) {
+                     completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
             let alert = NSAlert()
             alert.messageText = message
             // Destructive by default here: every caller of confirm() in this product is one.

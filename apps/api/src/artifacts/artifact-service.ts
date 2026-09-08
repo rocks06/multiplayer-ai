@@ -118,6 +118,19 @@ export class ArtifactService {
     return found.rows;
   }
 
+  /** Read bytes through the authenticated room boundary, not a browser navigation to storage. */
+  async content(companyId: string, roomId: string, principalId: string, artifactId: string) {
+    await this.requireMember(companyId, roomId, principalId);
+    const found = await this.pool.query<{storage_key:string;filename:string;content_type:string}>(
+      `SELECT storage_key,filename,content_type FROM artifacts WHERE company_id=$1 AND room_id=$2 AND id=$3 AND status='ready'`,
+      [companyId, roomId, artifactId]);
+    const row = found.rows[0];
+    if (!row) throw new DomainError('artifact_not_found', 'This file is not available in this room', 404);
+    if (!this.storage.read) throw new DomainError('artifact_unavailable', 'File downloads are unavailable from this storage provider', 503);
+    try { return {...row, bytes: await this.storage.read(row.storage_key)}; }
+    catch { throw new DomainError('artifact_missing', 'The stored file could not be read. Retry or ask the sender to upload it again.', 502); }
+  }
+
   /**
    * A link to download one file with, checked first and expiring quickly.
    *
