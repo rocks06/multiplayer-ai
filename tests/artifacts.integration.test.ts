@@ -5,6 +5,10 @@ import { truncateAll } from "./support/database.js";
 import { seedCompany, seedHuman } from "./support/bootstrap.js";
 import { safeContentType, safeFilename } from "../apps/api/src/artifacts/artifact-service.js";
 import type { ArtifactStorage } from "../apps/api/src/artifacts/storage.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { HermesAdapter } from "../packages/connector-hermes/src/index.js";
 
 const { Pool } = pg;
 const connectionString = process.env.DATABASE_URL;
@@ -166,6 +170,53 @@ describe("artifacts in a room", () => {
         { authorization: `Bearer ${credential.credential_token}` })).json();
       return { agent, session, auth: { authorization: `Bearer ${session.session_token}` } };
     }
+
+    it.each(['success', 'missing', 'upload-failure', 'no-message', 'explicit'])("fake Hermes process -> real authenticated gateway: %s", async mode => {
+      const f = await fixture();
+      const jj = await connected(f);
+      const baseUrl = await app.listen({ host: '127.0.0.1', port: 0 });
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mpai-artifact-test-'));
+      const binary = path.join(root, 'fake-hermes');
+      const key = crypto.randomUUID();
+      const bytes = '%PDF-1.4\n1 0 obj <</Type /Catalog>> endobj\n%%EOF\n';
+      const session = Buffer.from(JSON.stringify({ baseUrl, roomId: f.room.id, agentPrincipalId: jj.agent.principal_id, sessionId: jj.session.session_id, sessionToken: jj.session.session_token })).toString('base64');
+      // Labeled fake runtime; no model, user's Hermes, profile, or production connection is used.
+      fs.writeFileSync(binary, `#!/usr/bin/env node
+const fs = require('node:fs'), cp = require('node:child_process');
+if (process.argv.includes('--version')) { console.log('Hermes v0.18.0'); process.exit(0); }
+const output = JSON.parse(process.env.MPAI_GENERATED_OUTPUT);
+fs.writeFileSync(output.manifest, JSON.stringify({expected:['report.pdf']}));
+if (${JSON.stringify(mode)} !== 'missing') fs.writeFileSync(output.directory+'/report.pdf', ${JSON.stringify(bytes)});
+if (${JSON.stringify(mode)} === 'no-message') process.exit(0);
+const env = {...process.env, MPAI_SESSION:${JSON.stringify(session)}, MPAI_SUPPORT_DIR:${JSON.stringify(root)}, MPAI_IDENTITY_DIR:${JSON.stringify(root)}};
+const sidecar = ${JSON.stringify(path.resolve('apps/connector-macos/sidecar/sidecar.mjs'))};
+if (${JSON.stringify(mode)} === 'explicit') {
+ const attached = cp.spawnSync(process.execPath, [sidecar,'attach','--file',output.directory+'/report.pdf'], {env,encoding:'utf8'});
+ if (attached.status !== 0) process.exit(1);
+}
+const result = cp.spawnSync(process.execPath, [sidecar,'message','--body','Generated PDF','--key',${JSON.stringify(key)}], {env,encoding:'utf8'});
+console.log(result.stdout, result.stderr);
+process.exit(result.status ?? 1);
+`, { mode: 0o700 });
+      const adapter = new HermesAdapter({ command: binary });
+      const input = { profile: 'isolated-test', roomId: f.room.id, agentPrincipalId: jj.agent.principal_id, trigger: [], assignedTasks: [], commandSurface: { template: 'sidecar COMMAND', verbs: ['message', 'attach'] }, logPath: path.join(root, 'test.log') };
+      try {
+        if (mode === 'upload-failure') storage.failNextPut = true;
+        const result = await adapter.invoke(input);
+        const success = mode === 'success' || mode === 'explicit';
+        expect(result.ok, fs.readFileSync(input.logPath, 'utf8')).toBe(success);
+        if (mode === 'success' || mode === 'upload-failure') expect((await adapter.invoke(input)).ok).toBe(success);
+        const rows = await pool.query('SELECT count(*)::int n FROM message_artifacts');
+        expect(rows.rows[0].n).toBe(success ? 1 : 0);
+        expect(storage.objects.size).toBe(success ? 1 : 0);
+        if (success) {
+          expect(Buffer.from([...storage.objects.values()][0]!.body).toString()).toBe(bytes);
+          const snapshot = (await call('GET', `/v1/companies/${f.company.id}/rooms/${f.room.id}/snapshot`, undefined, f.head)).json();
+          expect(snapshot.messages.filter((m: any) => m.body_text === 'Generated PDF')).toHaveLength(1);
+          expect(snapshot.messages.find((m: any) => m.body_text === 'Generated PDF').attachments[0].filename).toBe('report.pdf');
+        }
+      } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    });
 
     it("uploads a file and delivers it with one message", async () => {
       const f = await fixture();

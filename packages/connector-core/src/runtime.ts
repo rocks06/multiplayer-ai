@@ -21,6 +21,8 @@ export interface ConnectorRuntimeOptions {
   adapter: AgentRuntimeAdapter;
   commandSurface: CommandSurface;
   logPath: string;
+  /** Publish the current room session synchronously before the first runtime command. */
+  beforeInvoke?: () => void;
   wakeDelayMs?: number;
   stream?: Omit<StreamOptions, "baseUrl">;
 }
@@ -135,6 +137,7 @@ export class ConnectorRuntime {
       this.save();
       await this.client.heartbeat("working");
       if (this.stopping) return exitCode;
+      this.options.beforeInvoke?.();
       const result = await this.options.adapter.invoke({
         profile: this.options.profile,
         roomId: this.options.config.roomId,

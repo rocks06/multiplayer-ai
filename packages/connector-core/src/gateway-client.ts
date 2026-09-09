@@ -114,9 +114,10 @@ export class GatewayClient {
         "content-type": "application/octet-stream",
       },
       body: input.body as unknown as BodyInit,
+      signal: AbortSignal.timeout(this.timeout()),
     });
     const text = await response.text();
-    if (!response.ok) throw new GatewayError(`Uploading the file failed: ${response.status} ${text.slice(0, 200)}`, response.status);
+    if (!response.ok) throw new GatewayError(`Uploading the file failed: ${response.status}`, response.status);
     return JSON.parse(text) as { id: string; filename: string; byte_size: number };
   }
 

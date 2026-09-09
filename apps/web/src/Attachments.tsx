@@ -1,5 +1,5 @@
-import {useEffect,useRef,useState} from 'react';
-import {Download,FileText,Plus,X} from 'lucide-react';
+import {useEffect,useId,useRef,useState} from 'react';
+import {Download,File as FileIcon,FileText,Image,Plus,X} from 'lucide-react';
 import {commandKey,type RoomApi} from './api';
 import type {Artifact,Member} from './types';
 import './attachments.css';
@@ -53,6 +53,17 @@ export function AttachmentComposer({members,onSend,to,onAddressee,focusToken,api
   const [body,setBody]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[files,setFiles]=useState<PendingFile[]>([]),[menu,setMenu]=useState(false);
   const field=useRef<HTMLTextAreaElement>(null),picker=useRef<HTMLInputElement>(null);
   const sending=useRef(false),attempt=useRef<{payload:string;key:string}|null>(null);
+  const attachControl=useRef<HTMLDivElement>(null),attachButton=useRef<HTMLButtonElement>(null),menuId=useId();
+  useEffect(()=>{
+    if(!menu)return;
+    attachControl.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    const outside=(event:Event)=>{if(!attachControl.current?.contains(event.target as Node))setMenu(false)};
+    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();setMenu(false);attachButton.current?.focus()}};
+    document.addEventListener('pointerdown',outside);
+    document.addEventListener('focusin',outside);
+    document.addEventListener('keydown',escape);
+    return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('focusin',outside);document.removeEventListener('keydown',escape)};
+  },[menu]);
   useEffect(()=>{if(focusToken)field.current?.focus()},[focusToken]);
   const add=(incoming:File[])=>{if(sending.current)return;setError('');setFiles(current=>[...current,...incoming.map(file=>({key:commandKey(),file,error:file.size===0?'File is empty':file.size>50*1024*1024?'File exceeds 50 MB':undefined}))]);setMenu(false)};
   const submit=async()=>{
@@ -77,11 +88,19 @@ export function AttachmentComposer({members,onSend,to,onAddressee,focusToken,api
     }catch(e){setError(`${(e as Error).message} Nothing has been cleared. Retry sending; uploaded files stay shared in this room.`)}
     finally{sending.current=false;setBusy(false)}
   };
-  const choose=(accept:string)=>{if(!picker.current)return;picker.current.accept=accept;picker.current.click();setMenu(false)};
+  const choose=(accept:string)=>{if(!picker.current)return;picker.current.accept=accept;setMenu(false);attachButton.current?.focus();picker.current.click()};
   return <form className="composer" aria-label="Send a room message" data-onboarding="conversation" onSubmit={e=>{e.preventDefault();void submit()}} onDragOver={e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault()}} onDrop={e=>{e.preventDefault();add(Array.from(e.dataTransfer.files))}}>
     <div className="composer-meta"><label>Send to <select value={to} disabled={busy} onChange={e=>onAddressee(e.target.value)}><option value="">Everyone</option>{members.map(m=><option value={m.principal_id} key={m.principal_id}>{m.display_name}</option>)}</select></label><span>Enter to send · Shift Enter for a new line</span></div>
-    {files.length>0&&<details className="pending-files" open><summary>{files.length} attachment{files.length===1?'':'s'} · shared on upload</summary><ul>{files.map(item=><li key={item.key}><span>{item.file.name} · {fileSize(item.file.size)} <small>{item.artifact?'Uploaded':item.error??'Ready to upload'}</small></span><button type="button" disabled={busy} aria-label={`Remove ${item.file.name}`} onClick={()=>setFiles(current=>current.filter(p=>p.key!==item.key))}><X size={14}/></button></li>)}</ul></details>}
-    <div className="composer-input"><div className="attach-control"><button type="button" aria-label="Add attachment" aria-expanded={menu} disabled={busy} onClick={()=>setMenu(v=>!v)}><Plus size={18}/></button>{menu&&<div className="attach-menu" role="menu" onKeyDown={e=>{if(e.key==='Escape')setMenu(false)}}>{[['File',''],['Photo/Image','image/*'],['Document/PDF','application/pdf'],['Other file','']].map(([label,accept])=><button type="button" role="menuitem" key={label} onClick={()=>choose(accept!)}>{label}</button>)}</div>}</div>
+    {files.length>0&&<details className="pending-files" open><summary>{files.length} attachment{files.length===1?'':'s'} · shared on upload</summary><ul>{files.map(item=><li key={item.key}><FileText size={16} aria-hidden="true"/><span className="pending-file-copy"><strong title={item.file.name}>{item.file.name}</strong><small title={item.error}>{fileSize(item.file.size)} · {item.artifact?'Uploaded':item.error??'Ready to upload'}</small></span><button type="button" disabled={busy} aria-label={`Remove ${item.file.name}`} onClick={()=>setFiles(current=>current.filter(p=>p.key!==item.key))}><X size={14}/></button></li>)}</ul></details>}
+    <div className="composer-input"><div className="attach-control" ref={attachControl}><button ref={attachButton} type="button" aria-label="Add attachment" aria-haspopup="menu" aria-controls={menu?menuId:undefined} aria-expanded={menu} disabled={busy} onClick={()=>setMenu(v=>!v)} onKeyDown={e=>{if(e.key==='ArrowDown'){e.preventDefault();setMenu(true)}}}><Plus size={18} aria-hidden="true"/></button>{menu&&<div id={menuId} className="attach-menu" role="menu" aria-label="Attachments" onKeyDown={e=>{
+      if(e.key==='Tab'){setMenu(false);return}
+      if(!['ArrowDown','ArrowUp','Home','End'].includes(e.key))return;
+      e.preventDefault();
+      const items=Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+      const index=items.indexOf(document.activeElement as HTMLButtonElement);
+      const next=e.key==='Home'?0:e.key==='End'?items.length-1:(index+(e.key==='ArrowDown'?1:-1)+items.length)%items.length;
+      items[next]?.focus();
+    }}>{[{label:'File',accept:'',Icon:FileIcon},{label:'Photo',accept:'image/*',Icon:Image},{label:'Document',accept:'application/pdf',Icon:FileText}].map(({label,accept,Icon})=><button type="button" role="menuitem" tabIndex={-1} key={label} onClick={()=>choose(accept)}><Icon size={17} strokeWidth={1.7} aria-hidden="true"/><span>{label}</span></button>)}</div>}</div>
       <input hidden ref={picker} type="file" multiple aria-label="Choose attachments" onChange={e=>{add(Array.from(e.target.files??[]));e.target.value=''}}/>
       <textarea ref={field} aria-label="Message" placeholder="Write a message or drop a file…" value={body} disabled={busy} rows={2} onChange={e=>setBody(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void submit()}}}/><button disabled={busy||(!body.trim()&&!files.length)} aria-label="Send message">{busy?'…':'↑'}</button></div>
     {error&&<p className="form-error" role="alert">{error}</p>}

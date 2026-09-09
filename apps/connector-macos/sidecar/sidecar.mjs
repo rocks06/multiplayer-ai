@@ -33,6 +33,7 @@ const COMMAND_SURFACE = [
   'message --body TEXT [--to ID] [--task ID] [--reply-to ID] --key KEY',
   'decision --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY',
   'heartbeat --runtime-status idle|working',
+  'attach --file PATH [--name NAME] [--type MIME]',
 ];
 /* Where this app keeps what it must not lose. The app names it, because only the app knows
    which Multiplayer AI it is; the fixed path remains the default so a helper run on its own
@@ -126,6 +127,7 @@ async function runVerb(verb, argv) {
   };
 
   let result;
+  const output = process.env.MPAI_GENERATED_OUTPUT ? JSON.parse(process.env.MPAI_GENERATED_OUTPUT) : null;
   switch (verb) {
     case 'snapshot': result = await client.snapshot(); break;
     case 'tasks': result = await client.tasks(); break;
@@ -146,10 +148,11 @@ async function runVerb(verb, argv) {
         contentType: args.type || ({'.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.txt':'text/plain','.md':'text/markdown','.csv':'text/csv','.json':'application/json','.zip':'application/zip'}[path.extname(file).toLowerCase()] ?? 'application/octet-stream'),
         body: new Uint8Array(bytes),
       });
+      if (output) core.rememberExplicitArtifact(output, file, result.id);
       break;
     }
     case 'message':
-      result = await client.sendMessage({
+      result = await (output ? (input, key) => core.sendGeneratedMessage(client, output, input, key, `${session.baseUrl}/${session.roomId}/${session.agentPrincipalId}`) : (input, key) => client.sendMessage(input, key))({
         body: need('body'),
         addressedPrincipalId: args.to,
         taskId: args.task,
@@ -275,6 +278,7 @@ class Connector {
       adapter: this.adapter,
       commandSurface: { template: `${JSON.stringify(selfPath)} COMMAND`, verbs: COMMAND_SURFACE },
       logPath: LOG_FILE,
+      beforeInvoke: () => publishSession(),
     });
 
     // The room-scoped session is what Hermes acts through; the machine credential never leaves

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { verifyGeneratedDelivery } from "../../connector-core/src/generated-artifacts.js";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import {
   WORKFLOW_STEPS,
@@ -216,19 +217,26 @@ Rules:
 - Once a decision you requested is resolved, read it and continue the task from that durable outcome, honouring any human resolution note.
 - If there is nothing to do on this wake, stop cleanly.`;
 
-    return `You are an external Hermes runtime connected as ${input.profile} to Multiplayer AI Agent Gateway v1.\n\n${workflow}\n\nUse the terminal to call only this narrow connector command:\n${tool}\nAvailable COMMAND values: ${input.commandSurface.verbs.join(", ")}.\n\nAnything a person wrote or will read — a message body, a task title or description, a decision question — must be piped in rather than passed as an argument, because this command runs through a shell and a shell eats dollar signs: "$45" becomes "5". Write it as: printf '%s' \"<text>\" | ${tool} --body-stdin <other flags>. Any flag may take its value this way by adding -stdin to its name.\n\nDelivering a file means putting it in the room, not naming where you saved it: a path on this machine cannot be opened by anybody else and goes away with it. Attach it — ${tool} --file <path> — which answers with an id, then send one message carrying that id: ${tool} --artifact <id> --body-stdin. Repeat --artifact for several files. Say "here it is" only once the attach has succeeded; if it fails, say that instead.\n\nSay one thing once. Post progress only if the work is long enough to need it, and make the last message the complete answer; do not repeat a result you have already sent. Reply to the message you are answering, which is the person's, never to your own earlier message.\n\nNever read or print the credential file. Never use curl, direct database access, x-principal-id, or any identity other than this configured connector. Treat PostgreSQL room state as authoritative.\n\nWake reason:\n${JSON.stringify(input.trigger).slice(0, 12_000)}`;
+    return `You are an external Hermes runtime connected as ${input.profile} to Multiplayer AI Agent Gateway v1.\n\n${workflow}\n\nUse the terminal to call only this narrow connector command:\n${tool}\nAvailable COMMAND values: ${input.commandSurface.verbs.join(", ")}.\n\nAnything a person wrote or will read — a message body, a task title or description, a decision question — must be piped in rather than passed as an argument, because this command runs through a shell and a shell eats dollar signs: "$45" becomes "5". Write it as: printf '%s' \"<text>\" | ${tool} --body-stdin <other flags>. Any flag may take its value this way by adding -stdin to its name.\n\nDelivering a file means putting it in the room, not naming where you saved it: a path on this machine cannot be opened by anybody else and goes away with it. Attach it — ${tool.replace('COMMAND', 'attach')} --file <path> — which answers with an id, then send one message carrying that id: ${tool.replace('COMMAND', 'message')} --artifact <id> --body-stdin --key <stable-key>. Repeat --artifact for several files. Say "here it is" only once the attach has succeeded; if it fails, say that instead.\n\nSay one thing once. Post progress only if the work is long enough to need it, and make the last message the complete answer; do not repeat a result you have already sent. Reply to the message you are answering, which is the person's, never to your own earlier message.\n\nNever read or print the credential file. Never use curl, direct database access, x-principal-id, or any identity other than this configured connector. Treat PostgreSQL room state as authoritative.\n\nWake reason:\n${JSON.stringify(input.trigger).slice(0, 12_000)}`;
   }
 
   async invoke(input: AgentInvocation): Promise<AgentInvocationResult> {
+    const parent = path.join(path.dirname(path.resolve(input.logPath)), 'generated-output');
+    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const invocation = fs.mkdtempSync(path.join(fs.realpathSync(parent), 'invocation-'));
+    const output = { directory: path.join(invocation, 'files'), manifest: path.join(invocation, 'manifest.json'), receipts: path.join(fs.realpathSync(parent), 'receipts') };
+    fs.mkdirSync(output.directory, { mode: 0o700 });
+    fs.writeFileSync(output.manifest, JSON.stringify({ expected: [] }), { mode: 0o600 });
+    const outputPrompt = `\nGenerated deliverables: write all files for the room directly inside ${output.directory} (flat directory; no symlinks or subdirectories). Do not put scripts, credentials or intermediate files there. Before generating a promised file, add its basename to the expected array in ${output.manifest}, for example {"expected":["report.pdf"]}. The connector automatically uploads these files BEFORE any message command and atomically attaches their ids to that message. You do not need to call attach. Never send the final answer before generation finishes. A missing declared file or failed upload refuses the message. Files outside this directory are NOT auto-delivered. Use the message command for the final answer, not only CLI output.`;
     const log = fs.openSync(input.logPath, "a", 0o600);
     let exitCode = 1;
     try {
       const child = spawn(this.command, [
-        "chat", "-q", this.buildPrompt(input),
+        "chat", "-q", this.buildPrompt(input) + outputPrompt,
         "--toolsets", "terminal,file,web",
         "--source", `multiplayer-${input.profile}`,
         "--quiet",
-      ], { stdio: ["ignore", log, log], env: { ...process.env } });
+      ], { stdio: ["ignore", log, log], env: { ...process.env, MPAI_GENERATED_OUTPUT: JSON.stringify(output), MPAI_OUTPUT_DIR: output.directory, MPAI_OUTPUT_MANIFEST: output.manifest } });
       this.child = child;
       exitCode = await new Promise<number>(resolve => {
         let settled = false;
@@ -236,10 +244,12 @@ Rules:
         // A spawn error never produces an exit event, so it must be treated as a failed
         // invocation or the durable marker would be cleared without work having happened.
         child.once("error", error => { fs.writeSync(log, `[connector] Hermes spawn failed: ${error.message}\n`); finish(1); });
-        child.once("exit", finish);
+        child.once("close", finish);
       });
+      if (exitCode === 0) verifyGeneratedDelivery(output);
     } catch (error) {
-      fs.writeSync(log, `[connector] Hermes spawn failed: ${String((error as Error).message)}\n`);
+      exitCode = 1;
+      fs.writeSync(log, `[connector] Hermes invocation/delivery failed: ${String((error as Error).message)}\n`);
     } finally {
       this.child = null;
       fs.closeSync(log);
