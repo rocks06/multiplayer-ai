@@ -220,6 +220,23 @@ export class RoomService {
     } finally { c.release(); }
   }
 
+  /** Resolve a stable runtime's existing name without binding, probing, or minting credentials. */
+  async lookupRuntimeForPrincipal(input:{companyId:string;actorId:string;runtimeType:string;externalRuntimeId:string}) {
+    const c=await this.pool.connect();
+    try {
+      await this.workspaceActor(c,input.companyId,input.actorId);
+      const result=await c.query<{principal_id:string;display_name:string}>(
+        `SELECT p.id AS principal_id,p.display_name FROM runtime_installations r
+         JOIN agent_runtime_bindings b ON b.company_id=r.company_id AND b.runtime_installation_id=r.id
+         JOIN principals p ON p.company_id=b.company_id AND p.id=b.agent_principal_id
+         JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id
+         WHERE r.company_id=$1 AND r.runtime_type=$2 AND r.external_runtime_id=$3
+           AND b.status='active' AND p.status='active' AND p.kind='agent' AND a.status='active'`,
+        [input.companyId,input.runtimeType,input.externalRuntimeId]);
+      return {runtime:result.rows[0]??null};
+    } finally { c.release(); }
+  }
+
   /** Bind a validated physical runtime installation to one durable agent principal.
    *
    * The stable key is `(company, runtime_type, external_runtime_id)`. Credentials, connector

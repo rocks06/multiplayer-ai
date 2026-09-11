@@ -315,31 +315,13 @@ public struct AgentScreen: View {
 
     public var body: some View {
         Sheet(title: "Connect your existing agent",
-              lead: "Multiplayer AI does not run agents for you. It brings the one already running on this Mac into your workspace.") {
-            VStack(alignment: .leading, spacing: 18) {
-                runtimeCard
-                if runtime.available {
-                    Field("Agent name", placeholder: "Research agent",
-                          hint: "What you want to call it here. Its own setup does not change.",
-                          value: $name) { submit() }
-                }
-                if let problem = app.problem { Problem(what: problem.message, todo: problem.recovery) }
-            }
+              lead: "Find independently runnable agent profiles on this Mac and connect one to your room.") {
+            Text("Detection checks the local runtime before creating any workspace identity.")
+                .foregroundStyle(Palette.muted)
         } actions: {
-            VStack(alignment: .leading, spacing: 16) {
-                if runtime.available {
-                    PrimaryButton("Connect this agent", busy: app.busy) { submit() }
-                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || app.busy)
-                } else {
-                    PrimaryButton("Look again") {
-                        Task {
-                            _ = try? await app.connector.sidecar.send("detect")
-                            await app.connector.sidecar.refresh()
-                        }
-                    }
-                }
-            }
+            PrimaryButton("Detect Agent") { Task { await app.detectRuntime() } }
         }
+        .sheet(isPresented: $app.showingAgentDiscovery, onDismiss: { app.dismissAgentDiscovery() }) { AgentDiscoverySheet(app: app) }
     }
 
     private var runtimeCard: some View {

@@ -75,8 +75,15 @@ public struct DiagnosticsView: View {
             ("Room sync", Diagnosis.syncDetail(state)),
             ("Last read seq", state.sync.lastContiguousSeq.map(String.init) ?? "—"),
             ("Pending items", String(state.sync.pending)),
-            ("Helper PID", text("pid")),
+            ("Helper PID", model.sidecar.processIdentifier.map(String.init) ?? "Not running"),
+            ("Helper IPC", model.sidecar.ipcStatus),
+            ("Launch failure", model.sidecar.lastLaunchFailure ?? "—"),
+            ("IPC failure", model.sidecar.lastIPCFailure ?? "—"),
+            ("Last helper exit", model.sidecar.lastExit ?? "—"),
+            ("Helper path", model.sidecar.executablePath?.path ?? "Missing"),
+            ("Support folder", model.sidecar.activeSupportDirectory.path),
             ("Helper restarts", String(model.sidecar.restarts)),
+            ("Diagnostics reply", report["diagnosticsStatus"] as? String ?? "Waiting"),
             ("Workspace URL", text("baseUrl")),
             ("Room ID", text("roomId")),
             ("Agent principal", text("agentPrincipalId")),
@@ -89,9 +96,17 @@ public struct DiagnosticsView: View {
     }
 
     private func load() async {
-        guard let reply = try? await model.sidecar.send("diagnostics"),
-              let payload = reply["diagnostics"] as? [String: Any] else { return }
-        report = payload
+        do {
+            let reply = try await model.sidecar.send("diagnostics")
+            guard let payload = reply["diagnostics"] as? [String: Any] else {
+                report = ["diagnosticsStatus": "Reply missing diagnostics payload"]
+                return
+            }
+            report = payload
+            report["diagnosticsStatus"] = "Received"
+        } catch {
+            report = ["diagnosticsStatus": "Request failed — see local helper/IPC evidence above"]
+        }
     }
 
     private func copyReport() {
@@ -103,8 +118,6 @@ public struct DiagnosticsView: View {
     }
 
     private func openSupportFolder() {
-        let folder = FileManager.default.homeDirectoryForCurrentUser
-            .appending(path: "Library/Application Support/Multiplayer AI")
-        NSWorkspace.shared.open(folder)
+        NSWorkspace.shared.open(model.sidecar.activeSupportDirectory)
     }
 }

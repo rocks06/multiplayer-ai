@@ -18,13 +18,21 @@ const repo = path.resolve(connector, '../..');
 const out = path.join(connector, 'build');
 const run = (cmd, args, options = {}) => execFileSync(cmd, args, { stdio: 'inherit', cwd: repo, ...options });
 
-fs.rmSync(out, { recursive: true, force: true });
-fs.mkdirSync(out, { recursive: true });
-
+const nodeBinary = process.env.MPAI_NODE_BINARY || process.execPath;
+// Homebrew Node can be a tiny dynamically linked launcher, not a redistributable runtime.
+// Reject it before touching old artifacts: otherwise a build can work only on its author's Mac.
+const dependencies = execFileSync('otool', ['-L', nodeBinary], { encoding: 'utf8' })
+  .split('\n').slice(1).map(line => line.trim().split(' (')[0]).filter(Boolean);
+const external = dependencies.filter(file => !file.startsWith('/usr/lib/') && !file.startsWith('/System/Library/'));
+if (external.length) {
+  throw new Error('The SEA runtime has non-system dynamic dependencies. Set MPAI_NODE_BINARY to an official standalone Node macOS binary. Dependencies: ' + external.join(', '));
+}
 if (!fs.existsSync(path.join(repo, 'dist/packages/connector-core/src/index.js'))) {
   console.error('Compiled connector core not found. Run "pnpm build:server" first.');
   process.exit(1);
 }
+fs.rmSync(out, { recursive: true, force: true });
+fs.mkdirSync(out, { recursive: true });
 
 // One CommonJS file: single-executable applications do not take ES modules.
 console.log('• bundling sidecar');
@@ -41,10 +49,12 @@ fs.writeFileSync(path.join(out, 'sea-config.json'), JSON.stringify({
 }, null, 2));
 
 console.log('• preparing the executable');
-run(process.execPath, ['--experimental-sea-config', path.join(out, 'sea-config.json')]);
+run(nodeBinary, ['--experimental-sea-config', path.join(out, 'sea-config.json')]);
 
 const binary = path.join(out, 'mpai-connector-sidecar');
-fs.copyFileSync(process.execPath, binary);
+fs.copyFileSync(nodeBinary, binary);
+// Distribution/package-manager binaries may be mode 0555. Injection needs a writable copy.
+fs.chmodSync(binary, 0o755);
 // The copied Node binary carries Node's own signature, which injection invalidates.
 try { run('codesign', ['--remove-signature', binary]) } catch { /* unsigned already */ }
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { verifyGeneratedDelivery } from "../../connector-core/src/generated-artifacts.js";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, execFile, type ChildProcess } from "node:child_process";
 import {
   WORKFLOW_STEPS,
   taskStepKey,
@@ -17,6 +17,17 @@ export interface HermesAdapterOptions {
   command?: string;
   /** Lowest Hermes version this connector will drive. */
   minimumVersion?: string;
+  home?: string;
+  probeTimeoutMs?: number;
+}
+
+/** Bounded asynchronous probes keep the helper IPC responsive even if a runtime hangs. */
+function probe(command: string, args: string[], options: { encoding: string; timeout?: number; shell?: string; env?: NodeJS.ProcessEnv }) {
+  return new Promise<{status: number; stdout: string; stderr: string; error?: Error}>(resolve => {
+    execFile(command, args, { encoding: 'utf8', timeout: options.timeout ?? 4000,
+      killSignal: 'SIGKILL', maxBuffer: 256 * 1024, env: options.env },
+      (error, stdout, stderr) => resolve({ status: error ? 1 : 0, stdout, stderr, ...(error ? {error} : {}) }));
+  });
 }
 
 const DEFAULT_MINIMUM = "0.18.0";
@@ -71,18 +82,20 @@ export class HermesAdapter implements AgentRuntimeAdapter {
 
   /** The first candidate that answers, remembered so later calls do not search again. */
   private resolved: string | null = null;
-  private get command() {
+  private get environment() { return { ...process.env, ...(this.options.home ? { HERMES_HOME: this.options.home } : {}) }; }
+  private async command() {
     if (this.resolved) return this.resolved;
     for (const candidate of this.candidates()) {
-      const probe = spawnSync(candidate, ["--version"], { encoding: "utf8" });
-      if (!probe.error && probe.status === 0) { this.resolved = candidate; return candidate; }
+      const result = await probe(candidate, ["--version"], { encoding: "utf8", timeout: this.options.probeTimeoutMs, env: this.environment });
+      if (!result.error && result.status === 0) { this.resolved = candidate; return candidate; }
     }
     return this.options.command ?? "hermes";
   }
 
   async detect(): Promise<RuntimeDetection> {
-    const probe = spawnSync(this.command, ["--version"], { encoding: "utf8" });
-    if (probe.error || probe.status !== 0) {
+    const command = await this.command();
+    const result = await probe(command, ["--version"], { encoding: "utf8", timeout: this.options.probeTimeoutMs, env: this.environment });
+    if (result.error || result.status !== 0) {
       return {
         available: false,
         readiness: "not_installed",
@@ -90,9 +103,9 @@ export class HermesAdapter implements AgentRuntimeAdapter {
         reason: `Hermes was not found on this Mac. Install it, or point the connector at its executable.`,
       };
     }
-    const output = `${probe.stdout ?? ""}${probe.stderr ?? ""}`;
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
     const found = parseVersion(output);
-    const path = spawnSync("command", ["-v", this.command], { encoding: "utf8", shell: "/bin/sh" }).stdout?.trim() || this.command;
+    const path = command;
     if (!found) {
       return { available: false, readiness: "control_unavailable", name: "Hermes Agent", path,
                reason: "Hermes responded but its version could not be read." };
@@ -117,7 +130,7 @@ export class HermesAdapter implements AgentRuntimeAdapter {
        /health. On a real installation with the gateway plainly running, that probe found nothing,
        because there was never anything there to find. The command line is the transport, so the
        command line is what gets verified. */
-    const control = this.probeControl();
+    const control = await this.probeControl();
     if (!control.ok) {
       return {
         available: true, readiness: "control_unavailable", name: "Hermes Agent", version, path,
@@ -125,7 +138,7 @@ export class HermesAdapter implements AgentRuntimeAdapter {
         reason: control.detail ?? "Hermes is installed but did not answer a status check.",
       };
     }
-    const service = this.gatewayState();
+    const service = await this.gatewayState();
     return {
       available: true,
       readiness: service.running ? "ready" : "installed_not_running",
@@ -148,11 +161,10 @@ export class HermesAdapter implements AgentRuntimeAdapter {
    * than "does a file exist": a broken install, a half-finished upgrade or a runtime whose
    * environment is wrong all answer the version flag perfectly well and then cannot do any work.
    */
-  private probeControl(): { ok: boolean; detail?: string } {
-    const probe = spawnSync(this.command, ["status"], { encoding: "utf8", timeout: 20_000 });
-    if (probe.error) return { ok: false, detail: `Hermes could not be run: ${probe.error.message}` };
-    if (probe.status !== 0) {
-      const said = `${probe.stdout ?? ""}${probe.stderr ?? ""}`.trim().split("\n").at(-1);
+  private async probeControl(): Promise<{ ok: boolean; detail?: string }> {
+    const result = await probe(await this.command(), ["status"], { encoding: "utf8", timeout: this.options.probeTimeoutMs, env: this.environment });
+    if (result.status !== 0) {
+      const said = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim().split("\n").at(-1);
       return { ok: false, detail: said ? `Hermes status reported: ${said}` : "Hermes status exited non-zero." };
     }
     return { ok: true };
@@ -166,18 +178,16 @@ export class HermesAdapter implements AgentRuntimeAdapter {
    * command line is a guess that breaks the day the launcher changes. A process id is still read
    * where one is plainly there, but only as detail to show, never as the answer.
    */
-  private gatewayState(): { running: boolean; processId?: number } {
-    const probe = spawnSync(this.command, ["gateway", "status"], { encoding: "utf8", timeout: 20_000 });
-    const said = `${probe.stdout ?? ""}${probe.stderr ?? ""}`;
-    const running = !probe.error && probe.status === 0 && !/not running|stopped|inactive/i.test(said);
-    const listed = spawnSync("pgrep", ["-f", "hermes.*gateway|gateway.*hermes"], { encoding: "utf8" });
-    const processId = Number(listed.stdout?.trim().split(/\s+/)[0] ?? 0) || undefined;
-    return { running: running || Boolean(processId && /running|active/i.test(said)), processId };
+  private async gatewayState(): Promise<{ running: boolean; processId?: number }> {
+    const result = await probe(await this.command(), ["gateway", "status"], { encoding: "utf8", timeout: this.options.probeTimeoutMs, env: this.environment });
+    const said = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    const running = !result.error && result.status === 0 && /running|active/i.test(said) && !/not running|stopped|inactive/i.test(said);
+    return { running };
   }
 
   /** Where Hermes keeps its configuration, shown as detail when it exists. */
   private configPath(): string | undefined {
-    const home = process.env.HERMES_HOME ?? path.join(process.env.HOME ?? "", ".hermes");
+    const home = this.options.home ?? process.env.HERMES_HOME ?? path.join(process.env.HOME ?? "", ".hermes");
     const file = path.join(home, "config.yaml");
     return fs.existsSync(file) ? file : undefined;
   }
@@ -231,12 +241,12 @@ Rules:
     const log = fs.openSync(input.logPath, "a", 0o600);
     let exitCode = 1;
     try {
-      const child = spawn(this.command, [
+      const child = spawn(await this.command(), [
         "chat", "-q", this.buildPrompt(input) + outputPrompt,
         "--toolsets", "terminal,file,web",
         "--source", `multiplayer-${input.profile}`,
         "--quiet",
-      ], { stdio: ["ignore", log, log], env: { ...process.env, MPAI_GENERATED_OUTPUT: JSON.stringify(output), MPAI_OUTPUT_DIR: output.directory, MPAI_OUTPUT_MANIFEST: output.manifest } });
+      ], { stdio: ["ignore", log, log], env: { ...this.environment, MPAI_GENERATED_OUTPUT: JSON.stringify(output), MPAI_OUTPUT_DIR: output.directory, MPAI_OUTPUT_MANIFEST: output.manifest } });
       this.child = child;
       exitCode = await new Promise<number>(resolve => {
         let settled = false;

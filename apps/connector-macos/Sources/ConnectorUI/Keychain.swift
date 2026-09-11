@@ -24,11 +24,13 @@ public enum Keychain {
         public var projectName: String?
         public var agentPrincipalId: String
         public var agentDisplayName: String?
+        public var runtimeSelectionId: String?
         public init(baseURL: String, roomId: String, roomName: String? = nil, projectName: String? = nil,
-                    agentPrincipalId: String, agentDisplayName: String? = nil) {
+                    agentPrincipalId: String, agentDisplayName: String? = nil, runtimeSelectionId: String? = nil) {
             self.baseURL = baseURL; self.roomId = roomId; self.roomName = roomName
             self.projectName = projectName; self.agentPrincipalId = agentPrincipalId
             self.agentDisplayName = agentDisplayName
+            self.runtimeSelectionId = runtimeSelectionId
         }
     }
 

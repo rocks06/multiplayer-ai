@@ -179,6 +179,13 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.post('/v1/companies/:companyId/agents',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({name:z.string().min(1).max(100)}),req.body);return service.createAgentForPrincipal(p.companyId,await principal(req,p.companyId),x.name)});
   /* A physical runtime is connected only after its local adapter has successfully probed it. The
    * stable installation id is separate from every credential and survives credential rotation. */
+  app.get('/v1/companies/:companyId/runtime-connections',async(req,reply)=>{
+    const p=body(z.object({companyId:z.string().uuid()}),req.params);
+    const x=body(z.object({runtime_type:z.string().min(1).max(50),external_runtime_id:z.string().uuid()}),req.query);
+    reply.header('cache-control','no-store');
+    return service.lookupRuntimeForPrincipal({companyId:p.companyId,actorId:await principal(req,p.companyId),
+      runtimeType:x.runtime_type,externalRuntimeId:x.external_runtime_id});
+  });
   app.post('/v1/companies/:companyId/runtime-connections',async req=>{
     const p=body(z.object({companyId:z.string().uuid()}),req.params);
     const x=body(z.object({

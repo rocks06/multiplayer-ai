@@ -41,7 +41,7 @@ public struct RootView: View {
                 if !app.moveTargets.isEmpty && !app.movePromptDismissed {
                     RoomBindingNotice(app: app)
                 }
-                if let runtime = app.detectedRuntime { DetectedRuntimeNotice(app: app, runtime: runtime) }
+
                 /* Whatever went wrong, wherever it happened.
 
                    Errors were recorded on the model and drawn only by the setup screens, so

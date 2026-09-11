@@ -63,6 +63,125 @@ describe("one agent principal per physical runtime", () => {
   const connect = (companyId: string, cookie: string, body: Record<string, unknown>) =>
     call("POST", `/v1/companies/${companyId}/runtime-connections`, body, { cookie });
 
+  const lookupUrl = (companyId: string, runtimeType = hermes.runtime_type, externalId = hermes.external_runtime_id) =>
+    `/v1/companies/${companyId}/runtime-connections?${new URLSearchParams({runtime_type: runtimeType, external_runtime_id: externalId})}`;
+
+  // Capture complete operational rows (including timestamps and credential hashes), not just counts.
+  async function runtimeRows() {
+    const tables = ['runtime_installations', 'agent_runtime_bindings', 'principals', 'agents',
+      'external_agent_credentials', 'external_agent_sessions'];
+    return Promise.all(tables.map(async table => (await pool.query(`SELECT * FROM ${table} ORDER BY id`)).rows));
+  }
+
+  it("fresh user enrolls without a code and restores the same identity with the saved credential", async () => {
+    const me = await signedInUser();
+    const company = await workspace(me.cookie);
+    const headers = {cookie: me.cookie, 'idempotency-key':crypto.randomUUID()};
+    const project = await call('POST', `/v1/companies/${company.company_id}/projects`, {name:'Discovery project', objective:'Verify local onboarding'}, headers);
+    expect(project.statusCode, project.body).toBe(200);
+    const room = await call('POST', `/v1/companies/${company.company_id}/projects/${project.json().id}/rooms`, {name:'Selected room'}, headers);
+    expect(room.statusCode, room.body).toBe(200);
+    expect((await call('GET', lookupUrl(company.company_id), undefined, headers)).json()).toEqual({runtime:null});
+    const bound = await connect(company.company_id, me.cookie, {name:'Discovered agent', ...hermes});
+    expect([200,201], bound.body).toContain(bound.statusCode);
+    const principal = bound.json().principal_id;
+    const membership = await call('POST', `/v1/companies/${company.company_id}/rooms/${room.json().id}/members`,
+      {principal_id:principal, role:'worker_agent', responsibilities:''}, {...headers,'idempotency-key':crypto.randomUUID()});
+    expect([200,201], membership.body).toContain(membership.statusCode);
+    const credential = await call('POST', `/v1/companies/${company.company_id}/agents/${principal}/gateway-credentials`, {label:'Isolated fresh Mac'}, headers);
+    expect([200,201], credential.body).toContain(credential.statusCode);
+    const machine = {authorization:`Bearer ${credential.json().credential_token}`};
+    const session = () => call('POST', '/v1/agent-gateway/v1/sessions', {room_id:room.json().id, runtime_status:'idle'}, machine);
+    const first = await session();
+    expect([200,201], first.body).toContain(first.statusCode);
+    expect(first.json().session_token).toBeTruthy();
+    const known = (await call('GET', lookupUrl(company.company_id), undefined, headers)).json().runtime;
+    expect(known).toEqual({principal_id:principal, display_name:'Discovered agent'});
+    const restored = await session();
+    expect([200,201], restored.body).toContain(restored.statusCode);
+    expect(restored.json().session_id).not.toBe(first.json().session_id);
+    expect((await call('GET', `/v1/companies/${company.company_id}/agents`, undefined, headers)).json().agents).toHaveLength(1);
+    expect((await pool.query(`SELECT count(*)::int n FROM external_agent_credentials WHERE agent_principal_id=$1 AND status='active'`,[principal])).rows[0].n).toBe(1);
+  });
+
+  it("looks up a selected stable binding before naming, with no operational writes or secrets", async () => {
+    const me = await signedInUser();
+    const company = await workspace(me.cookie);
+    const before = await runtimeRows();
+    const absent = await call('GET', lookupUrl(company.company_id), undefined, {cookie: me.cookie});
+    expect(absent.statusCode).toBe(200);
+    expect(absent.json()).toEqual({runtime: null});
+    expect(await runtimeRows()).toEqual(before);
+    const first = (await connect(company.company_id, me.cookie, {name: 'Known name', ...hermes})).json();
+    const bound = await runtimeRows();
+    const known = await call('GET', lookupUrl(company.company_id), undefined, {cookie: me.cookie});
+    expect(known.statusCode).toBe(200);
+    expect(known.headers['cache-control']).toBe('no-store');
+    expect(known.json()).toEqual({runtime: {principal_id: first.principal_id, display_name: 'Known name'}});
+    expect((await call('GET', lookupUrl(company.company_id, 'another-adapter'), undefined, {cookie: me.cookie})).json()).toEqual({runtime: null});
+    expect((await call('GET', lookupUrl(company.company_id, 'hermes', crypto.randomUUID()), undefined, {cookie: me.cookie})).json()).toEqual({runtime: null});
+    expect(await runtimeRows()).toEqual(bound);
+    const other = await workspace(me.cookie);
+    expect((await call('GET', lookupUrl(other.company_id), undefined, {cookie: me.cookie})).json()).toEqual({runtime: null});
+  });
+
+  it("looks up only the current active binding, principal and agent", async () => {
+    const me = await signedInUser();
+    const company = await workspace(me.cookie);
+    await connect(company.company_id, me.cookie, {name: 'Old', ...hermes});
+    const next = (await connect(company.company_id, me.cookie, {name: 'Current', ...hermes, create_as_new: true})).json();
+    const lookup = () => call('GET', lookupUrl(company.company_id), undefined, {cookie: me.cookie});
+    expect((await lookup()).json()).toEqual({runtime: {principal_id: next.principal_id, display_name: 'Current'}});
+    await pool.query(`UPDATE principals SET status='disabled' WHERE id=$1`, [next.principal_id]);
+    expect((await lookup()).json()).toEqual({runtime: null});
+    await pool.query(`UPDATE principals SET status='active' WHERE id=$1`, [next.principal_id]);
+    await pool.query(`UPDATE agents SET status='paused' WHERE id=$1`, [next.agent_id]);
+    expect((await lookup()).json()).toEqual({runtime: null});
+    await pool.query(`UPDATE agents SET status='active' WHERE id=$1`, [next.agent_id]);
+    await call('DELETE', `/v1/companies/${company.company_id}/agents/${next.principal_id}`, undefined, {cookie: me.cookie});
+    expect((await lookup()).json()).toEqual({runtime: null});
+  });
+
+  it("denies missing sessions, outsiders, room-only users and revoked workspace access", async () => {
+    const me = await signedInUser();
+    const outsider = await signedInUser('Outsider');
+    const company = await workspace(me.cookie);
+    const known = (await connect(company.company_id, me.cookie, {name: 'Private', ...hermes})).json();
+    const url = lookupUrl(company.company_id);
+    const before = await runtimeRows();
+    expect((await call('GET', url)).statusCode).toBe(401);
+    expect((await call('GET', url, undefined, {'x-principal-id': known.principal_id})).statusCode).toBe(401);
+    expect((await call('GET', url, undefined, {cookie: outsider.cookie})).statusCode).toBe(403);
+    await pool.query(`UPDATE company_users SET access_scope='room_only' WHERE company_id=$1`, [company.company_id]);
+    expect((await call('GET', url, undefined, {cookie: me.cookie})).statusCode).toBe(403);
+    await pool.query(`UPDATE company_users SET access_scope='workspace',status='removed' WHERE company_id=$1`, [company.company_id]);
+    expect((await call('GET', url, undefined, {cookie: me.cookie})).statusCode).toBe(403);
+    expect(await runtimeRows()).toEqual(before);
+  });
+
+  it("denies agent principals even through the explicit development header escape hatch", async () => {
+    const me = await signedInUser();
+    const company = await workspace(me.cookie);
+    const agent = (await connect(company.company_id, me.cookie, {name: 'Agent', ...hermes})).json();
+    const devApp = buildApp(new Pool({connectionString}), {}, {allowHeaderPrincipal: true, signInDelivery: delivery});
+    try {
+      const response = await devApp.inject({method: 'GET', url: lookupUrl(company.company_id), headers: {'x-principal-id': agent.principal_id}});
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe('workspace_access_denied');
+    } finally { await devApp.close(); }
+  });
+
+  it("validates the lookup key without creating any identity", async () => {
+    const me = await signedInUser();
+    const company = await workspace(me.cookie);
+    const before = await runtimeRows();
+    for (const query of ['', '?runtime_type=hermes', '?runtime_type=&external_runtime_id='+hermes.external_runtime_id,
+      '?runtime_type=hermes&external_runtime_id=not-a-uuid']) {
+      expect((await call('GET', `/v1/companies/${company.company_id}/runtime-connections${query}`, undefined, {cookie: me.cookie})).statusCode).toBe(400);
+    }
+    expect(await runtimeRows()).toEqual(before);
+  });
+
   it("hands the same runtime back the principal it already had", async () => {
     const me = await signedInUser();
     const company = await workspace(me.cookie);

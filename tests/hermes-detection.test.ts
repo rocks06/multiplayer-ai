@@ -6,7 +6,10 @@ import fs from "node:fs";
    adapter concludes from what the commands said. */
 const answered = { fn: (_file: string, _args: string[]) => ({ status: 0, stdout: "", stderr: "" }) as any };
 vi.mock("node:child_process", () => ({
-  spawnSync: (file: string, args: string[]) => answered.fn(file, args),
+  execFile: (file: string, args: string[], _options: unknown, callback: Function) => {
+    const result = answered.fn(file, args);
+    callback(result.error ?? (result.status ? new Error('command failed') : null), result.stdout, result.stderr);
+  },
   spawn: () => { throw new Error("no invocation in these tests"); },
 }));
 const { HermesAdapter } = await import("../packages/connector-hermes/src/index.js");

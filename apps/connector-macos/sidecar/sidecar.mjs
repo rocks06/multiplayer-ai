@@ -15,11 +15,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 // Bundled from the repository's compiled output, so the shipped binary carries the same
 // connector core and Hermes adapter the rest of the product is tested against.
 import * as core from '../../../dist/packages/connector-core/src/index.js';
 import * as hermes from '../../../dist/packages/connector-hermes/src/index.js';
+import { AgentDiscovery } from '../../../dist/packages/connector-core/src/discovery.js';
+import { hermesDiscovery } from '../../../dist/packages/connector-hermes/src/discovery.js';
 
 /* What an agent may do, and the exact shape it is told to use. The names are what this binary
    dispatches on; the surface strings are what the runtime is shown. */
@@ -189,18 +191,77 @@ class Connector {
     this.authFailed = false;
     this.superseded = false;
     this.adapter = new hermes.HermesAdapter({ command: this.hermesCommand });
+    this.selected = { discoveryId: 'hermes:default', profile: 'default', adapter: this.adapter };
+    this.providers = [hermesDiscovery({command: this.hermesCommand})];
+    this.discovery = new AgentDiscovery(this.providers);
+    this.selectionFile = path.join(SUPPORT, 'selected-agent.json');
+    this.detected = new Map();
+    this.probeCache = null;
+    this.initialized = this.restoreSelection();
+    this.initialized.catch(error => { this.lastError = error.message; });
+  }
+
+  runtimeId(candidate) {
+    if (candidate.discoveryId === 'hermes:default') return externalRuntimeId;
+    const key = createHash('sha256').update(candidate.discoveryId).digest('hex');
+    return durableId(path.join(IDENTITY_ROOT, 'runtime-identities', key));
+  }
+  async restoreSelection() {
+    let selected = 'hermes:default';
+    try { selected = JSON.parse(fs.readFileSync(this.selectionFile, 'utf8')).discoveryId; }
+    catch (error) { if (error.code !== 'ENOENT') throw new Error('Saved agent selection cannot be read. Existing credentials have been preserved.'); }
+    const candidates = (await Promise.all(this.providers.map(provider => provider.discover()))).flat();
+    const candidate = candidates.find(item => item.discoveryId === selected);
+    if (!candidate) throw new Error('The saved agent profile is no longer available. Detect Agent to select a profile.');
+    this.selected = candidate; this.adapter = candidate.adapter;
+  }
+  async discoverAgents() {
+    const found = await this.discovery.scan();
+    this.detected.clear();
+    return found.map(({candidate, detection}) => {
+      const id = this.runtimeId(candidate); this.detected.set(id, candidate.discoveryId);
+      return this.runtimeRecord(candidate, detection);
+    });
+  }
+  async selectRuntime(id) {
+    const discoveryId = this.detected.get(id);
+    if (!discoveryId) throw new Error('Select an agent from the current discovery results.');
+    const {candidate, detection} = await this.discovery.select(discoveryId);
+    if (this.selected.discoveryId !== discoveryId) {
+      this.disconnect();
+      // Selection is tentative until configure supplies credentials for this identity.
+      // Never carry the previous profile's in-memory enrollment into the new adapter;
+      // leave Keychain credentials, saved selection and durable room state untouched.
+      this.config = null;
+      this.identity = null;
+      this.authFailed = false;
+      this.superseded = false;
+    }
+    this.cachedRuntime = undefined;
+    this.selected = candidate; this.adapter = candidate.adapter;
+    this.probeCache = null; this.initialized = Promise.resolve();
+    return this.runtimeRecord(candidate, detection);
   }
 
   store() { return new core.FileStateStore(STATE_FILE); }
 
   /** Whether the agent runtime can actually be driven, asked of the adapter rather than assumed. */
   async runtimeState() {
-    const detection = await this.adapter.detect();
+    await this.initialized;
+    if (!this.probeCache || Date.now() - this.probeCache.time > 10000) {
+      const candidate = this.selected;
+      this.probeCache = {time: Date.now(), promise: candidate.adapter.detect().then(detection => this.runtimeRecord(candidate, detection))};
+    }
+    return this.probeCache.promise;
+  }
+  runtimeRecord(candidate, detection) {
     return {
       available: detection.available, name: detection.name,
       version: detection.version ?? null, path: detection.path ?? null,
-      runtimeType: this.adapter.id,
-      externalRuntimeId,
+      adapter: candidate.adapter.id, profile: candidate.profile, discoveryId: candidate.discoveryId,
+      runtimeType: candidate.adapter.id,
+      runtimeInstallationId: this.runtimeId(candidate),
+      externalRuntimeId: this.runtimeId(candidate),
       connectorInstallationId,
       endpoint: detection.endpoint ?? null,
       healthEndpoint: detection.healthEndpoint ?? null,
@@ -242,6 +303,10 @@ class Connector {
   async publish() { emit(await this.snapshot()); }
 
   configure(payload) {
+    const runtimeSelectionId = this.runtimeId(this.selected);
+    if (payload.runtimeSelectionId && payload.runtimeSelectionId !== runtimeSelectionId) {
+      throw new Error('The configured agent does not match the selected runtime.');
+    }
     /* Being told to be a different agent, to work in a different room, or to present a different
        credential is not a settings change — it is a different job. A runtime already running is
        still the old one, and `connect` would leave it exactly where it is, so it is stopped here
@@ -251,6 +316,7 @@ class Connector {
     if (moved) this.disconnect();
 
     this.config = {
+      runtimeSelectionId,
       baseUrl: payload.baseUrl, roomId: payload.roomId,
       agentPrincipalId: payload.agentPrincipalId, credential: payload.credential,
     };
@@ -264,7 +330,11 @@ class Connector {
   }
 
   async connect() {
+    await this.initialized;
     if (!this.config) throw new Error('This Mac is not connected to a workspace yet.');
+    if (this.config.runtimeSelectionId !== this.runtimeId(this.selected)) {
+      throw new Error('Configure the selected runtime before connecting to a workspace.');
+    }
     if (this.runtime) return;
     this.lastError = null;
     this.authFailed = false;
@@ -394,13 +464,27 @@ async function daemon() {
     try {
       switch (command) {
         case 'ping': return reply(id, true, { startedAt: connector.startedAt });
-        case 'detect': return reply(id, true, { runtime: await connector.runtimeState() });
+        case 'discover':
+        case 'detect': return reply(id, true, { runtimes: await connector.discoverAgents() });
+        case 'select-runtime': return reply(id, true, { runtime: await connector.selectRuntime(request.runtimeInstallationId) });
         case 'enroll': {
           connector.pendingBaseUrl = request.baseUrl;
           const result = await connector.enroll(request.code, request.deviceLabel);
           return reply(id, true, { enrollment: result });
         }
-        case 'configure': connector.configure(request); await connector.publish(); return reply(id, true, {});
+        case 'configure': {
+          // Legacy enrollments predate profile selection and belong to the default runtime.
+          // Never attach their credential to a tentative named-profile selection.
+          const requestedRuntimeId = request.runtimeSelectionId || externalRuntimeId;
+          await connector.initialized.catch(() => {});
+          if (connector.runtimeId(connector.selected) !== requestedRuntimeId) {
+            await connector.discoverAgents();
+            await connector.selectRuntime(requestedRuntimeId);
+          }
+          fs.writeFileSync(connector.selectionFile + '.tmp', JSON.stringify({ discoveryId: connector.selected.discoveryId }), { mode: 0o600 });
+          fs.renameSync(connector.selectionFile + '.tmp', connector.selectionFile);
+          connector.configure(request); await connector.publish(); return reply(id, true, {});
+        }
         case 'connect': await connector.connect(); await connector.publish(); return reply(id, true, {});
         case 'disconnect': connector.disconnect(); await connector.publish(); return reply(id, true, {});
         case 'reconnect': connector.disconnect(); await connector.connect(); await connector.publish(); return reply(id, true, {});
@@ -418,7 +502,7 @@ async function daemon() {
 
   process.on('SIGTERM', () => { connector.disconnect(); process.exit(0) });
   process.on('SIGINT', () => { connector.disconnect(); process.exit(0) });
-  await connector.publish();
+  connector.publish().catch(error => { connector.lastError = error.message; });
 }
 
 async function main() {

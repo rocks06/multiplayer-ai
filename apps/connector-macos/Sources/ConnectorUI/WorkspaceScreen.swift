@@ -24,6 +24,9 @@ public struct WorkspaceScreen: View {
             WorkspaceWebView(app: app)
         }
         .background(Palette.paper)
+        .sheet(isPresented: $app.showingAgentDiscovery, onDismiss: { app.dismissAgentDiscovery() }) {
+            AgentDiscoverySheet(app: app)
+        }
     }
 
     private var connectionAlert: WorkspaceAlert? {

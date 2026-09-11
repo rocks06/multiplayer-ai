@@ -291,6 +291,24 @@ public final class WorkspaceClient: @unchecked Sendable {
      * duplicates with a digit on the end, because every enrollment was treated as a new agent. `createAsNew` is the deliberate exception, and it is
      * only ever set because a person asked for a second agent on the same machine.
      */
+    /// Read the selected stable binding before asking for a name. This never creates an identity.
+    public func lookupRuntime(companyId: String, runtime: SidecarState.Runtime) async throws -> ConnectedRuntime? {
+        guard let type = runtime.runtimeType, let externalId = runtime.externalRuntimeId else {
+            throw WorkspaceError.malformed()
+        }
+        var components = URLComponents()
+        components.path = "/v1/companies/\(companyId)/runtime-connections"
+        components.queryItems = [URLQueryItem(name: "runtime_type", value: type),
+                                 URLQueryItem(name: "external_runtime_id", value: externalId)]
+        guard let path = components.string else { throw WorkspaceError.malformed() }
+        let payload = try await send("GET", path)
+        if payload["runtime"] is NSNull { return nil }
+        guard let known = payload["runtime"] as? [String: Any],
+              let principalId = known["principal_id"] as? String,
+              let displayName = known["display_name"] as? String else { throw WorkspaceError.malformed() }
+        return ConnectedRuntime(principalId: principalId, displayName: displayName, reused: true)
+    }
+
     public func connectRuntime(companyId: String, name: String, runtime: SidecarState.Runtime,
                                createAsNew: Bool = false) async throws -> ConnectedRuntime {
         guard let type = runtime.runtimeType, let externalId = runtime.externalRuntimeId,

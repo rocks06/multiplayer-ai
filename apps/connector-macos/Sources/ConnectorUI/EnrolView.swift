@@ -25,7 +25,7 @@ public struct EnrolView: View {
                     .foregroundStyle(.secondary)
                     .textCase(.uppercase)
                     .kerning(0.6)
-                Text("Connect this Mac")
+                Text("Connect with code")
                     .font(.system(size: 17, weight: .medium, design: .serif))
             }
 

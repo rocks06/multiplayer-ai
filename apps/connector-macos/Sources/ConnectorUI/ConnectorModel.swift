@@ -97,6 +97,24 @@ public final class ConnectorModel {
         }
     }
 
+    /// IPC acknowledgement and socket open are not connected. The helper publishes `live`
+    /// only after the gateway's authenticated session.ready frame.
+    public func waitForAuthenticatedSession() async throws {
+        let deadline = Date().addingTimeInterval(20)
+        repeat {
+            await sidecar.refresh()
+            if sidecar.credentialProblem != nil {
+                throw SidecarError.refused("Unlock the Keychain and Retry. The saved credential could not be read.")
+            }
+            if sidecar.state.running && sidecar.state.enrolled && sidecar.state.gateway == "live" { return }
+            if sidecar.state.gateway == "auth_required" {
+                throw SidecarError.refused("The workspace refused this agent's session. Check its access and Retry.")
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        } while Date() < deadline
+        throw SidecarError.refused("The server has not confirmed this agent's session. Check Diagnostics and Retry.")
+    }
+
     public func reconnect() async {
         guard !busy else { return }
         busy = true

@@ -232,10 +232,10 @@ function CreateRoom({companyId,agents,onCancel,onCreated}:{
 function ConnectExistingAgent({onCancel}:{onCancel:()=>void}){
   return <section className="home-form">
     <h3>Connect the runtime on this Mac</h3>
-    <p className="home-note">The Mac app will discover Hermes, show its real version and endpoint, and test it before anything is enrolled.</p>
+    <p className="home-note">The Mac app will discover available local agent instances, show their readiness, and test the selected runtime before anything is enrolled.</p>
     <div className="home-form-actions">
       <button type="button" onClick={onCancel}>Cancel</button>
-      <a className="home-primary" href="multiplayerai://connect-runtime">Detect Hermes</a>
+      <a className="home-primary" href="multiplayerai://connect-runtime">Detect Agent</a>
     </div>
   </section>;
 }

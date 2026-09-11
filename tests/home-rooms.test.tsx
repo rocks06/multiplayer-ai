@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import '@testing-library/jest-dom/vitest';
-import {cleanup,render,screen,within} from '@testing-library/react';
+import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {Home} from '../apps/web/src/Home';
 
@@ -30,6 +30,16 @@ describe('Home, across every workspace a person belongs to', () => {
   afterEach(() => {cleanup(); vi.unstubAllGlobals()});
 
   const section = (name: RegExp) => screen.getByRole('heading', {name}).closest('section')!;
+
+  it('hands off to adapter-neutral Detect Agent without creating an identity', async () => {
+    roomsBy({'c-own': []});
+    render(<Home workspace={own} memberships={[own]} onNavigate={() => {}}/>);
+    fireEvent.click(await screen.findByRole('button', {name: 'Connect an existing agent'}));
+    expect(screen.getByRole('link', {name: 'Detect Agent'})).toHaveAttribute('href', 'multiplayerai://connect-runtime');
+    expect(screen.queryByRole('link', {name: 'Detect Hermes'})).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Agent name')).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
+  });
 
   it('shows an invited room under Shared rooms, not among your own', async () => {
     roomsBy({'c-own': [{room_id: 'r1', name: 'Launch'}], 'c-other': [{room_id: 'r2', name: 'TESTING #1'}]});

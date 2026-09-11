@@ -181,13 +181,15 @@ struct UnenrolledView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 if let detect {
-                    Button("Detect existing agent") { detect() }
+                    Button("Detect Agent") { detect() }
                         .buttonStyle(.borderedProminent)
                         .disabled(model.busy)
                 }
 
-                Button("Connect manually with a code") { manual = true }
-                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
+                DisclosureGroup("Advanced") {
+                    Button("Connect with code") { manual = true }
+                        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
+                }
             }
         }
     }

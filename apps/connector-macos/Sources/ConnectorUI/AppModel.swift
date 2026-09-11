@@ -472,7 +472,46 @@ public final class AppModel {
      * turns out not to be running is exactly the junk this is meant to stop.
      */
     /// What detection found, held so a person can look at it before anything is created.
+    // Legacy notice remains nil: discovery is presented as a sheet, before any IPC work.
     public var detectedRuntime: SidecarState.Runtime?
+    public var showingAgentDiscovery = false
+    public private(set) var discoveryPhase: AgentDiscoveryPhase = .idle
+    public private(set) var discoveredAgents: [DiscoveredAgent] = []
+    public var selectedDiscoveredAgentId: String?
+    public var discoveryDisplayName = ""
+    public var discoveryRoomId = ""
+    public private(set) var discoveryCompanyId: String?
+    private var discoveryAgents: [[String: Any]] = []
+    private var knownDiscoveredIdentities: [String: KnownRuntimeIdentity] = [:]
+    private var discoveryGeneration = UUID()
+    public var selectedDiscoveredAgent: DiscoveredAgent? {
+        discoveredAgents.first { $0.id == selectedDiscoveredAgentId }
+    }
+    public var selectedKnownIdentity: KnownRuntimeIdentity? {
+        selectedDiscoveredAgent.flatMap { knownDiscoveredIdentities[$0.id] }
+    }
+    public func selectDiscoveredAgent(_ id: String) {
+        selectedDiscoveredAgentId = id
+        discoveryDisplayName = "" // Never inherit the name of a different profile.
+    }
+    func acceptDiscovery(_ found: [DiscoveredAgent], known: [String: KnownRuntimeIdentity] = [:]) {
+        discoveredAgents = found
+        knownDiscoveredIdentities = known
+        selectedDiscoveredAgentId = nil
+        discoveryPhase = .results
+    }
+    public static func discoveryPreview(records: [[String: Any]], phase: AgentDiscoveryPhase = .results) -> AppModel {
+        let model = AppModel(store: MemoryProgressStore(), connector: ConnectorModel(live: false))
+        model.acceptDiscovery(records.compactMap(DiscoveredAgent.decode))
+        model.discoveryPhase = phase
+        return model
+    }
+    public func dismissAgentDiscovery() {
+        guard discoveryPhase != .connecting else { return }
+        discoveryGeneration = UUID()
+        discoveryPhase = .idle
+        showingAgentDiscovery = false
+    }
 
     /**
      * Look at what is on this Mac. Creates nothing.
@@ -483,27 +522,57 @@ public final class AppModel {
      * it saw; nothing is created until a person has read it and agreed.
      */
     public func detectRuntime() async {
-        // Pressing it twice is not a reason to say nothing; the first answer is still coming.
-        guard !busy else { return }
-        busy = true
-        defer { busy = false }
+        guard discoveryPhase != .looking, discoveryPhase != .connecting else { return }
+        showingAgentDiscovery = true
+        discoveryPhase = .looking
+        discoveredAgents = []; selectedDiscoveredAgentId = nil; discoveryDisplayName = ""
+        knownDiscoveredIdentities = [:]
         problem = nil
+        let generation = UUID()
+        discoveryGeneration = generation
+        // Capture the room the person is actually viewing, not a stale connector binding.
+        let parts = (progress.lastRoomPath ?? "").split(separator: "/").map(String.init)
+        discoveryCompanyId = parts.count >= 3 && parts[0] == "rooms" ? parts[1] : company?.companyId
+        discoveryRoomId = parts.count >= 3 && parts[0] == "rooms" ? parts[2] : ""
         connector.begin()
-        await connector.sidecar.refresh()
-        let found = connector.sidecar.state.runtime
-        /* "We could not ask" is not "it is not installed", and saying the second when the first is
-           true sends somebody off to reinstall something that was never missing. The helper is
-           what does the looking; if it did not answer, that is the thing to report. */
-        guard found.readiness != nil else {
-            detectedRuntime = nil
-            problem = .init(code: "detect_unavailable",
-                            message: "Multiplayer AI could not check this Mac for an agent runtime.",
-                            status: 0,
-                            recovery: connector.sidecar.lastLaunchFailure
-                                ?? "Its background helper did not answer. Quit Multiplayer AI and open it again.")
-            return
+        await Task.yield() // Present the loading sheet before asking the helper.
+        do {
+            let reply = try await connector.sidecar.send("detect")
+            guard let records = reply["runtimes"] as? [[String: Any]] else {
+                throw SidecarError.refused("The helper did not return an agent discovery list. Check Diagnostics and Retry.")
+            }
+            let found = records.compactMap(DiscoveredAgent.decode)
+            guard found.count == records.count else {
+                throw SidecarError.refused("The helper returned incomplete agent identities. Check Diagnostics and Retry.")
+            }
+            if found.isEmpty {
+                guard generation == discoveryGeneration else { return }
+                discoveryPhase = .results
+                return
+            }
+            var agents: [[String: Any]] = []
+            var known: [String: KnownRuntimeIdentity] = [:]
+            if let companyId = discoveryCompanyId {
+                // Failure is not an unknown runtime: do not ask for a new identity on a failed lookup.
+                agents = try await client.agents(companyId: companyId)
+                for agent in found {
+                    if let identity = try await client.lookupRuntime(companyId: companyId, runtime: agent.runtime) {
+                        known[agent.id] = .init(principalId: identity.principalId, displayName: identity.displayName)
+                    }
+                }
+                let availableRooms = try await client.rooms(companyId: companyId)
+                guard generation == discoveryGeneration else { return }
+                rooms = availableRooms
+            }
+            guard generation == discoveryGeneration else { return }
+            acceptDiscovery(found, known: known)
+            discoveryAgents = agents
+            if discoveryRoomId.isEmpty, rooms.count == 1 { discoveryRoomId = rooms[0].roomId }
+            discoveryPhase = .results
+        } catch {
+            guard generation == discoveryGeneration else { return }
+            discoveryPhase = .failed(error.localizedDescription)
         }
-        detectedRuntime = found
     }
 
     /**
@@ -515,59 +584,41 @@ public final class AppModel {
      * machine into a second agent.
      */
     public func confirmRuntimeConnection(createAsNew: Bool = false) async {
-        guard let company else { problem = .init(code: "signed_out",
-            message: "Sign in on this Mac before connecting its runtime.", status: 0,
-            recovery: "Open Multiplayer AI, sign in, and try again."); return }
-        guard let runtime = detectedRuntime ?? connector.sidecar.state.runtime as SidecarState.Runtime?,
-              runtime.isConnectable else {
-            let found = detectedRuntime ?? connector.sidecar.state.runtime
-            problem = .init(code: "runtime_not_ready", message: found.situation, status: 0,
-                            recovery: found.reason ?? "Start the runtime, then detect it again.")
-            return
-        }
-        guard !busy else { return }
-        busy = true
+        guard !createAsNew, !busy, discoveryPhase != .looking, discoveryPhase != .connecting,
+              let companyId = discoveryCompanyId,
+              let runtime = selectedDiscoveredAgent, runtime.isConnectable,
+              rooms.contains(where: { $0.roomId == discoveryRoomId }) else { return }
+        let name = selectedKnownIdentity?.displayName ?? discoveryDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        busy = true; problem = nil; discoveryPhase = .connecting
         defer { busy = false }
         do {
-            let connected = try await client.connectRuntime(
-                companyId: company.companyId,
-                name: progress.agentDisplayName ?? runtime.name,
-                runtime: runtime, createAsNew: createAsNew)
-            write { $0.agentPrincipalId = connected.principalId
-                    $0.agentDisplayName = connected.displayName }
-            problem = nil
-            detectedRuntime = nil
-            // Learn which rooms this agent works in before deciding where to put it.
-            await refresh()
-            /* And then actually connect it. Recording the principal is not connecting anything:
-               a connector binds to a room, and until one is chosen no credential is minted and
-               nothing starts. Where the answer is not in doubt it is taken; where it is, the
-               room-binding notice already asks, and where there is no room at all the runtime is
-               connected to the workspace and says so rather than pretending to be working. */
-            /* A brand-new agent belongs to no room yet, and a connector binds to a room — so
-               connecting stopped here and the runtime never became Connected, with nothing said.
-               If this workspace has exactly one room, the agent joins it and starts; anything else
-               is a decision, and it is stated rather than left as silence. */
-            if agentRooms.isEmpty, rooms.count == 1, let room = rooms.first {
-                try? await client.addRoomMember(companyId: company.companyId,
-                                                roomId: room.roomId, principalId: connected.principalId)
-                await refresh()
+            // Selection re-probes the exact instance and persists the adapter selection. A stale
+            // discovery card can never bind an unrelated default runtime.
+            _ = try await connector.sidecar.send("select-runtime", ["runtimeInstallationId": runtime.runtimeInstallationId])
+            let connected = try await client.connectRuntime(companyId: companyId, name: name, runtime: runtime.runtime)
+            let target = discoveryRoomId
+            let existingRooms = discoveryAgents.first { $0["principal_id"] as? String == connected.principalId }?["rooms"] as? [[String: Any]] ?? []
+            if !existingRooms.contains(where: { $0["room_id"] as? String == target }) {
+                try await client.addRoomMember(companyId: companyId, roomId: target, principalId: connected.principalId)
             }
-            if let room = AppModel.roomToAdopt(current: progress.roomId, agentRooms: agentRooms) {
-                if progress.roomId != room { write { $0.roomId = room } }
-                await bind()
-            } else if agentRooms.isEmpty {
-                problem = .init(code: "runtime_no_room",
-                                message: "\(connected.displayName) is connected to this workspace but is not in a room yet.",
-                                status: 0,
-                                recovery: rooms.isEmpty
-                                    ? "Create a room, then add this agent to it."
-                                    : "Open the room you want it to work in and add it there.")
+            // Store only after membership succeeds. Retry still reuses the stable server binding.
+            company = identity?.companies.first { $0.companyId == companyId } ?? company
+            guard company?.companyId == companyId else {
+                throw SidecarError.refused("Sign in to this room's workspace before connecting an agent.")
             }
-            await refresh()
-        } catch let error as WorkspaceError { problem = error }
-        catch { problem = .init(code: "runtime_connect", message: "That did not work.", status: 0,
-                                recovery: "Try Connect existing agent again.") }
+            write { $0.companyId = companyId; $0.agentPrincipalId = connected.principalId
+                    $0.agentDisplayName = connected.displayName; $0.roomId = target }
+            await bind()
+            if let problem { throw problem }
+            try await connector.waitForAuthenticatedSession()
+            discoveryPhase = .connected
+            await readWorkspace(companyId)
+        } catch let error as WorkspaceError {
+            problem = error; discoveryPhase = .failed(error.message + " " + error.recovery)
+        } catch {
+            discoveryPhase = .failed(error.localizedDescription)
+        }
     }
 
     public func receive(authURL raw: String) async {
@@ -821,8 +872,10 @@ public final class AppModel {
                 baseURL: workspaceAddress, roomId: roomId,
                 roomName: roomName, projectName: room?.projectName,
                 agentPrincipalId: agentPrincipalId, agentDisplayName: progress.agentDisplayName)
-            Keychain.saveEnrolment(enrolment)
-            connector.enrolment = enrolment
+            var savedEnrolment = enrolment
+            savedEnrolment.runtimeSelectionId = selectedDiscoveredAgentId ?? connector.enrolment?.runtimeSelectionId
+            Keychain.saveEnrolment(savedEnrolment)
+            connector.enrolment = savedEnrolment
             connector.sidecar.credentialProblem = nil
             connector.begin()
             await connector.sidecar.resumeSession()

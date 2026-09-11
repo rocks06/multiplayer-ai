@@ -283,10 +283,11 @@ describe("What the product ships", () => {
   it("offers to detect before it asks for a code", () => {
     const menu = fs.readFileSync(
       path.join(root, "apps/connector-macos/Sources/ConnectorUI/MenuView.swift"), "utf8");
-    expect(menu).toContain("Detect existing agent");
+    expect(menu).toContain("Detect Agent");
     // The code path survives for Macs nobody is signed in on, one deliberate click away.
-    expect(menu).toContain("Connect manually with a code");
-    expect(menu.indexOf("Detect existing agent")).toBeLessThan(menu.indexOf("Connect manually"));
+    expect(menu).toContain("Connect with code");
+    expect(menu).toContain("Advanced");
+    expect(menu.indexOf("Detect Agent")).toBeLessThan(menu.indexOf("Connect with code"));
 
     /* And it is actually wired to something. The button only renders when an action is handed in,
        so a menu that is never given one shows nothing at all — which is indistinguishable, from

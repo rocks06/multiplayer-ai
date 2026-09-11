@@ -24,6 +24,28 @@ public final class SidecarClient {
     /// including before the first resume attempt.
     public var credentialProblem: CredentialProblem?
 
+    /// Local process/transport evidence remains available even when diagnostics IPC fails.
+    public private(set) var ipcStatus = "Not started"
+    public private(set) var lastIPCFailure: String?
+    public private(set) var lastExit: String?
+    public var processIdentifier: Int32? { process?.isRunning == true ? process?.processIdentifier : nil }
+    public var activeSupportDirectory: URL { supportOverride ?? Self.supportDirectory(for: Bundle.main.bundleIdentifier) }
+    private var executableOverride: URL?
+    private var supportOverride: URL?
+    private var environmentOverride: [String: String]?
+    private var restartEnabled = true
+    private var requestTimeout: TimeInterval = 15
+    private var generation = UUID()
+    private var stderrBuffer = Data()
+    private var outputHandle: FileHandle?
+    private var errorHandle: FileHandle?
+
+    // Explicit injection keeps tests out of the shipping support directory and Keychain.
+    init(executable: URL, supportDirectory: URL, environment: [String: String], requestTimeout: TimeInterval = 1) {
+        executableOverride = executable; supportOverride = supportDirectory
+        environmentOverride = environment; restartEnabled = false; self.requestTimeout = requestTimeout
+    }
+
     private var process: Process?
     private var stdin: FileHandle?
     // Replies travel as the raw line rather than a parsed dictionary: a dictionary of Any is
@@ -36,6 +58,7 @@ public final class SidecarClient {
 
     /// The bundled executable, or a development build when running from a checkout.
     private var executable: URL? {
+        if let executableOverride { return executableOverride }
         if let bundled = Bundle.main.url(forResource: "mpai-connector-sidecar", withExtension: nil) { return bundled }
         if let override = ProcessInfo.processInfo.environment["MPAI_SIDECAR"] { return URL(fileURLWithPath: override) }
         return nil
@@ -65,24 +88,50 @@ public final class SidecarClient {
             return
         }
         stopping = false
+        generation = UUID()
+        let launch = generation
+        buffer.removeAll(); stderrBuffer.removeAll()
+        ipcStatus = "Launching"
         let task = Process()
         task.executableURL = executable
-        var environment = ProcessInfo.processInfo.environment
-        environment["MPAI_SUPPORT_DIR"] =
-            SidecarClient.supportDirectory(for: Bundle.main.bundleIdentifier).path
+        var environment = environmentOverride ?? ProcessInfo.processInfo.environment
+        environment["MPAI_SUPPORT_DIR"] = activeSupportDirectory.path
         task.environment = environment
-        let input = Pipe(), output = Pipe()
+        let input = Pipe(), output = Pipe(), errors = Pipe()
         task.standardInput = input
         task.standardOutput = output
-        task.standardError = Pipe()
+        task.standardError = errors
+        outputHandle = output.fileHandleForReading
+        errorHandle = errors.fileHandleForReading
 
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
-            Task { @MainActor in self?.receive(data) }
+            if data.isEmpty { handle.readabilityHandler = nil }
+            Task { @MainActor in
+                guard let self, self.generation == launch else { return }
+                if data.isEmpty {
+                    if !self.stopping { self.lastIPCFailure = "Helper stdout closed (IPC EOF)."; self.ipcStatus = "Closed" }
+                } else { self.receive(data) }
+            }
         }
-        task.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.processEnded() }
+        // Always drain stderr: an unread pipe can block a live helper forever. Retain only a
+        // bounded tail, and expose classified codes, never arbitrary child output or secrets.
+        errors.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty { handle.readabilityHandler = nil }
+            Task { @MainActor in
+                guard let self, self.generation == launch else { return }
+                self.stderrBuffer.append(data)
+                self.stderrBuffer = Data(self.stderrBuffer.suffix(8192))
+            }
+        }
+        task.terminationHandler = { [weak self] ended in
+            let status = ended.terminationStatus
+            let signalled = ended.terminationReason == .uncaughtSignal
+            Task { @MainActor in
+                guard let self, self.generation == launch else { return }
+                self.processEnded(status: status, signalled: signalled)
+            }
         }
 
         do {
@@ -90,52 +139,97 @@ public final class SidecarClient {
             process = task
             stdin = input.fileHandleForWriting
             processStartedAt = Date()
-            lastLaunchFailure = nil
-            restartDelay = 1
+            ipcStatus = "Awaiting ping"
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == launch, !self.stopping else { return }
+                do {
+                    _ = try await self.send("ping")
+                    guard self.generation == launch, self.processIdentifier != nil else { return }
+                    self.ipcStatus = "Ready"
+                    self.lastLaunchFailure = nil
+                    // Only a sustained process earns a reset; immediate crashes must back off.
+                    try? await Task.sleep(for: .seconds(30))
+                    if self.generation == launch, self.processIdentifier != nil { self.restartDelay = 1 }
+                } catch {
+                    guard self.generation == launch, self.processIdentifier != nil else { return }
+                    if self.ipcStatus == "Awaiting ping" { self.ipcStatus = "Unresponsive" }
+                    self.lastIPCFailure = error.localizedDescription
+                }
+            }
         } catch {
-            lastLaunchFailure = error.localizedDescription
+            outputHandle?.readabilityHandler = nil; errorHandle?.readabilityHandler = nil
+            ipcStatus = "Launch failed"
+            let failure = error as NSError
+            lastLaunchFailure = "Helper launch failed (\(failure.domain) \(failure.code)): \(failure.localizedDescription)"
         }
     }
 
     public func stop() {
         stopping = true
-        process?.terminate()
-        process = nil
-        stdin = nil
-        processStartedAt = nil
-        state.running = false
+        generation = UUID() // Fence late EOF/termination callbacks from the outgoing process.
+        if process?.isRunning == true { process?.terminate() }
+        clearProcess()
+        ipcStatus = "Stopped"
     }
 
-    private func processEnded() {
-        process = nil
-        stdin = nil
-        processStartedAt = nil
+    private func clearProcess() {
+        outputHandle?.readabilityHandler = nil; errorHandle?.readabilityHandler = nil
+        outputHandle = nil; errorHandle = nil
+        process = nil; stdin = nil; processStartedAt = nil
+        buffer.removeAll()
         state.running = false
         for (_, continuation) in pending { continuation.resume(throwing: SidecarError.stopped) }
         pending.removeAll()
-        guard !stopping else { return }
+    }
+
+    private func processEnded(status: Int32, signalled: Bool) {
+        let evidence = Self.exitSummary(status: status, signalled: signalled, stderr: stderrBuffer)
+        lastExit = evidence
+        if !stopping { lastLaunchFailure = evidence }
+        clearProcess()
+        ipcStatus = "Exited"
+        guard !stopping, restartEnabled else { return }
         // Crashed rather than asked to stop: bring it back, backing off so a repeatedly failing
         // helper does not spin.
         restarts += 1
         let delay = restartDelay
         restartDelay = min(restartDelay * 2, 30)
+        let endedGeneration = generation
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(delay))
-            guard !self.stopping else { return }
+            guard !self.stopping, self.generation == endedGeneration, self.process == nil else { return }
             self.start()
-            await self.resumeSession()
+            if self.processIdentifier != nil { await self.resumeSession() }
         }
+    }
+
+    nonisolated static func exitSummary(status: Int32, signalled: Bool, stderr: Data) -> String {
+        let kind = signalled ? "signal" : "status"
+        let text = String(decoding: stderr, as: UTF8.self)
+        // Only fixed, recognized markers are reportable. Stderr can contain arbitrary secrets,
+        // paths, URLs or request bodies; regex-redacting known token prefixes is not sufficient.
+        let codes = ["EACCES", "EPERM", "ENOENT", "ENOSPC", "EROFS", "MODULE_NOT_FOUND", "ERR_DLOPEN_FAILED"]
+        let code = codes.first { text.contains($0) }
+        let detail = code.map { "; stderr reports \($0)" }
+            ?? (text.contains("dyld[") ? "; dynamic loader failure" : stderr.isEmpty ? "; no stderr captured" : "; stderr captured (content withheld)")
+        return "Helper exited with \(kind) \(status)\(detail)."
     }
 
     private func receive(_ data: Data) {
         buffer.append(data)
+        guard buffer.count <= 1_048_576 else {
+            buffer.removeAll(); lastIPCFailure = "Helper IPC frame exceeded 1 MiB."; return
+        }
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer[buffer.startIndex..<newline]
             buffer.removeSubrange(buffer.startIndex...newline)
-            guard let payload = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            guard let payload = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+                lastIPCFailure = "Helper emitted invalid JSON on stdout (content withheld)."; continue
+            }
             switch payload["type"] as? String {
             case "state":
-                if let decoded = try? JSONDecoder().decode(SidecarState.self, from: Data(line)) { state = decoded }
+                do { state = try JSONDecoder().decode(SidecarState.self, from: Data(line)) }
+                catch { lastIPCFailure = "Helper state does not match the app IPC schema." }
             case "reply":
                 if let id = payload["id"] as? Int, let continuation = pending.removeValue(forKey: id) {
                     if payload["ok"] as? Bool == true { continuation.resume(returning: Data(line)) }
@@ -148,7 +242,7 @@ public final class SidecarClient {
 
     @discardableResult
     public func send(_ command: String, _ arguments: [String: Any] = [:]) async throws -> [String: Any] {
-        guard let stdin else { throw SidecarError.stopped }
+        guard let stdin, processIdentifier != nil else { throw SidecarError.stopped }
         let id = nextId
         nextId += 1
         var payload = arguments
@@ -157,10 +251,23 @@ public final class SidecarClient {
         let data = try JSONSerialization.data(withJSONObject: payload)
         let reply: Data = try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
-            stdin.write(data + Data("\n".utf8))
+            do { try stdin.write(contentsOf: data + Data("\n".utf8)) }
+            catch {
+                let failure = error as NSError
+                let message = "Helper IPC write failed (\(failure.domain) \(failure.code))."
+                lastIPCFailure = message
+                pending.removeValue(forKey: id)?.resume(throwing: SidecarError.refused(message))
+                return
+            }
+            let timeout = ["detect", "discover", "select-runtime"].contains(command) ? max(requestTimeout, 60) : requestTimeout
+            // The command name is allowlisted; arguments (including credentials) never enter reports.
+            let label = ["ping", "status", "diagnostics", "detect", "configure", "connect", "disconnect", "reconnect", "signout", "enroll"].contains(command) ? command : "request"
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(15))
-                self?.pending.removeValue(forKey: id)?.resume(throwing: SidecarError.refused("The connector did not respond. Retry or open Diagnostics."))
+                try? await Task.sleep(for: .seconds(timeout))
+                guard let self, let waiter = self.pending.removeValue(forKey: id) else { return }
+                let message = "Helper IPC \(label) timed out after \(timeout)s (request \(id))."
+                self.lastIPCFailure = message
+                waiter.resume(throwing: SidecarError.refused(message))
             }
         }
         return (try? JSONSerialization.jsonObject(with: reply) as? [String: Any]) ?? [:]
@@ -216,6 +323,7 @@ public final class SidecarClient {
                 "agentPrincipalId": enrolment.agentPrincipalId, "credential": credential,
                 "agentDisplayName": enrolment.agentDisplayName ?? "",
                 "roomName": enrolment.roomName ?? "", "projectName": enrolment.projectName ?? "",
+                "runtimeSelectionId": enrolment.runtimeSelectionId ?? "",
             ])
             try await send("connect")
         } catch {
