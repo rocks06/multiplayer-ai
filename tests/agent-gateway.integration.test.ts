@@ -1,3 +1,8 @@
+import {spawn} from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import readline from 'node:readline';
 import {afterEach,beforeEach,describe,expect,it} from "vitest";
 import * as pg from "pg";
 import {readFile} from "node:fs/promises";
@@ -42,6 +47,41 @@ describe("Agent Gateway v1",()=>{
 
  beforeEach(async()=>{const bootstrap=new Pool({connectionString});await truncateAll(bootstrap);await bootstrap.end();await start()});
  afterEach(async()=>{for(const c of clients)c.close();clients.clear();await app.close()});
+
+ it.runIf(Boolean(process.env.MPAI_TEST_SIDECAR))("bundled helper moves A to B with the same credential and publishes A disconnect before B is live",async()=>{
+  const f=await companyFixture(),a=await agent(f,'Move agent','move');
+  const b=(await post(`/v1/companies/${f.company.id}/projects/${f.project.id}/rooms`,{name:'Room B'},{'x-principal-id':f.owner.principal_id})).json();
+  await post(`/v1/companies/${f.company.id}/rooms/${b.id}/members`,{principal_id:a.principal_id,role:'worker_agent',responsibilities:''},{'x-principal-id':f.owner.principal_id,'idempotency-key':'join-move-b'});
+  const observer=await external(await agent(f,'Observer','observer'),f.room.id);await observer.connect(0);
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'mpai-room-move-'));
+  const command=path.join(root,'hermes-fixture');fs.writeFileSync(command,'#!/bin/sh\ncase "$1" in\n--version) printf "Hermes v0.20.5\\n";;\nstatus) printf "ready\\n";;\ngateway) printf "Gateway running\\n";;\nchat) exit 0;;\n*) exit 1;;\nesac\n',{mode:0o700});
+  const child=spawn(process.env.MPAI_TEST_SIDECAR!,[],{env:{...process.env,HOME:root,HERMES_HOME:path.join(root,'hermes-home'),MPAI_IDENTITY_DIR:path.join(root,'identity'),MPAI_SUPPORT_DIR:path.join(root,'support'),HERMES_COMMAND:command},stdio:['pipe','pipe','pipe']});
+  child.stderr.resume();const lines=readline.createInterface({input:child.stdout});let id=0;
+  const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+  lines.on('line',line=>{const value=JSON.parse(line);const waiter=pending.get(value.id);if(waiter){clearTimeout(waiter.timer);pending.delete(value.id);value.ok?waiter.resolve(value):waiter.reject(Error(value.error))}});
+  const call=(command:string,args:Record<string,unknown>={})=>new Promise<any>((resolve,reject)=>{const key=++id;const timer=setTimeout(()=>{pending.delete(key);reject(Error(`IPC timeout: ${command}`))},8000);pending.set(key,{resolve,reject,timer});child.stdin.write(JSON.stringify({id:key,command,...args})+'\n')});
+  try {
+   await call('ping');const selected=(await call('detect')).runtimes[0];
+   const config={baseUrl,roomId:f.room.id,agentPrincipalId:a.principal_id,credential:a.credential.credential_token,runtimeSelectionId:selected.runtimeInstallationId};
+   await call('configure',config);await call('connect');await until(async()=>(await call('status')).state.gateway==='live',8000);
+   const old=(await pool.query(`SELECT * FROM external_agent_sessions WHERE agent_principal_id=$1 AND status='connected'`,[a.principal_id])).rows[0];
+   await call('disconnect');
+   expect((await call('status')).state.gateway).not.toBe('live');
+   expect((await pool.query(`SELECT status FROM external_agent_sessions WHERE id=$1`,[old.id])).rows[0].status).toBe('offline');
+   await observer.waitFor(frame=>frame.type==='room.event'&&frame.event.event_type==='agent.session.disconnected'&&frame.event.payload.session_id===old.id);
+   await call('configure',{...config,roomId:b.id});expect((await call('status')).state.gateway).not.toBe('live');
+   await call('connect');await until(async()=>(await call('status')).state.gateway==='live',8000);
+   const sessions=(await pool.query(`SELECT id,room_id,credential_id,status FROM external_agent_sessions WHERE agent_principal_id=$1`,[a.principal_id])).rows;
+   expect(sessions.filter(row=>row.status==='connected')).toEqual([expect.objectContaining({room_id:b.id,credential_id:a.credential.id})]);
+   expect(sessions.find(row=>row.id===old.id)?.status).toBe('superseded');
+   expect((await pool.query(`SELECT count(*)::int n FROM external_agent_credentials WHERE agent_principal_id=$1`,[a.principal_id])).rows[0].n).toBe(1);
+   await call('disconnect');
+  } finally {
+   child.kill('SIGTERM');await new Promise<void>(resolve=>{if(child.exitCode!==null)resolve();else child.once('exit',()=>resolve())});lines.close();
+   for(const waiter of pending.values())clearTimeout(waiter.timer);
+   fs.rmSync(root,{recursive:true,force:true});
+  }
+ });
 
  it("authenticates scoped credentials and rejects revocation, impersonation by IDs, cross-agent/company access, and inactive membership",async()=>{
   const aCo=await companyFixture("A"),bCo=await companyFixture("B");const a=await agent(aCo,"Agent A","a"),b=await agent(aCo,"Agent B","b",false);await agent(bCo,"Agent C","c");

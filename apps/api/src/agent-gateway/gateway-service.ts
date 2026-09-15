@@ -216,11 +216,13 @@ export class AgentGatewayService {
     const c=await this.pool.connect();
     try {
       await c.query("BEGIN");
+      // Serialize this single-room principal's opens/resumes, including different rooms.
+      await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[auth.agent_principal_id]);
       const member=await c.query(`SELECT 1 FROM room_members WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' AND role='worker_agent' FOR UPDATE`,[auth.company_id,roomId,auth.agent_principal_id]);
       if(!member.rowCount) throw new DomainError("room_access_denied","Active worker-agent room membership is required",403);
       const superseded=await c.query<{id:string;room_id:string}>(
         `UPDATE external_agent_sessions SET status='superseded',disconnected_at=now()
-         WHERE company_id=$1 AND agent_principal_id=$2 AND status='connected' RETURNING id,room_id`,
+         WHERE company_id=$1 AND agent_principal_id=$2 AND status IN ('connected','offline') RETURNING id,room_id`,
         [auth.company_id,auth.agent_principal_id]);
       const retiredCredentials=await c.query<{id:string}>(
         `SELECT id FROM external_agent_credentials WHERE company_id=$1 AND agent_principal_id=$2
@@ -263,8 +265,17 @@ export class AgentGatewayService {
 
   async resumeSession(sessionId:string,authorization:unknown) {
     const identity=await this.authenticateSession(sessionId,authorization,false,true);
-    await this.pool.query(`UPDATE external_agent_sessions SET status='connected',connected_at=now(),disconnected_at=NULL,last_seen_at=now() WHERE id=$1`,[sessionId]);
-    return identity;
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[identity.principalId]);
+      const resumed=await c.query(`UPDATE external_agent_sessions SET status='connected',connected_at=now(),disconnected_at=NULL,last_seen_at=now()
+        WHERE id=$1 AND status IN ('connected','offline') AND NOT EXISTS
+        (SELECT 1 FROM external_agent_sessions other WHERE other.agent_principal_id=$2 AND other.status='connected' AND other.id<>$1) RETURNING id`,[sessionId,identity.principalId]);
+      if(!resumed.rowCount) throw new DomainError('gateway_session_invalid','Session was replaced by another room connection',401);
+      await c.query('COMMIT');
+      return identity;
+    } catch(error) { await c.query('ROLLBACK'); throw error; } finally { c.release(); }
   }
 
   // Read-only session status. A runtime must be able to ask whether the Gateway still
@@ -315,8 +326,16 @@ export class AgentGatewayService {
   }
 
   async disconnect(sessionId:string,authorization:unknown) {
-    await this.authenticateSession(sessionId,authorization,false);
-    await this.pool.query(`UPDATE external_agent_sessions SET status='offline',disconnected_at=now(),last_seen_at=now() WHERE id=$1`,[sessionId]);
-    return {session_id:sessionId,status:"offline"};
+    const identity=await this.authenticateSession(sessionId,authorization,false,true);
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[identity.principalId]);
+      const changed=await c.query(`UPDATE external_agent_sessions SET status='offline',runtime_status='idle',disconnected_at=now(),last_seen_at=now() WHERE id=$1 AND status='connected' RETURNING id`,[sessionId]);
+      if(changed.rowCount && this.rooms) await this.rooms.recordAgentEvent(c,{companyId:identity.companyId,roomId:identity.roomId,
+        agentPrincipalId:identity.principalId,eventType:'agent.session.disconnected',payload:{session_id:sessionId,reason:'disconnected'}});
+      await c.query('COMMIT');
+      return {session_id:sessionId,status:"offline"};
+    } catch(error) { await c.query('ROLLBACK'); throw error; } finally { c.release(); }
   }
 }

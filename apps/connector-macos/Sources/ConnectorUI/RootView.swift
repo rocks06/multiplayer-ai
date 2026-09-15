@@ -122,9 +122,10 @@ struct LinkHandlerNotice: View {
 /// An agent can serve one room per machine, so being a member of several is normal and this is
 /// not an error. It is shown because the alternative is what happened: a Mac bound to one room
 /// while somebody watched another, with nothing anywhere offering to change it. Moving is offered,
-/// never performed — it abandons a live session and mints a new credential, which is a decision.
+/// never performed without confirmation; it transfers the existing credential to one room.
 struct RoomBindingNotice: View {
     @Bindable var app: AppModel
+    @State private var pendingMove: AgentRoom?
 
     private var boundName: String {
         guard let bound = app.connector.enrolment?.roomId else { return "another room" }
@@ -143,12 +144,20 @@ struct RoomBindingNotice: View {
             }
             Spacer(minLength: 16)
             ForEach(app.moveTargets) { room in
-                Button("Move to \(room.name)") { Task { await app.move(to: room.id) } }
+                Button("Move to \(room.name)") { pendingMove = room }
                     .buttonStyle(.borderless).font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Palette.ink).disabled(app.busy)
             }
             Button("Not now") { app.movePromptDismissed = true }
                 .buttonStyle(.borderless).font(.system(size: 13)).foregroundStyle(Palette.muted)
+        }
+        .alert("Move agent?", isPresented: Binding(
+            get: { pendingMove != nil }, set: { if !$0 { pendingMove = nil } }
+        ), presenting: pendingMove) { room in
+            Button("Cancel", role: .cancel) { pendingMove = nil }
+            Button("Move") { Task { await app.move(to: room.id) } }
+        } message: { room in
+            Text("\(app.progress.agentDisplayName ?? "This agent") is currently connected to \(boundName). Move it to \(room.name)?")
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)

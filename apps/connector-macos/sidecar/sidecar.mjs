@@ -401,6 +401,26 @@ class Connector {
     log('connector stopped by request');
   }
 
+  async disconnectSession() {
+    const saved = this.store().load();
+    const baseUrl = this.config?.baseUrl;
+    this.disconnect();
+    if (!baseUrl || !saved.session_id || !saved.session_token) return;
+    // Wait for authoritative release before a room move persists its new target.
+    let response;
+    try {
+      response = await fetch(`${baseUrl}/v1/agent-gateway/v1/sessions/${encodeURIComponent(saved.session_id)}/disconnect`, {
+        method: 'POST', headers: {authorization: `Bearer ${saved.session_token}`}, signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      throw new Error('The previous room could not be reached to confirm the agent left it.');
+    }
+    // 401/403: that session is already gone, which is the release we were waiting for.
+    if (!response.ok && response.status !== 401 && response.status !== 403) {
+      throw new Error(`The previous room did not confirm the agent left it (HTTP ${response.status}).`);
+    }
+  }
+
   /** Forget this Mac's enrolment entirely, including anything durable it kept about the room. */
   signOut() {
     this.disconnect();
@@ -486,7 +506,10 @@ async function daemon() {
           connector.configure(request); await connector.publish(); return reply(id, true, {});
         }
         case 'connect': await connector.connect(); await connector.publish(); return reply(id, true, {});
-        case 'disconnect': connector.disconnect(); await connector.publish(); return reply(id, true, {});
+        case 'disconnect':
+          // The runtime has stopped even when the workspace could not confirm it; say so either way.
+          try { await connector.disconnectSession(); } finally { await connector.publish(); }
+          return reply(id, true, {});
         case 'reconnect': connector.disconnect(); await connector.connect(); await connector.publish(); return reply(id, true, {});
         case 'signout': connector.signOut(); await connector.publish(); return reply(id, true, {});
         case 'status': return reply(id, true, { state: await connector.snapshot() });

@@ -120,6 +120,9 @@ struct WorkspaceWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        if let origin = URL(string: app.workspaceAddress) {
+            PDFPreviewBridge.install(in: configuration, origin: origin)
+        }
         let view = ProductWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
@@ -186,6 +189,14 @@ struct WorkspaceWebView: NSViewRepresentable {
                 if url.scheme == "blob", let source = action.sourceFrame.request.url,
                    WebSession.isInternal(source, base: base) {
                     decisionHandler(action.shouldPerformDownload ? .download : .allow); return
+                }
+                // The room asking the app to do what only the app can — move an agent, show
+                // Diagnostics. Handed to the OS it went nowhere: cancelled here and never opened.
+                if AppModel.acceptsFromWorkspace(url.absoluteString), action.sourceFrame.isMainFrame,
+                   let source = action.sourceFrame.request.url, WebSession.isInternal(source, base: base) {
+                    decisionHandler(.cancel)
+                    Task { await app.receive(authURL: url.absoluteString) }
+                    return
                 }
                 // A link out of the product is a link out of the app. Opening it in this window
                 // would strand someone inside a web page with no way back to their room.

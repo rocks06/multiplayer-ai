@@ -1,6 +1,7 @@
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Copy,Plus,RefreshCw,Share2,ShieldAlert,Users,X} from 'lucide-react';
-import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,deleteWorkspaceRoom,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
+import {agentRoomMove,handoffAgentMove} from './agent-room-move';
+import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,deleteWorkspaceRoom,listWorkspaceAgents,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import {useConfirm} from './Confirm';
 import PresenceFixture from './PresenceFixture';
@@ -647,6 +648,17 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
   /* One path, whether the agent is new to the workspace or only new to this room: it ends as a
      member here, and then the same connect flow the rest of the product uses. */
   const addAgentToRoom=async(choice:{name?:string;principalId?:string})=>{
+    if(choice.principalId){
+      // Re-read authoritative binding before consent; Cancel performs no mutation.
+      const agent=(await listWorkspaceAgents(identity.companyId)).find(a=>a.principal_id===choice.principalId);
+      const move=agent&&agentRoomMove(agent,identity.companyId,identity.roomId,snapshot.room.name);
+      if(move){
+        confirm({title:'Move agent?',detail:move.message,action:'Move agent',run:async()=>{
+          handoffAgentMove(move,()=>true,url=>{window.location.href=url});
+        }});
+        return;
+      }
+    }
     const principalId=choice.principalId
       ?? (await addWorkspaceAgent(identity.companyId,choice.name!.trim())).principal_id;
     await addRoomMember(identity.companyId,identity.roomId,principalId,'');

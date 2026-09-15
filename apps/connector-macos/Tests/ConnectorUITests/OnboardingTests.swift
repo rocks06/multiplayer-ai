@@ -348,10 +348,10 @@ struct BindDecisionTests {
                                     hasCredential: false, credentialProblem: nil, gateway: "live"))
     }
 
-    @Test("moving to another room, or becoming another agent, mints one")
+    @Test("a room move reuses the credential; another principal needs its own")
     func aDifferentJob() {
         #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-2", agentPrincipalId: "jj",
-                                    hasCredential: true, credentialProblem: nil, gateway: "live"))
+                                    hasCredential: true, credentialProblem: nil, gateway: "live") == false)
         #expect(AppModel.shouldMint(existing: enrolment(), roomId: "room-1", agentPrincipalId: "coleman",
                                     hasCredential: true, credentialProblem: nil, gateway: "live"))
     }

@@ -97,23 +97,14 @@ public final class AppModel {
         agentRooms.first { $0.id == id }?.name ?? rooms.first { $0.roomId == id }?.name
     }
 
-    /// Move this Mac to a room, deliberately. Signing out first is what makes it a move rather
-    /// than a second binding: the old credential goes, and a new one is minted for the new room.
+    /// Move this Mac deliberately using its existing credential. The helper stops the old
+    /// runtime before reconfiguration; the gateway fences its old room session atomically.
     public func move(to roomId: String) async {
         guard roomId != connector.enrolment?.roomId || connector.enrolment == nil else { return }
         // A room the agent does not work in would be refused by the workspace after this Mac had
         // already given up the binding it had. Refusing here costs nothing and loses nothing.
         guard agentRooms.isEmpty || agentRooms.contains(where: { $0.id == roomId }) else { return }
-        /* Order matters, and this is the order.
-
-           The target is written down first, so a move interrupted anywhere after this point
-           resumes towards the new room rather than falling back to the old one — on the next
-           refresh, on a Gateway reconnect, or after the app is quit and reopened. Signing out
-           then retires the old credential and session before a new one exists, so there is never
-           a moment with two live bindings; the workspace enforces that too, but this Mac should
-           not be relying on being caught. */
         write { $0.roomId = roomId }
-        await connector.signOut()
         await bind()
     }
 
@@ -462,6 +453,13 @@ public final class AppModel {
             || url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "connect-runtime"
     }
 
+    /// Links the room page may hand straight to this app. Moving an agent needs the credential in
+    /// this Mac's Keychain, so the page can only ask. Sign-in is deliberately absent: a token
+    /// redeemed because a page navigated somewhere is a session nobody chose to start.
+    nonisolated public static func acceptsFromWorkspace(_ raw: String) -> Bool {
+        isConnectRuntime(raw) || isDiagnostics(raw) || sharedRoomLink(raw) != nil
+    }
+
     /**
      * Introduce the runtime on this Mac to the workspace, and bind to whatever agent it turns out
      * to be.
@@ -484,6 +482,7 @@ public final class AppModel {
     private var discoveryAgents: [[String: Any]] = []
     private var knownDiscoveredIdentities: [String: KnownRuntimeIdentity] = [:]
     private var discoveryGeneration = UUID()
+    private var requestedMovePrincipalId: String?
     public var selectedDiscoveredAgent: DiscoveredAgent? {
         discoveredAgents.first { $0.id == selectedDiscoveredAgentId }
     }
@@ -509,6 +508,7 @@ public final class AppModel {
     public func dismissAgentDiscovery() {
         guard discoveryPhase != .connecting else { return }
         discoveryGeneration = UUID()
+        pendingAgentMove = nil
         discoveryPhase = .idle
         showingAgentDiscovery = false
     }
@@ -523,6 +523,8 @@ public final class AppModel {
      */
     public func detectRuntime() async {
         guard discoveryPhase != .looking, discoveryPhase != .connecting else { return }
+        let requestedMove = requestedMovePrincipalId
+        requestedMovePrincipalId = nil
         showingAgentDiscovery = true
         discoveryPhase = .looking
         discoveredAgents = []; selectedDiscoveredAgentId = nil; discoveryDisplayName = ""
@@ -569,6 +571,15 @@ public final class AppModel {
             discoveryAgents = agents
             if discoveryRoomId.isEmpty, rooms.count == 1 { discoveryRoomId = rooms[0].roomId }
             discoveryPhase = .results
+            if let requestedMove {
+                guard let selected = found.first(where: { known[$0.id]?.principalId == requestedMove }) else {
+                    discoveryPhase = .failed("This Mac does not have the selected agent profile. Move it from the Mac holding its saved credential.")
+                    return
+                }
+                selectDiscoveredAgent(selected.id)
+                // A URL proposes a move; only native consent authorizes local credential use.
+                if selectedAgentMove != nil { await confirmRuntimeConnection() }
+            }
         } catch {
             guard generation == discoveryGeneration else { return }
             discoveryPhase = .failed(error.localizedDescription)
@@ -583,13 +594,56 @@ public final class AppModel {
      * a reinstall, a restart, or a stale bridge left running from an earlier test cannot turn one
      * machine into a second agent.
      */
-    public func confirmRuntimeConnection(createAsNew: Bool = false) async {
+    public struct AgentRoomMove: Equatable, Identifiable, Sendable {
+        public var principalId: String
+        public var runtimeId: String
+        public var fromRoomId: String
+        public var toRoomId: String
+        public var message: String
+        public var id: String { "\(runtimeId):\(fromRoomId):\(toRoomId)" }
+    }
+    public var pendingAgentMove: AgentRoomMove?
+    public var selectedAgentMove: AgentRoomMove? {
+        guard let selected = selectedDiscoveredAgent, let known = selectedKnownIdentity else { return nil }
+        let record = discoveryAgents.first { $0["principal_id"] as? String == known.principalId }
+        let remote = record?["connector"] as? [String: Any]
+        let local = connector.enrolment.flatMap { $0.agentPrincipalId == known.principalId ? $0 : nil }
+        guard let from = local?.roomId ?? remote?["room_id"] as? String,
+              !discoveryRoomId.isEmpty, from != discoveryRoomId else { return nil }
+        let fromName = nameOfRoom(from) ?? local?.roomName ?? remote?["room_name"] as? String ?? "another room"
+        return .init(principalId: known.principalId, runtimeId: selected.id,
+                     fromRoomId: from, toRoomId: discoveryRoomId,
+                     message: "\(known.displayName) is currently connected to \(fromName). Move it to \(nameOfRoom(discoveryRoomId) ?? "the selected room")?")
+    }
+    public func cancelAgentMove() { pendingAgentMove = nil }
+    func acceptAgentMove(_ confirmed: AgentRoomMove?) -> Bool {
+        guard let move = selectedAgentMove else { return true }
+        guard move == confirmed else { pendingAgentMove = move; return false }
+        pendingAgentMove = nil
+        return true
+    }
+
+    public func confirmRuntimeConnection(createAsNew: Bool = false, confirmedMove: AgentRoomMove? = nil) async {
         guard !createAsNew, !busy, discoveryPhase != .looking, discoveryPhase != .connecting,
               let companyId = discoveryCompanyId,
               let runtime = selectedDiscoveredAgent, runtime.isConnectable,
               rooms.contains(where: { $0.roomId == discoveryRoomId }) else { return }
         let name = selectedKnownIdentity?.displayName ?? discoveryDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        guard acceptAgentMove(confirmedMove) else { return }
+        if let move = selectedAgentMove {
+            guard let saved = connector.enrolment, saved.agentPrincipalId == move.principalId,
+                  saved.baseURL == workspaceAddress,
+                  saved.runtimeSelectionId == nil || saved.runtimeSelectionId == runtime.id else {
+                discoveryPhase = .failed("Move this agent from the Mac holding its saved credential. Moving never issues a replacement credential.")
+                return
+            }
+            guard Keychain.readCredential().isFound else {
+                discoveryPhase = .failed("Unlock the Keychain and retry the move. Its existing credential must be preserved.")
+                return
+            }
+        }
+        pendingAgentMove = nil
         busy = true; problem = nil; discoveryPhase = .connecting
         defer { busy = false }
         do {
@@ -621,6 +675,18 @@ public final class AppModel {
         }
     }
 
+    private func adoptRuntimeMoveLink(_ raw: String) {
+        requestedMovePrincipalId = nil
+        guard let url = URLComponents(string: raw),
+              let companyId = url.queryItems?.first(where: { $0.name == "company" })?.value,
+              let roomId = url.queryItems?.first(where: { $0.name == "room" })?.value,
+              UUID(uuidString: companyId) != nil, UUID(uuidString: roomId) != nil else { return }
+        // Navigation only. detectRuntime revalidates workspace/room access before binding.
+        remember(path: "/rooms/\(companyId)/\(roomId)")
+        if let principal = url.queryItems?.first(where: { $0.name == "agent" })?.value,
+           UUID(uuidString: principal) != nil { requestedMovePrincipalId = principal }
+    }
+
     public func receive(authURL raw: String) async {
         if AppModel.isDiagnostics(raw) {
             connector.showingDiagnostics = true
@@ -633,6 +699,7 @@ public final class AppModel {
         if AppModel.isConnectRuntime(raw) {
             guard initialized else { queuedAuthURL = raw; return }
             // Looking, not creating. Enrolment waits for the person to see what was found.
+            adoptRuntimeMoveLink(raw)
             return await detectRuntime()
         }
         /* Recorded because the alternative is guessing. When a sign-in link does not work, the
@@ -654,7 +721,10 @@ public final class AppModel {
         if let shared = AppModel.sharedRoomLink(waiting) {
             return await openSharedRoom(company: shared.company, room: shared.room)
         }
-        if AppModel.isConnectRuntime(waiting) { return await detectRuntime() }
+        if AppModel.isConnectRuntime(waiting) {
+            adoptRuntimeMoveLink(waiting)
+            return await detectRuntime()
+        }
         await redeem(waiting)
     }
 
@@ -820,7 +890,7 @@ public final class AppModel {
                                               agentPrincipalId: String, hasCredential: Bool,
                                               credentialProblem: CredentialProblem?,
                                               gateway: String?) -> Bool {
-        guard let existing, existing.roomId == roomId,
+        guard let existing,
               existing.agentPrincipalId == agentPrincipalId, hasCredential else { return true }
         // A binding the workspace is refusing is not one worth keeping. Without this, a Mac whose
         // credential another machine had replaced could never mint a new one, and "Try again"
@@ -836,6 +906,49 @@ public final class AppModel {
         guard let company,
               let agentPrincipalId = progress.agentPrincipalId,
               let roomId = progress.roomId else { return }
+
+        guard !binding else { return }
+        binding = true
+        defer { binding = false }
+
+        // A room change is never credential rotation, including a temporarily locked Keychain.
+        // Persist only the new room metadata; resumeSession reads the SAME credential as before.
+        if let saved = connector.enrolment, saved.agentPrincipalId == agentPrincipalId,
+           saved.baseURL == workspaceAddress, saved.roomId != roomId {
+            guard Keychain.readCredential().isFound else {
+                problem = .init(code: "keychain", message: "The saved credential is unavailable.",
+                                status: 0, recovery: "Unlock the Keychain and retry the move.")
+                return
+            }
+            do {
+                try await RoomRebinding.perform(existing: saved, roomId: roomId,
+                    roomName: nameOfRoom(roomId), projectName: rooms.first { $0.roomId == roomId }?.projectName,
+                    disconnect: { _ = try await self.connector.sidecar.send("disconnect") },
+                    restore: {
+                        // Nothing moved, so nothing may look moved. Leaving the target recorded
+                        // would have the next launch retry a move nobody confirmed a second time.
+                        self.write { $0.roomId = saved.roomId }
+                        await self.connector.sidecar.resumeSession()
+                    },
+                    persist: { target in
+                        Keychain.saveEnrolment(target)
+                        self.connector.enrolment = target
+                    },
+                    connect: {
+                        await self.connector.sidecar.resumeSession()
+                        try await self.connector.waitForAuthenticatedSession()
+                    })
+            } catch RoomRebinding.Failure.stayed(let error) {
+                let previous = nameOfRoom(saved.roomId) ?? saved.roomName ?? "its previous room"
+                problem = .init(code: "move_failed", message: error.localizedDescription, status: 0,
+                                recovery: "It is still in \(previous). Retry the move; its saved credential is unchanged.")
+            } catch {
+                let underlying = (error as? RoomRebinding.Failure)?.underlying ?? error
+                problem = .init(code: "move_failed", message: underlying.localizedDescription, status: 0,
+                                recovery: "The move is saved. This Mac keeps reconnecting to \(nameOfRoom(roomId) ?? "the new room") with the same credential; open Diagnostics if it does not connect.")
+            }
+            return
+        }
 
         /* Binding twice is what broke this Mac.
 
@@ -857,9 +970,6 @@ public final class AppModel {
             await connector.sidecar.resumeSession()
             return
         }
-        guard !binding else { return }
-        binding = true
-        defer { binding = false }
         let room = rooms.first { $0.roomId == roomId }
         let roomName = room?.name ?? agentRooms.first { $0.id == roomId }?.name
         let label = "\(progress.agentDisplayName ?? "Agent") on \(Host.current().localizedName ?? "this Mac")"

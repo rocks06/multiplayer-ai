@@ -48,6 +48,13 @@ public struct AgentDiscoverySheet: View {
         .padding(24).frame(width: 560, height: 600)
         .interactiveDismissDisabled(app.discoveryPhase == .connecting || app.connector.busy)
         .onAppear { app.connector.workspaceAddress = app.workspaceAddress }
+        .alert("Move agent?", isPresented: Binding(
+            get: { app.pendingAgentMove != nil },
+            set: { if !$0 { app.cancelAgentMove() } }
+        ), presenting: app.pendingAgentMove) { move in
+            Button("Cancel", role: .cancel) { app.cancelAgentMove() }
+            Button("Move") { Task { await app.confirmRuntimeConnection(confirmedMove: move) } }
+        } message: { move in Text(move.message) }
     }
 
     private var isFailure: Bool {

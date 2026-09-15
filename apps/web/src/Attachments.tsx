@@ -1,8 +1,9 @@
-import {useEffect,useId,useRef,useState} from 'react';
+import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import {Download,File as FileIcon,FileText,Image,Plus,X} from 'lucide-react';
 import {commandKey,type RoomApi} from './api';
 import type {Artifact,Member} from './types';
 import './attachments.css';
+import {PDFPreview} from './PDFPreview';
 
 export const fileSize=(bytes:number)=>bytes<1024?`${bytes} B`:bytes<1024*1024?`${(bytes/1024).toFixed(1)} KB`:`${(bytes/1024/1024).toFixed(1)} MB`;
 export const previewKind=(type:string)=>['image/png','image/jpeg','image/webp','image/gif'].includes(type)?'image':type==='application/pdf'?'pdf':['text/plain','text/markdown','text/csv'].includes(type)?'text':null;
@@ -10,7 +11,7 @@ export const previewKind=(type:string)=>['image/png','image/jpeg','image/webp','
 /** No storage URL navigation, no HTML/SVG interpretation. Text is always escaped by React. */
 export function AttachmentCard({artifact,api}:{artifact:Artifact;api:Pick<RoomApi,'artifactBytes'>}){
   const [busy,setBusy]=useState(false),[error,setError]=useState('');
-  const [preview,setPreview]=useState<{url?:string;text?:string}|null>(null);
+  const [preview,setPreview]=useState<{url?:string;text?:string;pdf?:Blob}|null>(null);
   const dialog=useRef<HTMLDialogElement>(null);
   const kind=previewKind(artifact.content_type);
   useEffect(()=>()=>{if(preview?.url)URL.revokeObjectURL(preview.url)},[preview]);
@@ -20,6 +21,7 @@ export function AttachmentCard({artifact,api}:{artifact:Artifact;api:Pick<RoomAp
     try{
       const bytes=await api.artifactBytes(artifact.id);
       if(show&&kind==='text')setPreview({text:await bytes.text()});
+      else if(show&&kind==='pdf')setPreview({pdf:bytes});
       else {
         const url=URL.createObjectURL(new Blob([bytes],{type:show?artifact.content_type:'application/octet-stream'}));
         if(show)setPreview({url});
@@ -35,7 +37,7 @@ export function AttachmentCard({artifact,api}:{artifact:Artifact;api:Pick<RoomAp
     {busy&&<small role="status">Reading file…</small>}{error&&<p className="form-error" role="alert">{error} Use Preview or Download to retry.</p>}
     {preview&&<dialog ref={dialog} className="file-preview" aria-label={`Preview: ${artifact.filename}`} onClose={()=>setPreview(null)}>
       <header><strong>{artifact.filename}</strong><button type="button" onClick={()=>dialog.current?.close()} aria-label="Close preview"><X size={18}/></button></header>
-      {kind==='text'?<pre>{preview.text}</pre>:kind==='image'?<img src={preview.url} alt={artifact.filename}/>:<iframe title={artifact.filename} src={preview.url} sandbox=""/>}
+      {kind==='text'?<pre>{preview.text}</pre>:kind==='image'?<img src={preview.url} alt={artifact.filename}/>:preview.pdf&&<PDFPreview bytes={preview.pdf} filename={artifact.filename}/>}
     </dialog>}
   </article>;
 }
@@ -65,6 +67,21 @@ export function AttachmentComposer({members,onSend,to,onAddressee,focusToken,api
     return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('focusin',outside);document.removeEventListener('keydown',escape)};
   },[menu]);
   useEffect(()=>{if(focusToken)field.current?.focus()},[focusToken]);
+  useLayoutEffect(()=>{
+    const textarea=field.current;if(!textarea)return;
+    // Measure content, not the surrounding grid. CSS keeps the familiar compact
+    // two-line minimum and caps growth; longer drafts scroll inside the field.
+    const resize=()=>{textarea.style.height='0px';textarea.style.height=`${textarea.scrollHeight}px`};
+    resize();
+    if(typeof ResizeObserver==='undefined'){
+      window.addEventListener('resize',resize);
+      return()=>window.removeEventListener('resize',resize);
+    }
+    let width=textarea.clientWidth;
+    const observer=new ResizeObserver(()=>{if(textarea.clientWidth!==width){width=textarea.clientWidth;resize()}});
+    observer.observe(textarea);
+    return()=>observer.disconnect();
+  },[body]);
   const add=(incoming:File[])=>{if(sending.current)return;setError('');setFiles(current=>[...current,...incoming.map(file=>({key:commandKey(),file,error:file.size===0?'File is empty':file.size>50*1024*1024?'File exceeds 50 MB':undefined}))]);setMenu(false)};
   const submit=async()=>{
     if(sending.current||(!body.trim()&&!files.length))return;

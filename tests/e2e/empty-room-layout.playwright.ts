@@ -1,0 +1,114 @@
+import {test,expect,type Page} from '@playwright/test';
+import {createServer,type ViteDevServer} from 'vite';
+import {fileURLToPath} from 'node:url';
+
+// Real RoomApp/Shell/Transcript/AttachmentComposer and CSS; all transport is an
+// explicit in-memory fixture. No API process, database, migration or reset hooks.
+let server:ViteDevServer,origin:string;
+const company='00000000-0000-4000-8000-000000000001',room='00000000-0000-4000-8000-000000000002',person='00000000-0000-4000-8000-000000000003';
+test.beforeAll(async()=>{
+  server=await createServer({configFile:false,appType:'custom',root:fileURLToPath(new URL('../../apps/web',import.meta.url)),server:{host:'127.0.0.1',port:0},esbuild:{jsx:'automatic'},plugins:[{
+    name:'empty-room-fixture',resolveId(id){if(id==='/layout-fixture.js')return '\0layout-fixture'},load(id){if(id==='\0layout-fixture')return `import React from 'react';import {createRoot} from 'react-dom/client';import App from '/src/App.tsx';import '/src/styles.css';createRoot(document.getElementById('root')).render(React.createElement(App));`},
+  }]});
+  server.middlewares.use('/rooms/',async(_req,res,next)=>{try{res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml('/rooms/', '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/layout-fixture.js"></script></body></html>'))}catch(error){next(error)}});
+  await server.listen();origin=server.resolvedUrls!.local[0]!;
+});
+test.afterAll(async()=>{await server?.close()});
+async function openRoom(page:Page,dense=false,moving=false){
+  await page.addInitScript(({company,room,person,dense,moving})=>{
+    localStorage.setItem(`mpai:onboarding:v1:layout-user:${company}`,'done');
+    const snapshot={room:{id:room,name:'Layout room',last_event_seq:0,project_id:'p',project_name:'Layout project',objective:'Keep the conversation readable'},snapshot_seq:0,
+      members:[{principal_id:person,display_name:'Alex',kind:'human',role:'manager',responsibilities:'Review work'}],tasks:[],
+      messages:dense?Array.from({length:70},(_,i)=>({id:`m${i}`,sender_principal_id:person,sender_name:'Alex',sender_kind:'human',body_text:`Message ${i}: The conversation stays readable while the controls stay in place.`,created_at:new Date(1700000000000+i*60000).toISOString()})):[],
+      briefing:{briefing_seq:0,project_objective:'Keep the conversation readable',participants:[],joining_principal:{principal_id:person,role:'manager',responsibilities:'Review work'},active_tasks:[],relevant_completed_work:[],blockers:[],relevant_artifacts:[],important_recent_activity:[],unresolved_decisions:[]}};
+    window.fetch=async(input,init)=>{
+      if(init?.method && init.method!=='GET') (window as any).fixtureMutations=((window as any).fixtureMutations??0)+1;
+      const url=String(input),path=new URL(url,location.origin).pathname;
+      let data:unknown;
+      if(path==='/v1/auth/me')data={user:{id:'layout-user',email:'layout@example.test',display_name:'Alex'},companies:[{company_id:company,company_name:'Layout studio',principal_id:person,display_name:'Alex'}]};
+      else if(path.endsWith('/snapshot'))data=snapshot;
+      else if(path.endsWith('/rooms'))data={rooms:[{room_id:room,name:'Layout room',project_name:'Layout project'}]};
+      else if(path.endsWith('/agents'))data={agents:moving?[{agent_id:'agent',principal_id:'moving-principal',display_name:'JJ',status:'active',rooms:[],connector:{enrolled:true,presence:'connected',room_id:'room-a',room_name:'Room A',runtime_status:'idle'}}]:[]};
+      else if(path.endsWith('/artifacts'))data={artifacts:[]};
+      else if(path.endsWith('/messages')&&init?.method==='POST')data={ok:true};
+      else throw new Error(`Unexpected fixture request: ${url}`);
+      return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});
+    };
+    class FixtureSocket{
+      static OPEN=1;readyState=1;onmessage:((event:{data:string})=>void)|null=null;onclose:(()=>void)|null=null;
+      constructor(){setTimeout(()=>this.onmessage?.({data:JSON.stringify({type:'resumed',after_seq:0,latest_seq:0})}),0)}
+      send(){}close(){this.readyState=3;this.onclose?.()}
+    }
+    Object.defineProperty(window,'WebSocket',{value:FixtureSocket});
+  },{company,room,person,dense,moving});
+  await page.goto(`${origin}rooms/${company}/${room}`);
+  await expect(page.getByRole('heading',{name:'Layout room'})).toBeVisible();
+  await expect(page.getByRole('textbox',{name:'Message',exact:true})).toBeVisible();
+}
+for(const accept of [false,true])test(`move agent confirmation ${accept?'confirm':'cancel'} never mutates membership or credentials in the browser`,async({page})=>{
+  await page.setViewportSize({width:1440,height:900});await openRoom(page,false,true);
+  await page.getByRole('button',{name:'Add agent',exact:true}).click();
+  await page.getByRole('combobox',{name:'Add an agent already in this workspace'}).selectOption('moving-principal');
+  const dialog=page.getByRole('alertdialog');
+  await expect(dialog).toContainText('JJ is currently connected to Room A. Move it to Layout room?');
+  expect(await page.evaluate(()=>(window as any).fixtureMutations??0)).toBe(0);
+  await dialog.getByRole('button',{name:accept?'Move agent':'Cancel',exact:true}).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).fixtureMutations??0)).toBe(0);
+});
+
+async function measure(page:Page){return page.evaluate(()=>{
+  const box=(selector:string)=>{const e=document.querySelector<HTMLElement>(selector)!;const b=e.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height,bottom:b.bottom,clientHeight:e.clientHeight,scrollHeight:e.scrollHeight,scrollTop:e.scrollTop,rows:getComputedStyle(e).gridTemplateRows}};
+  return {viewport:{width:innerWidth,height:innerHeight},document:{width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight},shell:box('.shell-body'),room:box('.room-app'),header:box('.room-header'),worktable:box('.worktable'),conversation:box('.conversation'),transcript:box('.transcript'),composer:box('.composer'),textarea:box('.composer textarea')};
+})}
+for(const viewport of [{width:1440,height:900},{width:1024,height:640},{width:1280,height:480},{width:800,height:600},{width:375,height:667}]){
+  for(const dense of [false,true])test(`${dense?'populated':'empty'} ${viewport.width}x${viewport.height} keeps room controls bounded`,async({page},info)=>{
+    await page.setViewportSize(viewport);await openRoom(page,dense);
+    const before=await measure(page);console.log(JSON.stringify({case:info.title,...before}));
+    await page.screenshot({path:info.outputPath('room.png'),fullPage:true});
+    await info.attach('measurements',{body:JSON.stringify(before,null,2),contentType:'application/json'});
+    expect(before.document.width).toBeLessThanOrEqual(viewport.width);
+    expect(before.document.height).toBeLessThanOrEqual(viewport.height);
+    expect(before.shell.scrollHeight).toBeLessThanOrEqual(before.shell.clientHeight);
+    expect(before.header.scrollHeight).toBeLessThanOrEqual(before.header.clientHeight);
+    const headerChildren=await page.locator('.room-header').evaluate(e=>Array.from(e.children).filter(child=>getComputedStyle(child).display!=='none').map(child=>{const r=child.getBoundingClientRect();return {top:r.top,bottom:r.bottom,right:r.right}}));
+    for(const child of headerChildren){expect(child.top).toBeGreaterThanOrEqual(before.header.y);expect(child.bottom).toBeLessThanOrEqual(before.header.bottom);expect(child.right).toBeLessThanOrEqual(viewport.width)}
+    expect(before.composer.height).toBeLessThanOrEqual(100);
+    expect(before.textarea.height).toBeLessThanOrEqual(48);
+    expect(before.composer.bottom).toBeLessThanOrEqual(viewport.height);
+    expect(before.transcript.height).toBeGreaterThan(viewport.height*0.35);
+    expect(before.worktable.bottom).toBeGreaterThan(viewport.height-75);
+    if(dense){
+      expect(before.transcript.scrollHeight).toBeGreaterThan(before.transcript.clientHeight);
+      await page.locator('.transcript').evaluate(e=>{e.scrollTop=0});
+      await page.locator('.transcript').hover();await page.mouse.wheel(0,400);
+      await expect.poll(async()=>(await measure(page)).transcript.scrollTop).toBeGreaterThan(0);
+      const after=await measure(page);expect(after.header).toEqual(before.header);expect(after.composer).toEqual(before.composer);expect(after.worktable).toEqual(before.worktable);
+    }
+    const field=page.getByRole('textbox',{name:'Message',exact:true});
+    await field.fill('A short line\nA second line\nA third line\nA fourth line');
+    const grown=await measure(page);expect(grown.textarea.height).toBeGreaterThan(before.textarea.height);
+    await field.fill(Array.from({length:30},(_,i)=>`Line ${i}`).join('\n'));
+    const capped=await measure(page);expect(capped.textarea.height).toBeLessThanOrEqual(120);expect(capped.textarea.scrollHeight).toBeGreaterThan(capped.textarea.clientHeight);
+    expect(capped.composer.bottom).toBe(before.composer.bottom);
+    await page.screenshot({path:info.outputPath('long-draft.png')});
+    await info.attach('draft-measurements',{body:JSON.stringify({grown,capped},null,2),contentType:'application/json'});
+    await field.fill('');expect((await measure(page)).textarea.height).toBe(before.textarea.height);
+    await field.fill('Send and return to compact');await page.getByRole('button',{name:'Send message',exact:true}).click();await expect(field).toHaveValue('');expect((await measure(page)).textarea.height).toBe(before.textarea.height);
+    const plus=page.getByRole('button',{name:'Add attachment',exact:true});
+    await plus.click();await expect(page.getByRole('menu',{name:'Attachments'})).toBeVisible();
+    const menu=(await page.getByRole('menu').boundingBox())!;expect(menu.y).toBeGreaterThanOrEqual(0);expect(menu.x+menu.width).toBeLessThanOrEqual(viewport.width);
+    await plus.click();await expect(page.getByRole('menu')).toHaveCount(0);
+    await plus.click();await page.keyboard.press('Escape');await expect(plus).toBeFocused();
+    await plus.click();await page.locator('.section-heading').click();await expect(page.getByRole('menu')).toHaveCount(0);
+    await page.locator('input[type=file]').setInputFiles({name:'layout-note.txt',mimeType:'text/plain',buffer:Buffer.from('Layout fixture')});
+    expect((await page.locator('.pending-files li').boundingBox())!.height).toBeLessThanOrEqual(44);
+    await page.getByRole('button',{name:'Remove layout-note.txt'}).click();await expect(page.locator('.pending-files li')).toHaveCount(0);
+    // The rail's last section remains reachable without moving the room shell.
+    if(viewport.width<900)await page.locator('.oversight-trigger').click();
+    await page.locator('.activity>summary').scrollIntoViewIfNeeded();await expect(page.locator('.activity>summary')).toBeInViewport();
+    if(viewport.width<900)await page.locator('.sheet-bar button').click();
+    expect((await measure(page)).composer).toEqual(before.composer);
+    if(viewport.width>=1180){await page.getByRole('button',{name:'Briefing',exact:false}).click();const briefing=await measure(page);expect(briefing.composer.bottom).toBe(before.composer.bottom);expect(briefing.shell.scrollHeight).toBe(briefing.shell.clientHeight)}
+  });
+}

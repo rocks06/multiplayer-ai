@@ -645,3 +645,39 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .message.continued{position:relative}
 .message-time{position:absolute;left:0;top:2px;width:30px;text-align:right;
   font:500 9px/1.6 "SFMono-Regular",Consolas,monospace;color:var(--faint)}
+
+@layer responsive{
+/* Place optional room chrome explicitly. Auto-placement put the worktable in the
+   briefing's auto row when briefing was closed, leaving a phantom 1fr row below
+   an empty room. Only the worktable may consume the remaining shell height. */
+.shell-body:has(>.room-app){overflow:hidden}
+.room-app{min-height:0;grid-template-rows:64px auto minmax(0,1fr) auto}
+.room-app>.room-header{grid-row:1}
+.room-app>.briefing{grid-row:2;max-height:30dvh;overflow:auto}
+.room-app>.worktable{grid-row:3}
+.room-app>.oversight-trigger{grid-row:4}
+/* Seven header children with manager controls; never create an implicit second
+   row beneath a fixed-height header. Flexible text yields before the controls. */
+.room-header{grid-template-columns:auto minmax(0,.7fr) minmax(0,1.2fr) auto auto auto auto}
+.room-title{min-width:0}
+.room-title h1,.room-title>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.conversation>.composer{align-self:end;min-width:0}
+@media(max-width:1100px){
+  .room-header{grid-template-columns:auto minmax(0,1fr) minmax(0,1fr) auto auto auto}
+}
+@media(max-width:899px){
+  .room-app{grid-template-rows:60px auto minmax(0,1fr) auto}
+  .room-header{height:60px;gap:10px;grid-template-columns:minmax(0,1fr) auto auto auto}
+  .room-header>.brand-mark,.room-header>.objective{display:none}
+  .room-header .connection{font-size:0;padding:9px}
+  .room-header .connection i{width:7px;height:7px}
+}
+@media(max-width:480px){
+  .room-header{gap:6px;padding-inline:12px}
+  .room-title h1{font-size:18px}
+  .room-title>span{font-size:9px}
+  .share-room{padding-inline:4px}
+  .delete-room{font-size:11px}
+  .composer-meta>span{display:none}
+}
+}
