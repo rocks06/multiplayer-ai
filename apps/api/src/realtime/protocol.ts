@@ -30,6 +30,9 @@ export type ServerFrame =
      access was removed and asks for a new enrollment code, when all that happened is that this
      agent came back on a newer connection — often the same Mac, moments earlier. */
   | { type: "session_superseded"; room_id: string; reason: string }
+  /* Taken out of the room by a person. Not a dead credential, and not to be undone by an automatic
+     reconnect: the agent connects again when it is put back in a room. */
+  | { type: "session_ended"; room_id: string; reason: string }
   | { type: "protocol_error"; code: string; message: string };
 
 export type ClientFrame = { type: "ack"; room_seq: number };

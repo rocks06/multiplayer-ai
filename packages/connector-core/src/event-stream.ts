@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import type { GatewayClient } from "./gateway-client.js";
-import { GatewayError, type ConnectionState, type RoomEvent } from "./types.js";
+import { GatewayError, type ConnectionState, type RoomEvent, type TerminalReason } from "./types.js";
 
 export type EventDisposition = "applied" | "duplicate" | "gap";
 
@@ -34,8 +34,14 @@ export const isTerminal = (error: unknown) =>
   ["gateway_unauthenticated", "room_access_denied", "room_not_found", "agent_not_found"].includes((error as any)?.body?.error?.code);
 
 /** Terminal says stop; this says what to tell the person, and they are different questions. */
-const terminalReason = (error: unknown): "unauthenticated" | "superseded" =>
-  (error as any)?.reason === "superseded" ? "superseded" : "unauthenticated";
+const terminalReason = (error: unknown): TerminalReason => {
+  const reason = (error as any)?.reason;
+  if (reason === "superseded" || reason === "removed") return reason;
+  // Not being in the room is not a dead credential. Treating it as one asked for a new code.
+  return ["room_access_denied", "room_not_found"].includes((error as any)?.body?.error?.code) ? "removed" : "unauthenticated";
+};
+const stateFor = (reason: TerminalReason): ConnectionState =>
+  reason === "superseded" ? "superseded" : reason === "removed" ? "removed" : "access_revoked";
 
 const isSessionRejected = (error: unknown) =>
   (error as any)?.body?.error?.code === "gateway_session_invalid" ||
@@ -142,6 +148,13 @@ export class EventStream {
                                         undefined, undefined, true, "superseded"));
                 return;
               }
+              /* Taken out of the room by a person. Stop, and do not come back on our own: an
+                 automatic reconnect would undo what they just did. */
+              if (frame.type === "session_ended") {
+                this.callbacks.onConnectionState("removed");
+                reject(new GatewayError("Disconnected from this room", undefined, undefined, true, "removed"));
+                return;
+              }
               if (frame.type === "protocol_error") reject(new GatewayError(`Gateway protocol error: ${frame.code}`));
             } catch (error) { reject(error); }
           });
@@ -151,6 +164,10 @@ export class EventStream {
 
         // Superseded can arrive as a bare close if the frame is lost in the teardown, and a
         // reconnect here would open a second session and retire the one that just replaced us.
+        if (closure && closure.code === 4410) {
+          this.callbacks.onConnectionState("removed");
+          throw new GatewayError("Disconnected from this room", undefined, undefined, true, "removed");
+        }
         if (closure && closure.code === 4409) {
           this.callbacks.onConnectionState("superseded");
           throw new GatewayError("Replaced by a newer connection for this agent",
@@ -166,7 +183,7 @@ export class EventStream {
       } catch (error) {
         this.callbacks.onError(message(error));
         if (isTerminal(error)) {
-          this.callbacks.onConnectionState(terminalReason(error) === "superseded" ? "superseded" : "access_revoked");
+          this.callbacks.onConnectionState(stateFor(terminalReason(error)));
           // Carry the reason out with the error, so the supervisor never has to read the message.
           if (!(error as any)?.reason) (error as any).reason = terminalReason(error);
           throw error;

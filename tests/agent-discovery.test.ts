@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { AgentDiscovery } from '../packages/connector-core/src/discovery.js';
 import type { AgentRuntimeAdapter } from '../packages/connector-core/src/types.js';
 import { HermesAdapter } from '../packages/connector-hermes/src/index.js';
-import { hermesDiscovery } from '../packages/connector-hermes/src/discovery.js';
+import { hermesDiscovery, hermesRoot, profileDisplayName } from '../packages/connector-hermes/src/discovery.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(p => fs.rm(p, {recursive: true, force: true}))); });
 const adapter = (id: string, available = true): AgentRuntimeAdapter => ({id, detect: async () => ({name: id, available, readiness: available ? 'ready' : 'not_installed'}), health:async()=>({ok:available}), invoke: async () => ({ok:true,exitCode:0})});
@@ -64,7 +64,7 @@ describe('adapter-neutral discovery', () => {
   expect(after.profile).toBe(before.profile);
   expect(after.discoveryId).not.toBe(before.discoveryId);
  });
- it('distinguishes independent directories, even named default or identically named in different homes', async () => {
+ it('distinguishes identically named profiles in different homes, and never lists a directory named default twice', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'mpai-discovery-'));roots.push(root);
   const homes = [path.join(root,'one'),path.join(root,'two')];
   for (const home of homes) {
@@ -72,10 +72,43 @@ describe('adapter-neutral discovery', () => {
    await fs.mkdir(path.join(home,'profiles','default'));
   }
   const scans = await Promise.all(homes.map(home=>hermesDiscovery({home,command:'/missing-fixture'}).discover()));
-  for (const scan of scans) expect(scan[0]!.discoveryId).toBe('hermes:default');
+  for (const scan of scans) {
+   expect(scan[0]!.discoveryId).toBe('hermes:default');
+   // Hermes' default profile is the home itself; a stray profiles/default is not a second agent.
+   expect(scan.map(candidate=>candidate.profile)).toEqual(['default','research']);
+  }
   const namedIds = scans.flatMap(scan=>scan.slice(1).map(candidate=>candidate.discoveryId));
-  expect(new Set(namedIds).size).toBe(4);
+  expect(new Set(namedIds).size).toBe(2);
   expect(namedIds).not.toContain('hermes:default');
+ });
+ /* The MacBook Air: one Hermes, two agents — JJ is the default profile and AXON a named one. Each
+    is its own card with its own name, and a profile Hermes deleted is not offered at all. */
+ it('lists every real Hermes profile with the name Hermes gives it, and skips deleted ones', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'mpai-discovery-'));roots.push(root);
+  await fs.writeFile(path.join(root,'profile.yaml'),'display_name: JJ\n');
+  await fs.mkdir(path.join(root,'profiles','axon'),{recursive:true});
+  await fs.writeFile(path.join(root,'profiles','axon','profile.yaml'),"description: research lead\ndisplay_name: 'AXON'\n");
+  await fs.mkdir(path.join(root,'profiles','scratch'),{recursive:true});
+  await fs.mkdir(path.join(root,'profiles','gone'),{recursive:true});
+  await fs.mkdir(path.join(root,'profiles','.deleted','gone'),{recursive:true});
+  await fs.writeFile(path.join(root,'profiles','notes.txt'),'not a profile');
+  const candidates = await hermesDiscovery({home:root,command:'/missing-fixture'}).discover();
+  expect(candidates.map(c=>[c.profile,c.displayName])).toEqual([['default','JJ'],['axon','AXON'],['scratch',null]]);
+  expect(new Set(candidates.map(c=>c.discoveryId)).size).toBe(3);
+ });
+ it('finds the whole Hermes root when HERMES_HOME points at one profile', () => {
+  expect(hermesRoot({HOME:'/Users/someone'})).toBe('/Users/someone/.hermes');
+  expect(hermesRoot({HOME:'/Users/someone',HERMES_HOME:'/Users/someone/.hermes/profiles/axon'})).toBe('/Users/someone/.hermes');
+  expect(hermesRoot({HOME:'/Users/someone',HERMES_HOME:'/opt/data/profiles/axon'})).toBe('/opt/data');
+  expect(hermesRoot({HOME:'/Users/someone',HERMES_HOME:'/opt/data'})).toBe('/opt/data');
+ });
+ it('reads a display name defensively: quoted, missing, empty or unreadable is never a blank name', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'mpai-discovery-'));roots.push(root);
+  expect(profileDisplayName(root)).toBeNull();
+  await fs.writeFile(path.join(root,'profile.yaml'),'display_name: ""\n');
+  expect(profileDisplayName(root)).toBeNull();
+  await fs.writeFile(path.join(root,'profile.yaml'),'display_name: "Research \u0007Lead"\n');
+  expect(profileDisplayName(root)).toBe('Research Lead');
  });
  it('a stalled runtime probe is bounded and does not block the helper event loop', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'mpai-probe-'));roots.push(root);

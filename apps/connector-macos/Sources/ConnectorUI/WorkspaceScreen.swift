@@ -93,6 +93,10 @@ public struct WorkspaceAlert: Equatable, Sendable {
         case .replaced:
             return .init(title: "Reconnecting", detail: "Your agent came back on a newer connection.",
                          tone: .working, offersReconnect: false)
+        case .disconnected:
+            return .init(title: "Your agent was disconnected from its room",
+                         detail: "Its identity and credential are kept. Add it to a room to connect it again.",
+                         tone: .idle, offersReconnect: false)
         case .offline:
             return .init(title: "Your agent is offline",
                          detail: "It is not running on this Mac right now. Nothing it had done is lost.",

@@ -146,8 +146,24 @@ public final class AppModel {
         return adopted
     }
 
+    /**
+     * What a launch starts from.
+     *
+     * Quitting and reopening is a fresh start: Home, not whichever room or step was last open.
+     * Returning to the last room meant a room somebody had finished with — or a move or a modal
+     * they had abandoned — came back as though it were still in progress. Everything that matters
+     * survives: sign-in, workspace, agents, rooms and credentials; only the place is forgotten.
+     */
+    nonisolated public static func launching(_ progress: Progress) -> Progress {
+        var fresh = progress
+        fresh.lastRoomPath = nil
+        return fresh
+    }
+
     public init(store: ProgressStore = DefaultsProgressStore(), connector: ConnectorModel? = nil) {
         var loaded = store.load()
+        let launched = AppModel.launching(loaded)
+        if launched != loaded { store.save(launched); loaded = launched }
         // Only a live model reads the Keychain; a drawing of one touches nothing.
         if connector == nil {
             let adopted = AppModel.adopting(loaded, from: Keychain.enrolment())
@@ -156,6 +172,7 @@ public final class AppModel {
         self.store = store
         self.progress = loaded
         self.connector = connector ?? ConnectorModel(autostart: false)
+        self.connector.primaryPrincipalId = loaded.agentPrincipalId
         self.client = WorkspaceClient(base: URL(string: loaded.workspaceAddress ?? AppModel.defaultAddress)
                                       ?? URL(string: AppModel.defaultAddress)!)
         // A Mac that has been set up wants its background half running before anything is drawn;
@@ -172,6 +189,7 @@ public final class AppModel {
     private func write(_ change: (inout Progress) -> Void) {
         change(&progress)
         store.save(progress)
+        connector.primaryPrincipalId = progress.agentPrincipalId
     }
 
     /// Point the app at a different workspace. Everything bound to the old one is local to this
@@ -200,6 +218,7 @@ public final class AppModel {
     /// that addresses it rather than back to the beginning.
     public func refresh() async {
         progress = store.load()
+        connector.primaryPrincipalId = progress.agentPrincipalId
         var situation = Situation(setupComplete: progress.setupComplete)
 
         guard progress.setupComplete else {
@@ -263,6 +282,13 @@ public final class AppModel {
             write { $0.lastRoomPath = nil }
         }
         guard let agents = try? await client.agents(companyId: companyId) else { return }
+        let known = Set(agents.compactMap { $0["principal_id"] as? String })
+        /* An agent removed from the workspace by somebody is forgotten on this Mac — that agent, and
+           only that one. Signing the whole Mac out for it stopped every other agent here too. */
+        for saved in connector.enrolments where saved.baseURL == workspaceAddress
+            && saved.agentPrincipalId != progress.agentPrincipalId && !known.contains(saved.agentPrincipalId) {
+            await connector.signOut(principalId: saved.agentPrincipalId)
+        }
 
         if let remembered = progress.agentPrincipalId {
             let mine = agents.first { $0["principal_id"] as? String == remembered }
@@ -270,7 +296,7 @@ public final class AppModel {
                 // Removed from the workspace by somebody. Nothing local can fix that, and the
                 // credential now names an identity that no longer exists.
                 write { $0.agentPrincipalId = nil; $0.agentDisplayName = nil; $0.roomId = nil }
-                await connector.signOut()
+                await connector.signOut(principalId: remembered)
                 return
             }
             if let name = mine["display_name"] as? String, name != progress.agentDisplayName {
@@ -489,6 +515,23 @@ public final class AppModel {
     public var selectedKnownIdentity: KnownRuntimeIdentity? {
         selectedDiscoveredAgent.flatMap { knownDiscoveredIdentities[$0.id] }
     }
+    public func discoveryTitle(_ agent: DiscoveredAgent) -> String {
+        agent.title(known: knownDiscoveredIdentities[agent.id])
+    }
+
+    /// One line per card that never contradicts another part of the sheet: a profile this Mac is
+    /// already running says where, otherwise the runtime says whether it can be connected.
+    public func discoveryStatus(_ agent: DiscoveredAgent) -> String {
+        if let known = knownDiscoveredIdentities[agent.id] {
+            let state = connector.state(of: known.principalId)
+            if state.enrolled, state.gateway == "live" {
+                let room = connector.enrolment(for: known.principalId).flatMap { nameOfRoom($0.roomId) ?? $0.roomName }
+                return room.map { "Connected to \($0)" } ?? "Connected"
+            }
+        }
+        return agent.runtime.situation
+    }
+
     public func selectDiscoveredAgent(_ id: String) {
         selectedDiscoveredAgentId = id
         discoveryDisplayName = "" // Never inherit the name of a different profile.
@@ -579,6 +622,10 @@ public final class AppModel {
                 selectDiscoveredAgent(selected.id)
                 // A URL proposes a move; only native consent authorizes local credential use.
                 if selectedAgentMove != nil { await confirmRuntimeConnection() }
+                /* Not a move: a person put this agent back in a room it is not live in anywhere, and
+                   this Mac already holds its credential. Connect it — same identity, no code. */
+                else if connector.enrolment(for: requestedMove) != nil,
+                        rooms.contains(where: { $0.roomId == discoveryRoomId }) { await confirmRuntimeConnection() }
             }
         } catch {
             guard generation == discoveryGeneration else { return }
@@ -607,7 +654,7 @@ public final class AppModel {
         guard let selected = selectedDiscoveredAgent, let known = selectedKnownIdentity else { return nil }
         let record = discoveryAgents.first { $0["principal_id"] as? String == known.principalId }
         let remote = record?["connector"] as? [String: Any]
-        let local = connector.enrolment.flatMap { $0.agentPrincipalId == known.principalId ? $0 : nil }
+        let local = connector.enrolment(for: known.principalId)
         guard let from = local?.roomId ?? remote?["room_id"] as? String,
               !discoveryRoomId.isEmpty, from != discoveryRoomId else { return nil }
         let fromName = nameOfRoom(from) ?? local?.roomName ?? remote?["room_name"] as? String ?? "another room"
@@ -632,13 +679,13 @@ public final class AppModel {
         guard !name.isEmpty else { return }
         guard acceptAgentMove(confirmedMove) else { return }
         if let move = selectedAgentMove {
-            guard let saved = connector.enrolment, saved.agentPrincipalId == move.principalId,
+            guard let saved = connector.enrolment(for: move.principalId),
                   saved.baseURL == workspaceAddress,
                   saved.runtimeSelectionId == nil || saved.runtimeSelectionId == runtime.id else {
                 discoveryPhase = .failed("Move this agent from the Mac holding its saved credential. Moving never issues a replacement credential.")
                 return
             }
-            guard Keychain.readCredential().isFound else {
+            guard Keychain.readCredential(for: move.principalId).isFound else {
                 discoveryPhase = .failed("Unlock the Keychain and retry the move. Its existing credential must be preserved.")
                 return
             }
@@ -665,7 +712,7 @@ public final class AppModel {
                     $0.agentDisplayName = connected.displayName; $0.roomId = target }
             await bind()
             if let problem { throw problem }
-            try await connector.waitForAuthenticatedSession()
+            try await connector.waitForAuthenticatedSession(principalId: connected.principalId)
             discoveryPhase = .connected
             await readWorkspace(companyId)
         } catch let error as WorkspaceError {
@@ -913,9 +960,11 @@ public final class AppModel {
 
         // A room change is never credential rotation, including a temporarily locked Keychain.
         // Persist only the new room metadata; resumeSession reads the SAME credential as before.
-        if let saved = connector.enrolment, saved.agentPrincipalId == agentPrincipalId,
+        let agentKey: [String: Any] = ["runtimeSelectionId": connector.enrolment(for: agentPrincipalId)?.runtimeSelectionId ?? "",
+                                       "agentPrincipalId": agentPrincipalId]
+        if let saved = connector.enrolment(for: agentPrincipalId),
            saved.baseURL == workspaceAddress, saved.roomId != roomId {
-            guard Keychain.readCredential().isFound else {
+            guard Keychain.readCredential(for: agentPrincipalId).isFound else {
                 problem = .init(code: "keychain", message: "The saved credential is unavailable.",
                                 status: 0, recovery: "Unlock the Keychain and retry the move.")
                 return
@@ -923,20 +972,23 @@ public final class AppModel {
             do {
                 try await RoomRebinding.perform(existing: saved, roomId: roomId,
                     roomName: nameOfRoom(roomId), projectName: rooms.first { $0.roomId == roomId }?.projectName,
-                    disconnect: { _ = try await self.connector.sidecar.send("disconnect") },
+                    // This agent only. Any other agent on this Mac keeps working through the move.
+                    disconnect: { _ = try await self.connector.sidecar.send("disconnect", agentKey) },
                     restore: {
                         // Nothing moved, so nothing may look moved. Leaving the target recorded
                         // would have the next launch retry a move nobody confirmed a second time.
                         self.write { $0.roomId = saved.roomId }
-                        await self.connector.sidecar.resumeSession()
+                        await self.connector.sidecar.resumeSession(principalId: agentPrincipalId)
                     },
                     persist: { target in
                         Keychain.saveEnrolment(target)
                         self.connector.enrolment = target
                     },
                     connect: {
-                        await self.connector.sidecar.resumeSession()
-                        try await self.connector.waitForAuthenticatedSession()
+                        if let failure = await self.connector.sidecar.resumeSession(principalId: agentPrincipalId) {
+                            throw SidecarError.refused(failure)
+                        }
+                        try await self.connector.waitForAuthenticatedSession(principalId: agentPrincipalId)
                     })
             } catch RoomRebinding.Failure.stayed(let error) {
                 let previous = nameOfRoom(saved.roomId) ?? saved.roomName ?? "its previous room"
@@ -961,13 +1013,13 @@ public final class AppModel {
 
            So a Mac that already holds this exact binding, and is not being refused for it, mints
            nothing: it makes sure the runtime is up and returns, which is all the callers wanted. */
-        if !AppModel.shouldMint(existing: connector.enrolment, roomId: roomId,
+        if !AppModel.shouldMint(existing: connector.enrolment(for: agentPrincipalId), roomId: roomId,
                                 agentPrincipalId: agentPrincipalId,
-                                hasCredential: Keychain.readCredential().isFound,
-                                credentialProblem: connector.sidecar.credentialProblem,
-                                gateway: connector.sidecar.state.gateway) {
+                                hasCredential: Keychain.readCredential(for: agentPrincipalId).isFound,
+                                credentialProblem: connector.sidecar.credentialProblems[agentPrincipalId],
+                                gateway: connector.state(of: agentPrincipalId).gateway) {
             connector.begin()
-            await connector.sidecar.resumeSession()
+            await connector.sidecar.resumeSession(principalId: agentPrincipalId)
             return
         }
         let room = rooms.first { $0.roomId == roomId }
@@ -977,18 +1029,19 @@ public final class AppModel {
             let credential = try await client.mintCredential(companyId: company.companyId,
                                                              agentPrincipalId: agentPrincipalId,
                                                              label: label)
-            try Keychain.saveCredential(credential)
+            try Keychain.saveCredential(credential, for: agentPrincipalId)
             let enrolment = Keychain.Enrolment(
                 baseURL: workspaceAddress, roomId: roomId,
                 roomName: roomName, projectName: room?.projectName,
                 agentPrincipalId: agentPrincipalId, agentDisplayName: progress.agentDisplayName)
             var savedEnrolment = enrolment
-            savedEnrolment.runtimeSelectionId = selectedDiscoveredAgentId ?? connector.enrolment?.runtimeSelectionId
+            savedEnrolment.runtimeSelectionId = selectedDiscoveredAgentId ?? connector.enrolment(for: agentPrincipalId)?.runtimeSelectionId
             Keychain.saveEnrolment(savedEnrolment)
             connector.enrolment = savedEnrolment
-            connector.sidecar.credentialProblem = nil
+            connector.sidecar.credentialProblems[agentPrincipalId] = nil
+            connector.sidecar.credentialProblem = connector.sidecar.credentialProblems.values.first
             connector.begin()
-            await connector.sidecar.resumeSession()
+            await connector.sidecar.resumeSession(principalId: agentPrincipalId)
             LoginItem.enable()
             await refresh()
         } catch let error as WorkspaceError {

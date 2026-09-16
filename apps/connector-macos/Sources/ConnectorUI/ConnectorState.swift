@@ -76,6 +76,36 @@ public struct SidecarState: Decodable, Equatable, Sendable {
         }
     }
 
+    /// One agent on this Mac, as the helper reports it. Several can run at once, each with its own
+    /// profile, identity and room; the top-level fields describe the most recently configured one.
+    public struct Agent: Decodable, Equatable, Sendable, Identifiable {
+        public var runtimeSelectionId: String
+        public var profile: String?
+        public var agentPrincipalId: String?
+        public var roomId: String?
+        public var enrolled: Bool
+        public var running: Bool
+        public var gateway: String
+        public var runtime: Runtime
+        public var sync: Sync
+        public var identity: Identity?
+        public var lastError: String?
+        public var id: String { runtimeSelectionId }
+        public init(runtimeSelectionId: String, profile: String? = nil, agentPrincipalId: String?, roomId: String? = nil,
+                    enrolled: Bool, running: Bool, gateway: String, runtime: Runtime,
+                    sync: Sync = .init(), identity: Identity? = nil, lastError: String? = nil) {
+            self.runtimeSelectionId = runtimeSelectionId; self.profile = profile
+            self.agentPrincipalId = agentPrincipalId; self.roomId = roomId
+            self.enrolled = enrolled; self.running = running; self.gateway = gateway
+            self.runtime = runtime; self.sync = sync; self.identity = identity; self.lastError = lastError
+        }
+        /// This agent alone, in the shape every single-agent judgement already reads.
+        public var state: SidecarState {
+            SidecarState(enrolled: enrolled, running: running, startedAt: nil, gateway: gateway,
+                         runtime: runtime, sync: sync, identity: identity, lastError: lastError)
+        }
+    }
+
     public var enrolled: Bool
     public var running: Bool
     public var startedAt: String?
@@ -84,12 +114,18 @@ public struct SidecarState: Decodable, Equatable, Sendable {
     public var sync: Sync
     public var identity: Identity?
     public var lastError: String?
+    public var agents: [Agent]?
 
     public init(enrolled: Bool, running: Bool, startedAt: String?, gateway: String,
-                runtime: Runtime, sync: Sync, identity: Identity?, lastError: String?) {
+                runtime: Runtime, sync: Sync, identity: Identity?, lastError: String?, agents: [Agent]? = nil) {
         self.enrolled = enrolled; self.running = running; self.startedAt = startedAt
         self.gateway = gateway; self.runtime = runtime; self.sync = sync
-        self.identity = identity; self.lastError = lastError
+        self.identity = identity; self.lastError = lastError; self.agents = agents
+    }
+
+    /// What one agent is doing, never borrowed from another agent on the same Mac.
+    public func agent(principalId: String) -> Agent? {
+        (agents ?? []).first { $0.agentPrincipalId == principalId }
     }
 
     public static let unknown = SidecarState(
@@ -109,6 +145,9 @@ public enum Health: Equatable, Sendable {
     /// This agent is live on a newer connection — usually this Mac a moment ago, after a rebind.
     /// Not a fault, and emphatically not a reason to ask anyone for a new enrollment code.
     case replaced
+    /// Taken out of its room by a person. Its credential is fine; it connects again once it is
+    /// back in a room, and must not reconnect on its own before then.
+    case disconnected
 
     public var title: String {
         switch self {
@@ -119,6 +158,7 @@ public enum Health: Equatable, Sendable {
         case .runtimeUnavailable: return "Runtime unavailable"
         case .authRequired: return "Sign-in needed"
         case .replaced: return "Reconnecting"
+        case .disconnected: return "Disconnected"
         }
     }
 
@@ -128,7 +168,7 @@ public enum Health: Equatable, Sendable {
         case .connected: return .good
         case .replaced: return .working
         case .reconnecting: return .working
-        case .notConnected, .offline: return .idle
+        case .notConnected, .offline, .disconnected: return .idle
         case .runtimeUnavailable, .authRequired: return .stopped
         }
     }
@@ -151,9 +191,9 @@ public enum CredentialProblem: Equatable, Sendable {
     public var recovery: String {
         switch self {
         case .missing:
-            return "This Mac's saved sign-in is gone. Open your workspace, choose Connect beside this agent, and enter the new code."
+            return "This agent's saved sign-in is gone. Choose Detect Agent and connect it again; while you are signed in here, no code is needed."
         case .unreadable:
-            return "macOS will not release this Mac's saved sign-in. This usually happens after the app is replaced with a different build. Choose Sign out this Mac, then connect again with a new code from your workspace."
+            return "macOS will not release this agent's saved sign-in. This usually happens after the app is replaced with a different build. Unlock the Keychain and Reconnect, or choose Detect Agent and connect it again."
         }
     }
 }
@@ -211,6 +251,7 @@ public enum Diagnosis {
         if state.gateway == "auth_required" { return .authRequired }
         // Checked before `running`, because standing down is exactly what a replaced runtime does.
         if state.gateway == "superseded" { return .replaced }
+        if state.gateway == "removed" { return .disconnected }
         if !state.running { return .offline }
         switch state.gateway {
         case "live":
@@ -230,6 +271,7 @@ public enum Diagnosis {
         if !state.enrolled { return "Not set up" }
         if state.gateway == "auth_required" { return "Sign-in needed" }
         if state.gateway == "superseded" { return "Reconnecting" }
+        if state.gateway == "removed" { return "Disconnected from its room" }
         if !state.running { return "Not running" }
         switch state.gateway {
         case "live": return "Connected"

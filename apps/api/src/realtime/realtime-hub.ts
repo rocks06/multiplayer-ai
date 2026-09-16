@@ -150,8 +150,14 @@ export class RealtimeHub {
          rebound itself was told its access had been removed and asked for a new code — while the
          room went on showing it connected. Supersession is ordinary and recoverable; revocation
          is not, and only one of them should ever reach a person. */
-      this.send(session,{type:"session_superseded",room_id:session.roomId,reason});
-      session.socket.close(4409,reason);
+      /* Taken out of the room is a third thing: stop, and do not come back on your own. */
+      if (reason === "removed_from_room") {
+        this.send(session,{type:"session_ended",room_id:session.roomId,reason});
+        session.socket.close(4410,reason);
+      } else {
+        this.send(session,{type:"session_superseded",room_id:session.roomId,reason});
+        session.socket.close(4409,reason);
+      }
       this.sessions.delete(session);
     }
   }

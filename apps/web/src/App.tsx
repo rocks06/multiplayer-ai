@@ -1,6 +1,6 @@
 import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Copy,Plus,RefreshCw,Share2,ShieldAlert,Users,X} from 'lucide-react';
-import {agentRoomMove,handoffAgentMove} from './agent-room-move';
+import {agentRoomMove,connectOnMac,handoffAgentMove} from './agent-room-move';
 import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,deleteWorkspaceRoom,listWorkspaceAgents,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import {useConfirm} from './Confirm';
@@ -664,6 +664,11 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     await addRoomMember(identity.companyId,identity.roomId,principalId,'');
     await refresh();
     loadAgents();
+    /* An agent that already has a Mac connects from that Mac, with what it already holds. Offering
+       it a code here asked for a new credential it did not need. */
+    const existing=choice.principalId?(await listWorkspaceAgents(identity.companyId)).find(a=>a.principal_id===principalId):undefined;
+    const onMac=existing&&connectOnMac(existing,identity.companyId,identity.roomId);
+    if(onMac){window.location.href=onMac;return}
     // Offer the connect step straight away, from what the room now reports.
     const joined=(await api.snapshot()).members.find(m=>m.principal_id===principalId);
     if(joined)setConnecting(joined);

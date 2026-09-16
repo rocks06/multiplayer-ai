@@ -34,12 +34,26 @@ public enum Keychain {
         }
     }
 
+    /// The Keychain account an agent's credential lives under.
+    ///
+    /// A Mac used to hold exactly one credential, under one account, so connecting a second agent
+    /// overwrote the first agent's key. Each agent now has its own. The single account from before
+    /// stays readable for the one agent it belonged to, so upgrading loses nobody's credential.
+    nonisolated static func account(for agentPrincipalId: String?) -> String {
+        guard let agentPrincipalId, !agentPrincipalId.isEmpty else { return account }
+        return "\(account).\(agentPrincipalId)"
+    }
+
     public static func saveCredential(_ credential: String) throws {
+        try saveCredential(credential, for: primaryPrincipalId)
+    }
+
+    public static func saveCredential(_ credential: String, for agentPrincipalId: String?) throws {
         let data = Data(credential.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrAccount as String: account(for: agentPrincipalId),
         ]
         SecItemDelete(query as CFDictionary)
         var attributes = query
@@ -49,6 +63,8 @@ public enum Keychain {
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let status = withoutDialogs { SecItemAdd(attributes as CFDictionary, nil) }
         guard status == errSecSuccess else { throw KeychainError(status: status) }
+        // The agent now has its own item; the shared one from before would only ever go stale.
+        if agentPrincipalId != nil, legacyOwner == agentPrincipalId { removeItem(account: account) }
     }
 
     /// The three genuinely different answers to "can this Mac present its credential?".
@@ -114,6 +130,16 @@ public enum Keychain {
      could not even be reached.
      */
     public static func readCredential() -> CredentialLookup {
+        readCredential(for: primaryPrincipalId)
+    }
+
+    public static func readCredential(for agentPrincipalId: String?) -> CredentialLookup {
+        let own = lookup(account: account(for: agentPrincipalId))
+        guard case .missing = own, let agentPrincipalId, legacyOwner == agentPrincipalId else { return own }
+        return lookup(account: account)
+    }
+
+    private static func lookup(account: String) -> CredentialLookup {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -133,6 +159,16 @@ public enum Keychain {
     }
 
     public static func removeCredential() {
+        for enrolment in enrolments() { removeCredential(for: enrolment.agentPrincipalId) }
+        removeItem(account: account)
+    }
+
+    public static func removeCredential(for agentPrincipalId: String) {
+        removeItem(account: account(for: agentPrincipalId))
+        if legacyOwner == agentPrincipalId { removeItem(account: account) }
+    }
+
+    private static func removeItem(account: String) {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -179,22 +215,68 @@ public enum Keychain {
         }
     }
 
-    /* Which agent and room this Mac is bound to is not secret, and is kept beside the app's own
+    /* Which agents and rooms this Mac is bound to is not secret, and is kept beside the app's own
        settings so a returning install knows what it is without unlocking anything. */
     private static let enrolmentKey = "com.multiplayerai.connector.enrolment"
+    private static let enrolmentsKey = "com.multiplayerai.connector.enrolments"
 
-    public static func saveEnrolment(_ enrolment: Enrolment) {
-        guard let data = try? JSONEncoder().encode(enrolment) else { return }
-        UserDefaults.standard.set(data, forKey: enrolmentKey)
+    /// Every agent this Mac runs. A Mac from before there could be several has its one enrolment
+    /// read as a list of one.
+    public static func enrolments() -> [Enrolment] {
+        if let data = UserDefaults.standard.data(forKey: enrolmentsKey),
+           let list = try? JSONDecoder().decode([Enrolment].self, from: data) { return list }
+        return legacyEnrolment().map { [$0] } ?? []
     }
 
-    public static func enrolment() -> Enrolment? {
+    /// The agent the single-agent version of this app saved, which owns the shared credential item.
+    private static func legacyEnrolment() -> Enrolment? {
         guard let data = UserDefaults.standard.data(forKey: enrolmentKey) else { return nil }
         return try? JSONDecoder().decode(Enrolment.self, from: data)
     }
+    private static var legacyOwner: String? { legacyEnrolment()?.agentPrincipalId }
+    private static var primaryPrincipalId: String? { enrolments().first?.agentPrincipalId ?? legacyOwner }
+
+    /// One entry per agent: saving an agent replaces what was saved for that agent and nothing else.
+    nonisolated public static func upserting(_ enrolment: Enrolment, into list: [Enrolment]) -> [Enrolment] {
+        var next = list
+        if let index = next.firstIndex(where: { $0.agentPrincipalId == enrolment.agentPrincipalId }) {
+            next[index] = enrolment
+        } else {
+            next.append(enrolment)
+        }
+        return next
+    }
+
+    public static func saveEnrolment(_ enrolment: Enrolment) {
+        write(upserting(enrolment, into: enrolments()))
+    }
+
+    private static func write(_ list: [Enrolment]) {
+        guard let data = try? JSONEncoder().encode(list) else { return }
+        UserDefaults.standard.set(data, forKey: enrolmentsKey)
+    }
+
+    /// The first agent this Mac runs, for the places that only ever show one.
+    public static func enrolment() -> Enrolment? { enrolments().first }
+
+    public static func enrolment(for agentPrincipalId: String) -> Enrolment? {
+        enrolments().first { $0.agentPrincipalId == agentPrincipalId }
+    }
 
     public static func removeEnrolment() {
+        UserDefaults.standard.removeObject(forKey: enrolmentsKey)
         UserDefaults.standard.removeObject(forKey: enrolmentKey)
+    }
+
+    public static func removeEnrolment(for agentPrincipalId: String) {
+        // The legacy record names the owner of the shared credential; it goes only with that agent.
+        if legacyOwner == agentPrincipalId {
+            let remaining = enrolments().filter { $0.agentPrincipalId != agentPrincipalId }
+            UserDefaults.standard.removeObject(forKey: enrolmentKey)
+            write(remaining)
+            return
+        }
+        write(enrolments().filter { $0.agentPrincipalId != agentPrincipalId })
     }
 }
 

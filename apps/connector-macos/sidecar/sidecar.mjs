@@ -180,25 +180,236 @@ async function runVerb(verb, argv) {
 
 // ------------------------------------------------------------- daemon mode
 
-class Connector {
-  constructor() {
+/* Where each agent keeps its cursor and session. One file per agent: two agents sharing one file
+   would each adopt the other's session and room. */
+const AGENTS_DIR = path.join(SUPPORT, 'agents');
+
+/**
+ * One agent on this Mac: one runtime profile, one workspace identity, one room session.
+ *
+ * A Mac used to be exactly one of these, so connecting a second agent replaced the first. The
+ * Hermes installation is shared; the agent is not — each profile is its own agent and runs here
+ * independently, and stopping, moving or disconnecting one never touches another.
+ */
+class AgentSlot {
+  constructor(host, candidate, runtimeId) {
+    this.host = host;
+    this.candidate = candidate;
+    this.runtimeId = runtimeId;
     this.runtime = null;
     this.config = null;           // { baseUrl, roomId, agentPrincipalId, credential, … }
     this.identity = null;         // { agentDisplayName, roomName, projectName }
-    this.hermesCommand = process.env.HERMES_COMMAND || undefined;
-    this.startedAt = new Date().toISOString();
     this.lastError = null;
     this.authFailed = false;
     this.superseded = false;
-    this.adapter = new hermes.HermesAdapter({ command: this.hermesCommand });
-    this.selected = { discoveryId: 'hermes:default', profile: 'default', adapter: this.adapter };
+    this.removed = false;
+    this.stoppedByRequest = false;
+    this.watch = null;
+    this.probeCache = null;
+    this.stateFile = path.join(AGENTS_DIR, `${runtimeId}.json`);
+    // This agent's Hermes sees this agent's session, and only this agent's.
+    candidate.adapter.sessionEnvironment = () => this.sessionEnvironment();
+  }
+
+  store() { return new core.FileStateStore(this.stateFile); }
+
+  label() { return this.identity?.agentDisplayName || this.candidate.displayName || this.candidate.profile; }
+
+  sessionEnvironment() {
+    if (!this.config) return {};
+    const state = this.store().load();
+    if (!state.session_id || !state.session_token) return {};
+    return { [SESSION_ENV]: Buffer.from(JSON.stringify({
+      baseUrl: this.config.baseUrl, roomId: this.config.roomId,
+      agentPrincipalId: this.config.agentPrincipalId,
+      sessionId: state.session_id, sessionToken: state.session_token,
+    })).toString('base64') };
+  }
+
+  /* A Mac from before agents had files of their own kept one state file. It belongs to exactly one
+     agent — the one it names, or, for a build too old to name anyone, the first to claim it — so it
+     is moved rather than copied: two agents resuming one cursor would both answer the same events. */
+  adoptLegacyState(agentPrincipalId) {
+    if (fs.existsSync(this.stateFile) || !fs.existsSync(STATE_FILE)) return;
+    let legacy;
+    try { legacy = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return; }
+    if (legacy?.agent_principal_id && legacy.agent_principal_id !== agentPrincipalId) return;
+    fs.mkdirSync(AGENTS_DIR, { recursive: true, mode: 0o700 });
+    fs.renameSync(STATE_FILE, this.stateFile);
+    log(`adopted this Mac's earlier connector state for ${this.label()}`);
+  }
+
+  /** Whether this profile's runtime can actually be driven, asked of the adapter rather than assumed. */
+  async runtimeState() {
+    if (!this.probeCache || Date.now() - this.probeCache.time > 10000) {
+      const candidate = this.candidate;
+      this.probeCache = { time: Date.now(), promise: candidate.adapter.detect().then(detection => this.host.runtimeRecord(candidate, detection)) };
+    }
+    return this.probeCache.promise;
+  }
+
+  gateway(state) {
+    if (this.authFailed) return 'auth_required';
+    if (this.superseded) return 'superseded';
+    if (this.removed) return 'removed';
+    if (this.runtime) return state.connection ?? 'not_started';
+    // Asked to stop is a state of its own. Reporting it as never started hid that it had worked.
+    return this.stoppedByRequest && this.config ? 'offline' : 'not_started';
+  }
+
+  /* The four truths, kept apart. A live Gateway says nothing about whether Hermes is installed,
+     and neither says anything about how much of the room has been read. */
+  async snapshot() {
+    const state = this.store().load();
+    return {
+      runtimeSelectionId: this.runtimeId,
+      profile: this.candidate.profile,
+      agentPrincipalId: this.config?.agentPrincipalId ?? null,
+      roomId: this.config?.roomId ?? null,
+      enrolled: Boolean(this.config),
+      running: Boolean(this.runtime),
+      gateway: this.gateway(state),
+      runtime: await this.runtimeState(),
+      sync: {
+        lastContiguousSeq: state.last_contiguous_seq ?? null,
+        pending: state.pending_actionable_events?.length ?? 0,
+      },
+      identity: this.identity,
+      lastError: this.lastError ? redact(this.lastError) : null,
+    };
+  }
+
+  configure(payload) {
+    /* Being told to be a different agent, to work in a different room, or to present a different
+       credential is not a settings change — it is a different job. A runtime already running is
+       still the old one, and `connect` would leave it exactly where it is, so it is stopped here
+       rather than left working in a room this Mac has moved on from, or against a key the
+       workspace has already replaced. */
+    if (core.needsRestart(this.config, payload)) this.disconnect();
+    this.adoptLegacyState(payload.agentPrincipalId);
+    this.config = {
+      runtimeSelectionId: this.runtimeId,
+      baseUrl: payload.baseUrl, roomId: payload.roomId,
+      agentPrincipalId: payload.agentPrincipalId, credential: payload.credential,
+    };
+    this.identity = {
+      agentDisplayName: payload.agentDisplayName || null,
+      roomName: payload.roomName || null,
+      projectName: payload.projectName || null,
+    };
+    this.authFailed = false;
+    this.superseded = false;
+    this.removed = false;
+  }
+
+  async connect() {
+    if (!this.config) throw new Error('This agent is not connected to a workspace yet.');
+    if (this.runtime) return;
+    this.lastError = null;
+    this.authFailed = false;
+    this.superseded = false;
+    this.removed = false;
+    this.stoppedByRequest = false;
+
+    const selfPath = process.execPath;
+    this.runtime = new core.ConnectorRuntime({
+      config: this.config,
+      profile: 'macos',
+      store: this.store(),
+      adapter: this.candidate.adapter,
+      commandSurface: { template: `${JSON.stringify(selfPath)} COMMAND`, verbs: COMMAND_SURFACE },
+      logPath: LOG_FILE,
+    });
+
+    if (this.watch) clearInterval(this.watch);
+    this.watch = setInterval(() => { void this.host.publish() }, 2000);
+    log(`connector starting for ${this.label()}`);
+    /* Whose failure this is.
+
+       A runtime that ends terminally does so asynchronously, and by the time it does the sidecar
+       may already have started its replacement — a rebind is exactly that sequence. Without this
+       check the outgoing runtime's rejection cleared `this.runtime` out from under the incoming
+       one and published its state, leaving a live runtime nobody was holding. */
+    const mine = this.runtime;
+    void this.runtime.start().catch((failure) => {
+      if (this.runtime !== mine) return;
+      const message = String(failure?.message ?? failure);
+      /* A refused credential is a different problem from a network that is down, and the person
+         has to be told which one it is. Being replaced is a third thing and being taken out of the
+         room a fourth; neither is a dead credential. The runtime reads `reason` from the error
+         rather than searching the sentence, because "Gateway access revoked" contains "revoked"
+         and so did being replaced by our own newer connection — which is how a working Mac came
+         to ask its owner for a new enrollment code. */
+      const reason = failure?.reason;
+      this.superseded = reason === 'superseded';
+      this.removed = reason === 'removed';
+      this.authFailed = reason
+        ? reason === 'unauthenticated'
+        : /401|403|unauthor|forbidden|revoked|invalid/i.test(message);
+      this.lastError = this.superseded || this.removed ? null : message;
+      log(`connector stopped for ${this.label()}: ${message}`);
+      this.runtime = null;
+      if (this.watch) clearInterval(this.watch);
+      this.watch = null;
+      void this.host.publish();
+    });
+  }
+
+  disconnect() {
+    if (this.watch) clearInterval(this.watch);
+    this.watch = null;
+    if (this.runtime) {
+      this.runtime.stop('offline');
+      this.stoppedByRequest = true;
+      log(`connector stopped by request for ${this.label()}`);
+    }
+    this.runtime = null;
+  }
+
+  async disconnectSession() {
+    const saved = this.store().load();
+    const baseUrl = this.config?.baseUrl;
+    this.disconnect();
+    this.stoppedByRequest = Boolean(this.config);
+    if (!baseUrl || !saved.session_id || !saved.session_token) return;
+    // Wait for authoritative release, so the room says so now and a move can rely on it.
+    let response;
+    try {
+      response = await fetch(`${baseUrl}/v1/agent-gateway/v1/sessions/${encodeURIComponent(saved.session_id)}/disconnect`, {
+        method: 'POST', headers: {authorization: `Bearer ${saved.session_token}`}, signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      throw new Error('The previous room could not be reached to confirm the agent left it.');
+    }
+    // 401/403: that session is already gone, which is the release we were waiting for.
+    if (!response.ok && response.status !== 401 && response.status !== 403) {
+      throw new Error(`The previous room did not confirm the agent left it (HTTP ${response.status}).`);
+    }
+  }
+
+  /** Forget this agent on this Mac, including anything durable it kept about the room. */
+  signOut() {
+    this.disconnect();
+    this.config = null;
+    this.identity = null;
+    this.stoppedByRequest = false;
+    try { fs.rmSync(this.stateFile, { force: true }) } catch { /* nothing to remove */ }
+    log(`signed out ${this.label()}; its durable connector state was removed`);
+  }
+}
+
+class Connector {
+  constructor() {
+    this.hermesCommand = process.env.HERMES_COMMAND || undefined;
+    this.startedAt = new Date().toISOString();
+    this.lastError = null;
     this.providers = [hermesDiscovery({command: this.hermesCommand})];
     this.discovery = new AgentDiscovery(this.providers);
-    this.selectionFile = path.join(SUPPORT, 'selected-agent.json');
+    this.defaultAdapter = new hermes.HermesAdapter({ command: this.hermesCommand });
+    this.defaultProbe = null;
+    this.slots = new Map();       // runtime identity → AgentSlot
+    this.primary = null;          // the agent most recently configured; answers commands naming none
     this.detected = new Map();
-    this.probeCache = null;
-    this.initialized = this.restoreSelection();
-    this.initialized.catch(error => { this.lastError = error.message; });
   }
 
   runtimeId(candidate) {
@@ -206,15 +417,7 @@ class Connector {
     const key = createHash('sha256').update(candidate.discoveryId).digest('hex');
     return durableId(path.join(IDENTITY_ROOT, 'runtime-identities', key));
   }
-  async restoreSelection() {
-    let selected = 'hermes:default';
-    try { selected = JSON.parse(fs.readFileSync(this.selectionFile, 'utf8')).discoveryId; }
-    catch (error) { if (error.code !== 'ENOENT') throw new Error('Saved agent selection cannot be read. Existing credentials have been preserved.'); }
-    const candidates = (await Promise.all(this.providers.map(provider => provider.discover()))).flat();
-    const candidate = candidates.find(item => item.discoveryId === selected);
-    if (!candidate) throw new Error('The saved agent profile is no longer available. Detect Agent to select a profile.');
-    this.selected = candidate; this.adapter = candidate.adapter;
-  }
+
   async discoverAgents() {
     const found = await this.discovery.scan();
     this.detected.clear();
@@ -223,42 +426,81 @@ class Connector {
       return this.runtimeRecord(candidate, detection);
     });
   }
+
+  /** Validate a discovery card against the runtime as it is now. Changes nothing that is running. */
   async selectRuntime(id) {
     const discoveryId = this.detected.get(id);
     if (!discoveryId) throw new Error('Select an agent from the current discovery results.');
     const {candidate, detection} = await this.discovery.select(discoveryId);
-    if (this.selected.discoveryId !== discoveryId) {
-      this.disconnect();
-      // Selection is tentative until configure supplies credentials for this identity.
-      // Never carry the previous profile's in-memory enrollment into the new adapter;
-      // leave Keychain credentials, saved selection and durable room state untouched.
-      this.config = null;
-      this.identity = null;
-      this.authFailed = false;
-      this.superseded = false;
-    }
-    this.cachedRuntime = undefined;
-    this.selected = candidate; this.adapter = candidate.adapter;
-    this.probeCache = null; this.initialized = Promise.resolve();
     return this.runtimeRecord(candidate, detection);
   }
 
-  store() { return new core.FileStateStore(STATE_FILE); }
-
-  /** Whether the agent runtime can actually be driven, asked of the adapter rather than assumed. */
-  async runtimeState() {
-    await this.initialized;
-    if (!this.probeCache || Date.now() - this.probeCache.time > 10000) {
-      const candidate = this.selected;
-      this.probeCache = {time: Date.now(), promise: candidate.adapter.detect().then(detection => this.runtimeRecord(candidate, detection))};
-    }
-    return this.probeCache.promise;
+  /**
+   * The profile on this Mac that holds a saved agent identity.
+   *
+   * Answered from what is on disk, never from whether a probe happened to succeed: a Hermes busy
+   * enough to miss one status check is still exactly the profile that was saved, and calling it
+   * "unavailable" while Hermes was plainly found is the contradiction this replaces.
+   */
+  async resolve(runtimeId) {
+    const candidates = (await Promise.all(this.providers.map(provider => provider.discover()))).flat();
+    const found = candidates.find(candidate => this.runtimeId(candidate) === runtimeId);
+    if (!found) throw new Error('This agent’s Hermes profile is no longer on this Mac. Detect Agent to choose the profile to connect.');
+    return found;
   }
+
+  /** The agent a command is for: by runtime, else by identity, else the most recently configured.
+   *  Naming an agent that is not here is an error, never a quiet fall back to a different agent. */
+  slotFor(runtimeId, agentPrincipalId) {
+    const slot = runtimeId ? this.slots.get(runtimeId)
+      : agentPrincipalId ? [...this.slots.values()].find(candidate => candidate.config?.agentPrincipalId === agentPrincipalId)
+      : this.slots.get(this.primary);
+    if (!slot) throw new Error('That agent is not connected on this Mac yet.');
+    return slot;
+  }
+
+  async configure(request) {
+    // Enrolments from before profile selection belong to the default runtime.
+    const runtimeId = request.runtimeSelectionId || externalRuntimeId;
+    /* One identity is one agent, live in one place. If it is being given a different profile on
+       this Mac, the profile it had stops being it. */
+    for (const other of [...this.slots.values()]) {
+      if (other.runtimeId !== runtimeId && other.config?.agentPrincipalId === request.agentPrincipalId) {
+        other.signOut();
+        this.slots.delete(other.runtimeId);
+      }
+    }
+    let slot = this.slots.get(runtimeId);
+    if (!slot) {
+      slot = new AgentSlot(this, await this.resolve(runtimeId), runtimeId);
+      this.slots.set(runtimeId, slot);
+    }
+    slot.configure(request);
+    this.primary = runtimeId;
+  }
+
+  signOut(runtimeId) {
+    const targets = runtimeId ? [this.slots.get(runtimeId)].filter(Boolean) : [...this.slots.values()];
+    for (const slot of targets) { slot.signOut(); this.slots.delete(slot.runtimeId); }
+    if (!this.slots.has(this.primary)) this.primary = this.slots.keys().next().value ?? null;
+    // A Mac from before per-agent state still has its single file; signing out everything removes it.
+    if (!runtimeId) { try { fs.rmSync(STATE_FILE, { force: true }) } catch {} }
+  }
+
+  async defaultRuntimeState() {
+    if (!this.defaultProbe || Date.now() - this.defaultProbe.time > 10000) {
+      const candidate = { discoveryId: 'hermes:default', profile: 'default', adapter: this.defaultAdapter };
+      this.defaultProbe = { time: Date.now(), promise: this.defaultAdapter.detect().then(detection => this.runtimeRecord(candidate, detection)) };
+    }
+    return this.defaultProbe.promise;
+  }
+
   runtimeRecord(candidate, detection) {
     return {
       available: detection.available, name: detection.name,
       version: detection.version ?? null, path: detection.path ?? null,
       adapter: candidate.adapter.id, profile: candidate.profile, discoveryId: candidate.discoveryId,
+      displayName: candidate.displayName ?? null,
       runtimeType: candidate.adapter.id,
       runtimeInstallationId: this.runtimeId(candidate),
       externalRuntimeId: this.runtimeId(candidate),
@@ -278,174 +520,44 @@ class Connector {
     };
   }
 
-  /* The four truths, kept apart. A live Gateway says nothing about whether Hermes is installed,
-     and neither says anything about how much of the room has been read. */
+  /** Every agent on this Mac, plus the most recently configured one at the top level, which is
+   *  what a single-agent reader has always read. */
   async snapshot() {
-    const state = this.store().load();
-    const runtime = await this.runtimeState();
-    const connection = this.runtime ? (state.connection ?? 'not_started') : 'not_started';
+    const agents = await Promise.all([...this.slots.values()].map(slot => slot.snapshot()));
+    const primary = agents.find(agent => agent.runtimeSelectionId === this.primary) ?? agents[0];
     return {
       type: 'state',
-      enrolled: Boolean(this.config),
-      running: Boolean(this.runtime),
       startedAt: this.startedAt,
-      gateway: this.authFailed ? 'auth_required' : this.superseded ? 'superseded' : connection,
-      runtime,
-      sync: {
-        lastContiguousSeq: state.last_contiguous_seq ?? null,
-        pending: state.pending_actionable_events?.length ?? 0,
-      },
-      identity: this.identity,
-      lastError: this.lastError ? redact(this.lastError) : null,
+      enrolled: primary?.enrolled ?? false,
+      running: primary?.running ?? false,
+      gateway: primary?.gateway ?? 'not_started',
+      runtime: primary?.runtime ?? await this.defaultRuntimeState(),
+      sync: primary?.sync ?? { lastContiguousSeq: null, pending: 0 },
+      identity: primary?.identity ?? null,
+      lastError: primary?.lastError ?? (this.lastError ? redact(this.lastError) : null),
+      agents,
     };
   }
 
   async publish() { emit(await this.snapshot()); }
 
-  configure(payload) {
-    const runtimeSelectionId = this.runtimeId(this.selected);
-    if (payload.runtimeSelectionId && payload.runtimeSelectionId !== runtimeSelectionId) {
-      throw new Error('The configured agent does not match the selected runtime.');
-    }
-    /* Being told to be a different agent, to work in a different room, or to present a different
-       credential is not a settings change — it is a different job. A runtime already running is
-       still the old one, and `connect` would leave it exactly where it is, so it is stopped here
-       rather than left working in a room this Mac has moved on from, or against a key the
-       workspace has already replaced. */
-    const moved = core.needsRestart(this.config, payload);
-    if (moved) this.disconnect();
-
-    this.config = {
-      runtimeSelectionId,
-      baseUrl: payload.baseUrl, roomId: payload.roomId,
-      agentPrincipalId: payload.agentPrincipalId, credential: payload.credential,
-    };
-    this.identity = {
-      agentDisplayName: payload.agentDisplayName ?? null,
-      roomName: payload.roomName ?? null,
-      projectName: payload.projectName ?? null,
-    };
-    this.authFailed = false;
-    this.superseded = false;
-  }
-
-  async connect() {
-    await this.initialized;
-    if (!this.config) throw new Error('This Mac is not connected to a workspace yet.');
-    if (this.config.runtimeSelectionId !== this.runtimeId(this.selected)) {
-      throw new Error('Configure the selected runtime before connecting to a workspace.');
-    }
-    if (this.runtime) return;
-    this.lastError = null;
-    this.authFailed = false;
-    this.superseded = false;
-
-    const selfPath = process.execPath;
-    this.runtime = new core.ConnectorRuntime({
-      config: this.config,
-      profile: 'macos',
-      store: this.store(),
-      adapter: this.adapter,
-      commandSurface: { template: `${JSON.stringify(selfPath)} COMMAND`, verbs: COMMAND_SURFACE },
-      logPath: LOG_FILE,
-      beforeInvoke: () => publishSession(),
-    });
-
-    // The room-scoped session is what Hermes acts through; the machine credential never leaves
-    // this process.
-    const publishSession = () => {
-      const state = this.store().load();
-      if (!state.session_id || !state.session_token) return;
-      process.env[SESSION_ENV] = Buffer.from(JSON.stringify({
-        baseUrl: this.config.baseUrl, roomId: this.config.roomId,
-        agentPrincipalId: this.config.agentPrincipalId,
-        sessionId: state.session_id, sessionToken: state.session_token,
-      })).toString('base64');
-    };
-
-    this.watch = setInterval(() => { publishSession(); void this.publish() }, 2000);
-    log('connector starting');
-    /* Whose failure this is.
-
-       A runtime that ends terminally does so asynchronously, and by the time it does the sidecar
-       may already have started its replacement — a rebind is exactly that sequence. Without this
-       check the outgoing runtime's rejection cleared `this.runtime` out from under the incoming
-       one and published its state, leaving a live runtime nobody was holding. */
-    const mine = this.runtime;
-    void this.runtime.start().catch((failure) => {
-      if (this.runtime !== mine) return;
-      const message = String(failure?.message ?? failure);
-      /* A refused credential is a different problem from a network that is down, and the person
-         has to be told which one it is. Being replaced is a third thing and belongs to neither:
-         the runtime read `reason` from the error rather than searching the sentence, because
-         "Gateway access revoked" contains "revoked" and so did being replaced by our own newer
-         connection — which is how a working Mac came to ask its owner for a new enrollment code. */
-      const reason = failure?.reason;
-      this.superseded = reason === 'superseded';
-      this.authFailed = reason
-        ? reason === 'unauthenticated'
-        : /401|403|unauthor|forbidden|revoked|invalid/i.test(message);
-      this.lastError = this.superseded ? null : message;
-      log(`connector stopped: ${message}`);
-      this.runtime = null;
-      void this.publish();
-    });
-  }
-
-  disconnect() {
-    if (this.watch) clearInterval(this.watch);
-    this.watch = null;
-    this.runtime?.stop('offline');
-    this.runtime = null;
-    delete process.env[SESSION_ENV];
-    log('connector stopped by request');
-  }
-
-  async disconnectSession() {
-    const saved = this.store().load();
-    const baseUrl = this.config?.baseUrl;
-    this.disconnect();
-    if (!baseUrl || !saved.session_id || !saved.session_token) return;
-    // Wait for authoritative release before a room move persists its new target.
-    let response;
-    try {
-      response = await fetch(`${baseUrl}/v1/agent-gateway/v1/sessions/${encodeURIComponent(saved.session_id)}/disconnect`, {
-        method: 'POST', headers: {authorization: `Bearer ${saved.session_token}`}, signal: AbortSignal.timeout(5000),
-      });
-    } catch {
-      throw new Error('The previous room could not be reached to confirm the agent left it.');
-    }
-    // 401/403: that session is already gone, which is the release we were waiting for.
-    if (!response.ok && response.status !== 401 && response.status !== 403) {
-      throw new Error(`The previous room did not confirm the agent left it (HTTP ${response.status}).`);
-    }
-  }
-
-  /** Forget this Mac's enrolment entirely, including anything durable it kept about the room. */
-  signOut() {
-    this.disconnect();
-    this.config = null;
-    this.identity = null;
-    try { fs.rmSync(STATE_FILE, { force: true }) } catch { /* nothing to remove */ }
-    log('signed out; durable connector state removed');
-  }
-
   async diagnostics() {
-    const state = this.store().load();
+    const slot = this.slots.get(this.primary);
+    const state = slot ? slot.store().load() : {};
     const snapshot = await this.snapshot();
     return {
       ...snapshot,
       type: 'diagnostics',
       profile: 'macos',
-      baseUrl: this.config?.baseUrl ?? null,
-      roomId: this.config?.roomId ?? null,
-      agentPrincipalId: this.config?.agentPrincipalId ?? null,
+      baseUrl: slot?.config?.baseUrl ?? null,
+      roomId: slot?.config?.roomId ?? null,
+      agentPrincipalId: slot?.config?.agentPrincipalId ?? null,
       sessionId: state.session_id ?? null,
       lastContiguousSeq: state.last_contiguous_seq ?? null,
       pendingEvents: state.pending_actionable_events ?? [],
       lastWakeAt: state.last_wake_at ?? null,
       lastHermesExit: state.last_hermes_exit ?? null,
-      stateFile: STATE_FILE,
+      stateFile: slot?.stateFile ?? STATE_FILE,
       logFile: LOG_FILE,
       pid: process.pid,
       // Deliberately absent: the credential and the session token.
@@ -454,7 +566,7 @@ class Connector {
 
   /** Redeem an enrolment code. The workspace answers with who this Mac now is. */
   async enroll(code, deviceLabel) {
-    const base = (this.config?.baseUrl) || this.pendingBaseUrl;
+    const base = this.pendingBaseUrl || this.slots.get(this.primary)?.config?.baseUrl;
     if (!base) throw new Error('No workspace address was provided.');
     const response = await fetch(`${base}/v1/agent-gateway/v1/enroll`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -481,6 +593,9 @@ async function daemon() {
     let request;
     try { request = JSON.parse(line) } catch { return }
     const { id, command } = request;
+    // Which agent a command is for. Absent means the most recently configured one.
+    const agent = request.runtimeSelectionId || undefined;
+    const principal = request.agentPrincipalId || undefined;
     try {
       switch (command) {
         case 'ping': return reply(id, true, { startedAt: connector.startedAt });
@@ -492,26 +607,22 @@ async function daemon() {
           const result = await connector.enroll(request.code, request.deviceLabel);
           return reply(id, true, { enrollment: result });
         }
-        case 'configure': {
-          // Legacy enrollments predate profile selection and belong to the default runtime.
-          // Never attach their credential to a tentative named-profile selection.
-          const requestedRuntimeId = request.runtimeSelectionId || externalRuntimeId;
-          await connector.initialized.catch(() => {});
-          if (connector.runtimeId(connector.selected) !== requestedRuntimeId) {
-            await connector.discoverAgents();
-            await connector.selectRuntime(requestedRuntimeId);
-          }
-          fs.writeFileSync(connector.selectionFile + '.tmp', JSON.stringify({ discoveryId: connector.selected.discoveryId }), { mode: 0o600 });
-          fs.renameSync(connector.selectionFile + '.tmp', connector.selectionFile);
-          connector.configure(request); await connector.publish(); return reply(id, true, {});
-        }
-        case 'connect': await connector.connect(); await connector.publish(); return reply(id, true, {});
-        case 'disconnect':
+        case 'configure': await connector.configure(request); await connector.publish(); return reply(id, true, { runtimeSelectionId: connector.primary });
+        case 'connect': await connector.slotFor(agent, principal).connect(); await connector.publish(); return reply(id, true, {});
+        case 'disconnect': {
+          const slot = connector.slotFor(agent, principal);
           // The runtime has stopped even when the workspace could not confirm it; say so either way.
-          try { await connector.disconnectSession(); } finally { await connector.publish(); }
+          try { await slot.disconnectSession(); } finally { await connector.publish(); }
           return reply(id, true, {});
-        case 'reconnect': connector.disconnect(); await connector.connect(); await connector.publish(); return reply(id, true, {});
-        case 'signout': connector.signOut(); await connector.publish(); return reply(id, true, {});
+        }
+        case 'reconnect': {
+          const slot = connector.slotFor(agent, principal);
+          slot.disconnect(); await slot.connect(); await connector.publish(); return reply(id, true, {});
+        }
+        case 'signout': {
+          const target = agent || principal ? connector.slotFor(agent, principal).runtimeId : undefined;
+          connector.signOut(target); await connector.publish(); return reply(id, true, {});
+        }
         case 'status': return reply(id, true, { state: await connector.snapshot() });
         case 'diagnostics': return reply(id, true, { diagnostics: await connector.diagnostics() });
         default: return reply(id, false, { error: `Unknown command ${command}` });
@@ -523,8 +634,9 @@ async function daemon() {
     }
   });
 
-  process.on('SIGTERM', () => { connector.disconnect(); process.exit(0) });
-  process.on('SIGINT', () => { connector.disconnect(); process.exit(0) });
+  const stopAll = () => { for (const slot of connector.slots.values()) slot.disconnect(); process.exit(0) };
+  process.on('SIGTERM', stopAll);
+  process.on('SIGINT', stopAll);
   connector.publish().catch(error => { connector.lastError = error.message; });
 }
 

@@ -375,7 +375,17 @@ export class RoomService {
   }
   async createRoom(companyId:string,projectId:string,actorId:string,name:string,responsibilities:string) { const c=await this.pool.connect(); try { await c.query('BEGIN'); const actor=await this.workspaceActor(c,companyId,actorId); const roomId=uuidv7(), memberId=uuidv7(), commandId=uuidv7(); await c.query(`INSERT INTO rooms(id,company_id,project_id,name,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[roomId,companyId,projectId,name,actorId]); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,'manager',$5)`,[memberId,companyId,roomId,actorId,responsibilities]); await this.appendEvent(c,{companyId,roomId,actor,eventType:'room.created',entityType:'room',entityId:roomId,payload:{name},commandId,correlationId:commandId}); await this.appendEvent(c,{companyId,roomId,actor,eventType:'member.joined',entityType:'room_member',entityId:memberId,payload:{principal_id:actorId,role:'manager'},commandId,correlationId:commandId}); await c.query('COMMIT'); return {id:roomId,name,room_seq:2}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
 
-  async addMember(input:{companyId:string;roomId:string;actorId:string;principalId:string;role:RoomRole;responsibilities:string;idempotencyKey:string}) { return this.command({...input,commandType:'member.add',input:{principalId:input.principalId,role:input.role,responsibilities:input.responsibilities},permission:'member.manage'}, async(c)=>{ const target=await this.actor(c,input.companyId,input.principalId); const id=uuidv7(); await c.query(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,$5,$6)`,[id,input.companyId,input.roomId,input.principalId,input.role,input.responsibilities]); return {response:{id,principal_id:target.id,role:input.role},event:{type:'member.joined',entityType:'room_member',entityId:id,payload:{principal_id:target.id,role:input.role}}}; }); }
+  async addMember(input:{companyId:string;roomId:string;actorId:string;principalId:string;role:RoomRole;responsibilities:string;idempotencyKey:string}) { return this.command({...input,commandType:'member.add',input:{principalId:input.principalId,role:input.role,responsibilities:input.responsibilities},permission:'member.manage'}, async(c)=>{ const target=await this.actor(c,input.companyId,input.principalId);
+    /* Somebody who left a room can be put back in it. A membership row is kept when it ends — its
+       history matters — and the unique index spans ended rows too, so adding an agent back after a
+       Disconnect failed outright and it could never connect to that room again. The ended row is
+       reactivated instead; an active one is still a conflict, exactly as before. */
+    const joined=await c.query<{id:string}>(`INSERT INTO room_members(id,company_id,room_id,principal_id,role,responsibilities) VALUES($1,$2,$3,$4,$5,$6)
+      ON CONFLICT (room_id,principal_id) DO UPDATE SET status='active',removed_at=NULL,joined_at=now(),role=EXCLUDED.role,responsibilities=EXCLUDED.responsibilities
+      WHERE room_members.status<>'active' RETURNING id`,[uuidv7(),input.companyId,input.roomId,input.principalId,input.role,input.responsibilities]);
+    if(!joined.rowCount) throw new DomainError('member_exists','Already a member of this room',409);
+    const id=joined.rows[0]!.id;
+    return {response:{id,principal_id:target.id,role:input.role},event:{type:'member.joined',entityType:'room_member',entityId:id,payload:{principal_id:target.id,role:input.role}}}; }); }
 
   async removeMember(input:{companyId:string;roomId:string;actorId:string;principalId:string;idempotencyKey:string}) {
     return this.command({...input,commandType:'member.remove',input:{principalId:input.principalId},permission:'member.manage'}, async(c)=>{
@@ -383,9 +393,11 @@ export class RoomService {
       const removed=await c.query<{id:string}>(`UPDATE room_members SET status='removed',removed_at=now() WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' RETURNING id`,[input.companyId,input.roomId,input.principalId]);
       if(!removed.rowCount) throw new DomainError('member_not_found','Active room member not found',404);
       if(target.kind==='agent'){
-        const credentials=await c.query<{credential_id:string}>(`SELECT DISTINCT credential_id FROM external_agent_sessions WHERE company_id=$1 AND room_id=$2 AND agent_principal_id=$3 AND status='connected'`,[input.companyId,input.roomId,input.principalId]);
-        await c.query(`UPDATE external_agent_sessions SET status='revoked',disconnected_at=now() WHERE company_id=$1 AND room_id=$2 AND agent_principal_id=$3 AND status='connected'`,[input.companyId,input.roomId,input.principalId]);
-        if(credentials.rows.length)await c.query(`UPDATE external_agent_credentials SET status='revoked',revoked_at=now() WHERE company_id=$1 AND id=ANY($2::uuid[]) AND status='active'`,[input.companyId,credentials.rows.map(row=>row.credential_id)]);
+        /* Out of this room, not out of the workspace. The session here ends now and whoever holds
+           it is told at once; the credential is the agent's own, not this room's, so it is kept —
+           revoking it meant reconnecting the agent anywhere needed a new code. */
+        const ended=await c.query<{id:string}>(`UPDATE external_agent_sessions SET status='revoked',disconnected_at=now() WHERE company_id=$1 AND room_id=$2 AND agent_principal_id=$3 AND status IN ('connected','offline') RETURNING id`,[input.companyId,input.roomId,input.principalId]);
+        for(const row of ended.rows)await c.query(`SELECT pg_notify('agent_sessions',$1)`,[JSON.stringify({session_id:row.id,reason:'removed_from_room'})]);
         await c.query(`UPDATE agent_enrollment_tokens SET status='revoked' WHERE company_id=$1 AND room_id=$2 AND agent_principal_id=$3 AND status='pending'`,[input.companyId,input.roomId,input.principalId]);
       }
       const id=removed.rows[0]!.id;

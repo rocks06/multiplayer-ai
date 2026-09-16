@@ -44,6 +44,16 @@ public struct MenuView: View {
 
             StatusLine(health: model.health)
 
+            // Several agents run from one Mac. Each is stopped and started on its own, and doing
+            // either to one never touches another.
+            if !model.enrolments.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(model.enrolments, id: \.agentPrincipalId) { saved in
+                        AgentRow(model: model, enrolment: saved)
+                    }
+                }
+            }
+
             VStack(spacing: 7) {
                 DetailRow(label: "Workspace",
                           value: Diagnosis.workspaceDetail(model.sidecar.state, credential: model.sidecar.credentialProblem))
@@ -69,7 +79,7 @@ public struct MenuView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if model.health == .authRequired {
-                Text("This Mac's access was removed or expired. Sign out and enter a new code from your workspace.")
+                Text("The workspace refused this agent's credential. Choose Detect Agent and connect it again; while you are signed in, no code is needed.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -99,6 +109,33 @@ public struct MenuView: View {
             }
             .font(.system(size: 12))
         }
+    }
+}
+
+/// One agent on this Mac: who it is, where it works, what it is doing, and the one action that fits.
+struct AgentRow: View {
+    @Bindable var model: ConnectorModel
+    let enrolment: Keychain.Enrolment
+
+    var body: some View {
+        let health = model.health(of: enrolment.agentPrincipalId)
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(enrolment.agentDisplayName ?? "Agent").font(.system(size: 12, weight: .medium))
+                Text([enrolment.roomName, health.title].compactMap { $0 }.joined(separator: " · "))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if health == .connected || health == .reconnecting || health == .replaced {
+                Button("Disconnect") { Task { await model.disconnect(principalId: enrolment.agentPrincipalId) } }
+                    .disabled(model.busy)
+            } else if health != .disconnected {
+                Button("Reconnect") { Task { await model.reconnect(principalId: enrolment.agentPrincipalId) } }
+                    .disabled(model.busy)
+            }
+        }
+        .font(.system(size: 12))
+        .accessibilityElement(children: .combine)
     }
 }
 

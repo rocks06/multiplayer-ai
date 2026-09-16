@@ -77,9 +77,10 @@ struct CredentialTests {
     func recoveryIsActionable() {
         for problem: CredentialProblem in [.missing, .unreadable(-34018)] {
             let recovery = problem.recovery
-            // It has to name a step the person can take, not just describe the state.
-            #expect(recovery.contains("code"))
-            #expect(recovery.contains("workspace"))
+            // It has to name a step the person can take, not just describe the state — and that
+            // step is reconnecting from this Mac, never fetching a new enrollment code.
+            #expect(recovery.contains("Detect Agent"))
+            #expect(!recovery.contains("new code"))
             for jargon in ["principal", "keychain item", "entitlement", "osstatus", "token",
                            "session", "cursor", "launchd", "node", "bridge", "socket", "-34018"] {
                 #expect(!recovery.lowercased().contains(jargon), "\(recovery) mentions \(jargon)")

@@ -295,39 +295,63 @@ public final class SidecarClient {
         }
     }
 
-    /// Hand the sidecar what it needs to be this agent again, after a launch or a crash.
+    /// Hand the sidecar what it needs to be each agent again, after a launch or a crash.
     ///
     /// A Mac that was never set up has nothing to resume and says nothing. A Mac that *was* set up
-    /// and cannot produce its credential is a different matter entirely: it used to return here in
+    /// and cannot produce a credential is a different matter entirely: it used to return here in
     /// silence, leaving an enrolled Mac looking untouched and permanently disconnected with no
-    /// explanation anywhere in the app. That case now has a state of its own.
+    /// explanation anywhere in the app. That case now has a state of its own, per agent.
     public func resumeSession() async {
-        let enrolment = Keychain.enrolment()
+        let enrolments = Keychain.enrolments()
+        if enrolments.isEmpty { credentialProblems = [:]; credentialProblem = nil; return }
+        for enrolment in enrolments { await resumeSession(enrolment) }
+    }
+
+    /// One agent, and only that one. Starting, moving or retrying an agent never restarts another.
+    /// `restart` stops a runtime that is already running and starts it again, for a person pressing
+    /// Reconnect on a connection that is stuck rather than merely absent.
+    @discardableResult
+    public func resumeSession(principalId: String, restart: Bool = false) async -> String? {
+        guard let enrolment = Keychain.enrolment(for: principalId) else { return "This agent is not saved on this Mac." }
+        return await resumeSession(enrolment, restart: restart)
+    }
+
+    /// Which saved agents cannot present a credential, by agent. One agent's locked item is not a
+    /// reason to show another as signed out.
+    public var credentialProblems: [String: CredentialProblem] = [:]
+
+    /// Returns why it could not, or nil once the helper has been told to connect.
+    @discardableResult
+    private func resumeSession(_ enrolment: Keychain.Enrolment, restart: Bool = false) async -> String? {
+        let principal = enrolment.agentPrincipalId
         let credential: String
-        switch SidecarClient.resumeDecision(enrolled: enrolment != nil,
-                                            lookup: enrolment == nil ? nil : Keychain.readCredential()) {
+        switch SidecarClient.resumeDecision(enrolled: true, lookup: Keychain.readCredential(for: principal)) {
         case .nothingToResume:
-            credentialProblem = nil
-            return
+            return nil
         case .cannotPresent(let problem):
+            credentialProblems[principal] = problem
             credentialProblem = problem
-            return
+            return problem.recovery
         case .resume(let value):
             credential = value
-            credentialProblem = nil
+            credentialProblems[principal] = nil
+            credentialProblem = credentialProblems.values.first
         }
-        guard let enrolment else { return }
         do {
-            try await send("configure", [
+            let configured = try await send("configure", [
                 "baseUrl": enrolment.baseURL, "roomId": enrolment.roomId,
-                "agentPrincipalId": enrolment.agentPrincipalId, "credential": credential,
+                "agentPrincipalId": principal, "credential": credential,
                 "agentDisplayName": enrolment.agentDisplayName ?? "",
                 "roomName": enrolment.roomName ?? "", "projectName": enrolment.projectName ?? "",
                 "runtimeSelectionId": enrolment.runtimeSelectionId ?? "",
             ])
-            try await send("connect")
+            // Named, so a second agent configured meanwhile cannot be the one that gets started.
+            let runtime = configured["runtimeSelectionId"] as? String ?? enrolment.runtimeSelectionId ?? ""
+            try await send(restart ? "reconnect" : "connect", ["runtimeSelectionId": runtime])
+            return nil
         } catch {
             lastLaunchFailure = error.localizedDescription
+            return error.localizedDescription
         }
     }
 

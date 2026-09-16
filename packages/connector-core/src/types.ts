@@ -155,6 +155,7 @@ export type ConnectionState =
   | "session_rejected"
   | "access_revoked"
   | "superseded"
+  | "removed"
   | "offline";
 
 export class GatewayError extends Error {
@@ -170,5 +171,7 @@ export class GatewayError extends Error {
   }
 }
 
-/** The two ways a connection ends for good, and they are not the same to a person. */
-export type TerminalReason = "unauthenticated" | "superseded";
+/** The ways a connection ends for good, and they are not the same to a person.
+ * `removed`: this agent was taken out of the room. Its credential still works, so nobody is asked
+ * to sign in again; it connects again once it is back in a room. */
+export type TerminalReason = "unauthenticated" | "superseded" | "removed";

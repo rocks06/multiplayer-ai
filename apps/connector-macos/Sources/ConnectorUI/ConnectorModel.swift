@@ -5,7 +5,25 @@ import ServiceManagement
 @MainActor
 public final class ConnectorModel {
     public let sidecar: SidecarClient
-    public var enrolment: Keychain.Enrolment?
+    /// Every agent this Mac runs.
+    public var enrolments: [Keychain.Enrolment] = []
+    /// The agent the app's own journey is about, when there is one; the others run beside it.
+    public var primaryPrincipalId: String?
+    /// The agent the single-agent surfaces show. Setting one saves that agent and touches no other.
+    public var enrolment: Keychain.Enrolment? {
+        get { enrolments.first { $0.agentPrincipalId == primaryPrincipalId } ?? enrolments.first }
+        set {
+            if let newValue {
+                enrolments = Keychain.upserting(newValue, into: enrolments)
+                primaryPrincipalId = newValue.agentPrincipalId
+            } else if let current = enrolment {
+                enrolments.removeAll { $0.agentPrincipalId == current.agentPrincipalId }
+            }
+        }
+    }
+    public func enrolment(for principalId: String) -> Keychain.Enrolment? {
+        enrolments.first { $0.agentPrincipalId == principalId }
+    }
     public var showingDiagnostics = false
 
     /* The menu bar popover tears its content view down every time it closes, which is exactly
@@ -20,7 +38,12 @@ public final class ConnectorModel {
     public var busy = false
     public var notice: String?
 
-    public var health: Health { busy ? .reconnecting : Diagnosis.health(of: sidecar.state, credential: sidecar.credentialProblem) }
+    public var health: Health {
+        if busy { return .reconnecting }
+        // Several agents: say what the one being shown is doing, not whichever was configured last.
+        if let principal = enrolment?.agentPrincipalId, sidecar.state.agents != nil { return health(of: principal) }
+        return Diagnosis.health(of: sidecar.state, credential: sidecar.credentialProblem)
+    }
 
     /// A code can only be spent against somewhere real, so both are required before connecting.
     public var addressLooksUsable: Bool { ConnectorModel.usableAddress(workspaceAddress) }
@@ -41,7 +64,7 @@ public final class ConnectorModel {
                 enrolment: Keychain.Enrolment? = nil, credentialProblem: CredentialProblem? = nil) {
         self.sidecar = SidecarClient(preview: state)
         self.sidecar.credentialProblem = credentialProblem
-        self.enrolment = live ? Keychain.enrolment() : enrolment
+        self.enrolments = live ? Keychain.enrolments() : (enrolment.map { [$0] } ?? [])
         guard live, autostart else { return }
         begin()
     }
@@ -82,7 +105,7 @@ public final class ConnectorModel {
                 notice = "This agent is not in a room yet. Add it to one in your workspace, then connect."
                 return
             }
-            try Keychain.saveCredential(credential)
+            try Keychain.saveCredential(credential, for: agentPrincipalId)
             let enrolment = Keychain.Enrolment(
                 baseURL: workspace, roomId: roomId,
                 roomName: room["name"] as? String, projectName: room["project_name"] as? String,
@@ -90,25 +113,44 @@ public final class ConnectorModel {
                 agentDisplayName: result["agent_display_name"] as? String)
             Keychain.saveEnrolment(enrolment)
             self.enrolment = enrolment
-            await sidecar.resumeSession()
+            await sidecar.resumeSession(principalId: agentPrincipalId)
             LoginItem.enable()
         } catch {
             notice = error.localizedDescription
         }
     }
 
+    /// What one agent is doing. With a single agent the top level is that agent, which is also
+    /// what a helper from before per-agent reporting sends.
+    public func state(of principalId: String) -> SidecarState {
+        if let agent = sidecar.state.agent(principalId: principalId) { return agent.state }
+        return sidecar.state.agents == nil ? sidecar.state
+            : SidecarState(enrolled: false, running: false, startedAt: nil, gateway: "not_started",
+                           runtime: sidecar.state.runtime, sync: .init(), identity: nil, lastError: nil)
+    }
+
+    public func health(of principalId: String) -> Health {
+        Diagnosis.health(of: state(of: principalId), credential: sidecar.credentialProblems[principalId])
+    }
+
     /// IPC acknowledgement and socket open are not connected. The helper publishes `live`
-    /// only after the gateway's authenticated session.ready frame.
-    public func waitForAuthenticatedSession() async throws {
+    /// only after the gateway's authenticated session.ready frame — and for the agent asked about,
+    /// never because some other agent on this Mac is live.
+    public func waitForAuthenticatedSession(principalId: String? = nil) async throws {
         let deadline = Date().addingTimeInterval(20)
+        let principal = principalId ?? enrolment?.agentPrincipalId
         repeat {
             await sidecar.refresh()
-            if sidecar.credentialProblem != nil {
+            if let principal, sidecar.credentialProblems[principal] != nil || (principalId == nil && sidecar.credentialProblem != nil) {
                 throw SidecarError.refused("Unlock the Keychain and Retry. The saved credential could not be read.")
             }
-            if sidecar.state.running && sidecar.state.enrolled && sidecar.state.gateway == "live" { return }
-            if sidecar.state.gateway == "auth_required" {
+            let state = principal.map { self.state(of: $0) } ?? sidecar.state
+            if state.running && state.enrolled && state.gateway == "live" { return }
+            if state.gateway == "auth_required" {
                 throw SidecarError.refused("The workspace refused this agent's session. Check its access and Retry.")
+            }
+            if state.gateway == "removed" {
+                throw SidecarError.refused("This agent is not in that room. Add it to the room, then connect it again.")
             }
             try await Task.sleep(for: .milliseconds(250))
         } while Date() < deadline
@@ -116,45 +158,71 @@ public final class ConnectorModel {
     }
 
     public func reconnect() async {
+        guard let principal = enrolment?.agentPrincipalId else {
+            notice = "No agent is connected on this Mac yet. Choose Detect Agent to connect one."
+            return
+        }
+        await reconnect(principalId: principal)
+    }
+
+    /// Start one agent again with the credential it already holds. No code, no new identity.
+    public func reconnect(principalId: String) async {
         guard !busy else { return }
         busy = true
         notice = nil
         defer { busy = false }
-        if sidecar.state.running == false { sidecar.start() }
-        // When the credential could not be read, the helper was never configured and has nothing
-        // to reconnect — asking it to would be a button that does nothing. Retry the read instead,
-        // which is the thing that actually might have changed (a Keychain that was locked, an
-        // unlock that has since happened).
+        if sidecar.state.running == false, sidecar.processIdentifier == nil { sidecar.start() }
         do {
-            if sidecar.credentialProblem != nil { await sidecar.resumeSession() }
-            else { try await sidecar.send("reconnect") }
-            let deadline = Date().addingTimeInterval(20)
-            repeat {
-                await sidecar.refresh()
-                if sidecar.state.gateway == "live" { return }
-                if sidecar.state.gateway == "auth_required" {
-                    throw SidecarError.refused("This agent's access needs attention. Check its workspace membership in Settings before retrying.")
-                }
-                if sidecar.credentialProblem != nil {
-                    throw SidecarError.refused("The saved credential is unavailable. Unlock the Keychain and retry.")
-                }
-                try await Task.sleep(for: .milliseconds(250))
-            } while Date() < deadline
-            throw SidecarError.refused("The server did not confirm a connection. Check the network and Retry.")
+            guard enrolment(for: principalId) != nil else {
+                throw SidecarError.refused("This agent is not saved on this Mac. Choose Detect Agent to connect it.")
+            }
+            // Configure as well as restart: after a crash, a relaunch or a Disconnect the helper may
+            // not hold this agent at all, and "reconnect" of nothing was a button that did nothing.
+            if let failure = await sidecar.resumeSession(principalId: principalId, restart: true) {
+                throw SidecarError.refused(failure)
+            }
+            try await waitForAuthenticatedSession(principalId: principalId)
         } catch { notice = error.localizedDescription }
     }
 
-    /// Signing out removes the credential from the Keychain and everything durable the connector
+    /// Stop one agent and end its room session now. Its identity, credential and room stay saved,
+    /// so Reconnect brings it straight back; nobody else on this Mac is touched.
+    public func disconnect(principalId: String) async {
+        guard !busy, let saved = enrolment(for: principalId) else { return }
+        busy = true
+        notice = nil
+        defer { busy = false }
+        do { try await sidecar.send("disconnect", ["runtimeSelectionId": saved.runtimeSelectionId ?? "", "agentPrincipalId": principalId]) }
+        catch { notice = error.localizedDescription }
+        await sidecar.refresh()
+    }
+
+    /// Signing out removes every credential from the Keychain and everything durable the connector
     /// kept about the room. Nothing is left behind that could reconnect on its own.
     public func signOut() async {
         busy = true
         defer { busy = false }
         _ = try? await sidecar.send("signout")
         sidecar.credentialProblem = nil
+        sidecar.credentialProblems = [:]
         Keychain.removeCredential()
         Keychain.removeEnrolment()
-        enrolment = nil
+        enrolments = []
         LoginItem.disable()
+    }
+
+    /// Forget one agent on this Mac — the one the workspace no longer has. The others keep running.
+    public func signOut(principalId: String) async {
+        let saved = enrolment(for: principalId)
+        if let saved { _ = try? await sidecar.send("signout", ["runtimeSelectionId": saved.runtimeSelectionId ?? "", "agentPrincipalId": principalId]) }
+        sidecar.credentialProblems[principalId] = nil
+        sidecar.credentialProblem = sidecar.credentialProblems.values.first
+        // Credential before enrolment: the enrolment is how an upgraded Mac knows whose credential
+        // the shared item from before was.
+        Keychain.removeCredential(for: principalId)
+        Keychain.removeEnrolment(for: principalId)
+        enrolments.removeAll { $0.agentPrincipalId == principalId }
+        if enrolments.isEmpty { LoginItem.disable() }
     }
 }
 

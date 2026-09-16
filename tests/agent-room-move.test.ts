@@ -1,5 +1,5 @@
 import {describe,it,expect,vi} from 'vitest';
-import {agentRoomMove,handoffAgentMove} from '../apps/web/src/agent-room-move';
+import {agentRoomMove,connectOnMac,handoffAgentMove} from '../apps/web/src/agent-room-move';
 import type {WorkspaceAgent} from '../apps/web/src/api';
 const agent:WorkspaceAgent={agent_id:'agent',principal_id:'principal',display_name:'JJ',status:'active',owner_display_name:null,
   connector:{enrolled:true,presence:'connected',runtime_status:'idle',last_seen_at:null,room_id:'a',room_name:'Room A'},rooms:[]};
@@ -17,6 +17,16 @@ describe('single-room agent move handoff',()=>{
     expect(handoffAgentMove(move,confirm,open)).toBe(true);
     expect(open).toHaveBeenCalledExactlyOnceWith('multiplayerai://connect-runtime?company=company&room=b&agent=principal');
     expect(confirm).toHaveBeenCalledExactlyOnceWith(move.message);
+  });
+  it('an agent disconnected from a room is not "connected to" it, so adding it elsewhere is not a move',()=>{
+    for(const presence of ['offline','revoked','superseded','never'] as const){
+      expect(agentRoomMove({...agent,connector:{...agent.connector,presence}},'company','b','Room B')).toBeNull();
+    }
+  });
+  it('an agent that already has a Mac connects from that Mac; only a never-enrolled agent needs a code',()=>{
+    expect(connectOnMac({...agent,connector:{...agent.connector,presence:'revoked'}},'company','b'))
+      .toBe('multiplayerai://connect-runtime?company=company&room=b&agent=principal');
+    expect(connectOnMac({...agent,connector:{...agent.connector,enrolled:false}},'company','b')).toBeNull();
   });
   it('does not ask to move within the same room or before first connection',()=>{
     expect(agentRoomMove(agent,'company','a','Room A')).toBeNull();

@@ -217,8 +217,8 @@ func run(workspaceURL: String, signInToken: String) async {
     await returning.refresh()
     check(returning.step == .ready, "a returning launch goes straight to the product, not onboarding",
           "step = \(returning.step.rawValue)")
-    check(returning.entryURL.path == roomPath,
-          "and back into the room they were last in", returning.entryURL.path)
+    check(returning.entryURL.path == "/home",
+          "and opens Home rather than whichever room was last open", "\(returning.entryURL.path), last room \(roomPath ?? "none")")
 
     // ------------------------------------------------------------------- tidy
     // The credential is this bundle's own; leaving it behind would leave a live session

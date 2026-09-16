@@ -25,7 +25,9 @@ public struct AgentDiscoverySheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     content
-                    if app.discoveryPhase != .connected {
+                    // A code is for a Mac nobody is signed in on. Offering it to someone who is
+                    // signed in asked them for a credential their agent already had.
+                    if app.discoveryPhase != .connected && app.discoveryCompanyId == nil {
                         DisclosureGroup("Advanced", isExpanded: $advanced) {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("Connect with code is a fallback for a Mac without an authenticated workspace session.")
@@ -104,9 +106,9 @@ public struct AgentDiscoverySheet: View {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: app.selectedDiscoveredAgentId == agent.id ? "largecircle.fill.circle" : "circle")
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(agent.profile).font(.headline)
+                                Text(app.discoveryTitle(agent)).font(.headline)
                                 Text(agent.detail).font(.callout).foregroundStyle(.secondary)
-                                Text(agent.runtime.situation).font(.caption).foregroundStyle(.secondary)
+                                Text(app.discoveryStatus(agent)).font(.caption).foregroundStyle(.secondary)
                                 if let reason = agent.runtime.reason, !agent.isConnectable {
                                     Text(reason).font(.caption).foregroundStyle(.secondary)
                                 }
@@ -117,7 +119,7 @@ public struct AgentDiscoverySheet: View {
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                             .overlay(RoundedRectangle(cornerRadius: 10).stroke(app.selectedDiscoveredAgentId == agent.id ? Color.accentColor : Color.secondary.opacity(0.2)))
                     }.buttonStyle(.plain)
-                        .accessibilityLabel("\(agent.profile), \(agent.detail), \(agent.runtime.situation)")
+                        .accessibilityLabel("\(app.discoveryTitle(agent)), \(agent.detail), \(app.discoveryStatus(agent))")
                 }
                 if app.selectedDiscoveredAgent != nil {
                     if let known = app.selectedKnownIdentity {

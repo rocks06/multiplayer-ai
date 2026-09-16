@@ -4,6 +4,8 @@ import type { AgentRuntimeAdapter, RuntimeDetection } from './types.js';
 export interface LocalAgentCandidate {
   discoveryId: string;
   profile: string;
+  /** What the runtime itself calls this profile, if anything. Presentation only. */
+  displayName?: string | null;
   adapter: AgentRuntimeAdapter;
 }
 export interface AgentDiscoveryProvider {

@@ -265,8 +265,8 @@ export function AgentControls({member,agent,canManage,actions,onMessage,onConnec
           setOpen(false);
           confirm({
             title:`Disconnect ${member.display_name} from this room?`,
-            detail:'Its session and credential for this room are revoked. The agent stays in the '
-              +'workspace and can be connected again.',
+            detail:'It stops working here now and leaves this room. It keeps its identity and '
+              +'credential, so it can be added back and connected again without a new code.',
             action:'Disconnect from room',
             run:()=>onDisconnect(member),
           });

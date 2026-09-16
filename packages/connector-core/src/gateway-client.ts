@@ -74,7 +74,9 @@ export class GatewayClient {
       throw new GatewayError("Credential principal does not match local configuration", undefined, undefined, true);
     }
     if (!rooms.rooms?.some((room: any) => room.id === this.config.roomId)) {
-      throw new GatewayError("Configured room is not authorized for this credential", undefined, undefined, true);
+      // Not in the room is not a refused credential: the agent is told it was disconnected, and is
+      // never asked to sign in again because somebody took it out of a room.
+      throw new GatewayError("This agent is not a member of the configured room", undefined, undefined, true, "removed");
     }
     const opened: any = await this.http("POST", "/v1/agent-gateway/v1/sessions", { room_id: this.config.roomId, runtime_status: runtimeStatus });
     this.session = { sessionId: opened.session_id, sessionToken: opened.session_token };

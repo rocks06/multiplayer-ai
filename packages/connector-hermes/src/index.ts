@@ -82,7 +82,17 @@ export class HermesAdapter implements AgentRuntimeAdapter {
 
   /** The first candidate that answers, remembered so later calls do not search again. */
   private resolved: string | null = null;
-  private get environment() { return { ...process.env, ...(this.options.home ? { HERMES_HOME: this.options.home } : {}) }; }
+  /**
+   * Environment only this agent's runs may see — its room session.
+   *
+   * Two agents on one Mac run in one helper process, so a session published into that process's
+   * own environment was whichever agent wrote it last: one agent's Hermes could act in the other's
+   * room, as the other. Each adapter carries its own instead.
+   */
+  sessionEnvironment: () => Record<string, string> = () => ({});
+  private get environment() {
+    return { ...process.env, ...(this.options.home ? { HERMES_HOME: this.options.home } : {}), ...this.sessionEnvironment() };
+  }
   private async command() {
     if (this.resolved) return this.resolved;
     for (const candidate of this.candidates()) {
