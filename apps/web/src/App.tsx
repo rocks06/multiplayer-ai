@@ -1,6 +1,7 @@
-import {memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
+import {Fragment,memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Copy,Plus,RefreshCw,Share2,ShieldAlert,Users,X} from 'lucide-react';
 import {agentRoomMove,connectOnMac,handoffAgentMove} from './agent-room-move';
+import {bodySegments} from './mentions';
 import {ApiError,addRoomMember,addWorkspaceAgent,currentIdentity,deleteWorkspaceRoom,listWorkspaceAgents,listWorkspaceRooms,roomFromLocation,type SignedInIdentity,type WorkspaceRoom} from './api';
 import SignIn,{rememberIntent} from './SignIn';
 import {useConfirm} from './Confirm';
@@ -63,11 +64,12 @@ function useCoarseNow(active:boolean){
 
 /* Primitive props so the memo actually holds: a row re-renders only when something it shows
    has changed, not every time the rail's clock ticks. */
-const PresenceRow=memo(function PresenceRow({name,initial,label,tone,detail,elapsed,lastSeenAt,paused}:{name:string;initial:string;label:string;tone:string;detail?:string;elapsed:string|null;lastSeenAt?:string;paused?:boolean}){
+const PresenceRow=memo(function PresenceRow({name,initial,label,tone,detail,elapsed,lastSeenAt,paused,owner}:{name:string;initial:string;label:string;tone:string;detail?:string;elapsed:string|null;lastSeenAt?:string;paused?:boolean;owner?:string[]}){
   return <>
     <span className="identity-mark agent" aria-hidden="true">{initial}</span>
     <span className="person-copy">
       <strong>{name}</strong>
+      {owner?.length?<small className="person-owner">{owner.join(', ')}'s agent</small>:null}
       <small className="person-state">
         <span className={`state-dot ${tone}`} aria-hidden="true"/>
         <span className="state-label">{label}</span>
@@ -144,8 +146,8 @@ function AddAgent({available,onAdd}:{available:CompanyAgent[];onAdd:(choice:{nam
   </form>;
 }
 
-export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect,onDisconnect,onRemove,onAddAgent}:{
-  members:Member[];currentId:string;tasks:Task[];decisions:Decision[];
+export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect,onDisconnect,onRemove,onAddAgent,ownerNames={}}:{
+  members:Member[];currentId:string;ownerNames?:Record<string,string[]>;tasks:Task[];decisions:Decision[];
   companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void;
   onConnect?:(member:Member)=>void;onDisconnect?:(member:Member)=>Promise<void>;onRemove?:(member:Member)=>Promise<void>;onAddAgent?:(choice:{name?:string;principalId?:string})=>Promise<void>}){
   const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
@@ -160,7 +162,7 @@ export function Participants({members,currentId,tasks,decisions,companyAgents,ca
       const record=companyAgents?.find(a=>a.principal_id===agent.principal_id);
       return <li className="person-row" key={agent.principal_id}>
         <PresenceRow name={agent.display_name} initial={agent.display_name.slice(0,1).toUpperCase()}
-          label={presence.label} tone={presence.tone} detail={presence.detail} paused={record?.status==='paused'}
+          label={presence.label} tone={presence.tone} detail={presence.detail} owner={ownerNames[agent.principal_id]} paused={record?.status==='paused'}
           elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>
         {actions&&onMessage&&
           <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect} onDisconnect={onDisconnect} onRemove={onRemove}/>}
@@ -264,6 +266,17 @@ function Transcript({messages,members,events,lastEvent,api}:{messages:Message[];
 
   useEffect(()=>{const el=listRef.current;if(!el)return;const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;if(near)scrollTranscript(el,el.scrollHeight);else setUnseen(n=>n+1)},[count]);
   const jump=()=>{const el=listRef.current;if(el)scrollTranscript(el,el.scrollHeight);setUnseen(0)};
+  /* Arriving from a notification: go to the message it was about, once it is on screen. */
+  const focused=useRef('');
+  useEffect(()=>{
+    const hash=location.hash.match(/^#message-([0-9a-f-]{36})$/i)?.[1];
+    if(!hash||focused.current===hash)return;
+    const list=listRef.current,target=list?.querySelector<HTMLElement>(`[data-message-id="${hash}"]`);
+    if(!list||!target)return;
+    focused.current=hash;
+    list.scrollTop=Math.max(0,list.scrollTop+target.getBoundingClientRect().top-list.getBoundingClientRect().top-list.clientHeight/3);
+    setFocusedReply(hash);setTimeout(()=>setFocusedReply(current=>current===hash?null:current),2400);
+  },[count]);
 
   // Following a reply moves to the message it answers and marks it briefly, so a thread can be
   // read without it being pulled out of chronology into a side channel.
@@ -303,7 +316,7 @@ function Transcript({messages,members,events,lastEvent,api}:{messages:Message[];
           const previousAt=previous?.kind==='message'?previous.message.created_at:undefined;
           const body=<article
           className={`message ${message.sender_kind} ${rel.direction} ${same?'continued':''} ${focusedReply===message.id?'reply-target':''}`}
-          key={message.id} data-message-id={message.id}>
+          key={message.id} id={`message-${message.id}`} data-message-id={message.id}>
           {!same
             ? <header>
                 <span className={`sender-glyph ${message.sender_kind}`}>{message.sender_name.slice(0,1)}</span>
@@ -323,7 +336,9 @@ function Transcript({messages,members,events,lastEvent,api}:{messages:Message[];
                 </button>
               : <span className="reply-cue static"><span className="reply-who">Replying to an earlier message</span></span>)}
             {rel.showAddress&&<span className={`address ${rel.addressee?.kind}`}>To {rel.addressee?.display_name}</span>}
-            <p>{message.body_text}</p>
+            <p>{bodySegments(message.body_text,message.mentions).map((segment,i)=>segment.mention
+              ? <span key={i} className={`mention ${segment.mention.kind}`} data-principal-id={segment.mention.principal_id}>{segment.text}</span>
+              : <Fragment key={i}>{segment.text}</Fragment>)}</p>
             {message.attachments?.map(file=><AttachmentCard key={file.id} artifact={file} api={api}/>)}
           </div>
           </article>;
@@ -376,7 +391,7 @@ function resolutionProblem(problem:unknown):string{
   return message?`Not resolved — ${message}`:'Not resolved. Nothing was sent.';
 }
 
-export function DecisionCard({decision,requester,onResolve}:{decision:Decision;requester?:Member;onResolve:(r:'approve'|'reject',note:string)=>Promise<void>}){
+export function DecisionCard({decision,requester,onResolve,focused=false}:{decision:Decision;requester?:Member;onResolve:(r:'approve'|'reject',note:string)=>Promise<void>;focused?:boolean}){
   const [note,setNote]=useState('');
   const [pending,setPending]=useState<'approve'|'reject'|null>(null);
   const [error,setError]=useState('');
@@ -393,7 +408,10 @@ export function DecisionCard({decision,requester,onResolve}:{decision:Decision;r
     catch(problem){setError(resolutionProblem(problem));setPending(null)}
   };
 
-  return <article className="decision" data-testid="decision-card">
+  const card=useRef<HTMLElement>(null);
+  // Opened from a notification: bring the decision into view once, where it can be answered.
+  useEffect(()=>{if(focused)card.current?.scrollIntoView({block:'center'})},[focused]);
+  return <article ref={card} id={`decision-${decision.id}`} className={`decision${focused?' focused':''}`} data-testid="decision-card">
     <div className="decision-head">
       <span className="decision-mark">Decision</span>
       <strong>{who}</strong>
@@ -616,6 +634,25 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
   const agentEventSeq=lastEvent&&lastEvent.event_type.startsWith('agent.')?lastEvent.room_seq:0;
   useEffect(()=>{if(agentEventSeq)loadAgents()},[agentEventSeq,loadAgents]);
 
+  /* Read is what this person has actually had in front of them: the room open, the window focused
+     and the tab visible. Only then does its read position move, and only forward. */
+  const latestSeq=Math.max(snapshot?.snapshot_seq??0,lastEvent?.room_seq??0);
+  const readSeq=useRef(0);
+  useEffect(()=>{
+    if(!latestSeq)return;
+    let timer:number|undefined;
+    const mark=()=>{
+      if(document.visibilityState!=='visible'||!document.hasFocus()||latestSeq<=readSeq.current)return;
+      window.clearTimeout(timer);
+      timer=window.setTimeout(()=>{readSeq.current=Math.max(readSeq.current,latestSeq);void api.markRead(latestSeq).catch(()=>{readSeq.current=0})},400);
+    };
+    mark();
+    window.addEventListener('focus',mark);document.addEventListener('visibilitychange',mark);
+    return()=>{window.clearTimeout(timer);window.removeEventListener('focus',mark);document.removeEventListener('visibilitychange',mark)};
+  },[latestSeq,api]);
+  /* A notification about a decision opens the panel it waits in. */
+  useEffect(()=>{if(/^#decision-/i.test(location.hash))setOversightOpen(true)},[]);
+
   const closeOversight=useCallback(()=>{setOversightOpen(false);oversightTrigger.current?.focus()},[]);
   useEffect(()=>{
     if(!oversightOpen)return;
@@ -633,6 +670,9 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
   const current=snapshot.members.find(m=>m.principal_id===identity.principalId);
   const managers=current?.role==='manager';const agents=snapshot.members.filter(m=>m.kind==='agent');const pending=snapshot.briefing.unresolved_decisions;
   const recent=snapshot.briefing.important_recent_activity;
+  // Who owns which agent here, for labelling — "a person's agent" — never for authority.
+  const ownerNames:Record<string,string[]>={};
+  for(const rel of snapshot.relationships??[])(ownerNames[rel.agent_principal_id]??=[]).push(rel.human_display_name);
   const mutate=async(action:()=>Promise<unknown>)=>{await action();await refresh()};
   /* Every consequential change is an explicit, named command against a real primitive. There is
      no intent parsing: what the person pressed is what is sent. */
@@ -705,7 +745,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
       <RoomContext workspace={workspace} snapshot={snapshot}/>
-      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript api={api} messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><AttachmentComposer api={api} members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to,ids,key)=>mutate(()=>api.sendMessage(body,to,ids,key))} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
+      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript api={api} messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><AttachmentComposer api={api} members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to,ids,key,mentions)=>mutate(()=>api.sendMessage(body,to,ids,key,mentions))} ownerNames={ownerNames} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
       <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
         <div className="sheet-bar">
           <span>Team &amp; work</span>
@@ -716,11 +756,11 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
               resolve one, and a section of things that will never need them is noise. */}
           {managers&&<section className="needs-you" data-onboarding="needs-you">
           <div className="section-label"><span>Needs you</span><b>{needsYou.total}</b></div>
-          {needsYou.decisions.map(d=><DecisionCard key={d.id} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} onResolve={(result,note)=>mutate(()=>api.resolveDecision(d,result,note))}/>)}
+          {needsYou.decisions.map(d=><DecisionCard key={d.id} focused={location.hash===`#decision-${d.id}`} decision={d} requester={snapshot.members.find(m=>m.principal_id===d.requested_by_principal_id)} onResolve={(result,note)=>mutate(()=>api.resolveDecision(d,result,note))}/>)}
           {needsYou.blocked.map(t=><BlockedItem key={t.id} task={t} owner={snapshot.members.find(m=>m.principal_id===t.assignee_principal_id)}/>)}
           {needsYou.total===0&&<p className="small-empty">No decisions or approvals need you.</p>}
         </section>}
-          <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}
+          <Participants members={snapshot.members} ownerNames={ownerNames} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}
             companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent} onConnect={setConnecting}
             onDisconnect={member=>mutate(()=>api.disconnectMember(member.principal_id)).then(()=>undefined)}
             onRemove={member=>mutate(()=>api.removeMember(member.principal_id)).then(()=>{loadAgents()})}

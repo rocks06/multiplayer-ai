@@ -269,6 +269,7 @@ public final class AppModel {
             await bind()
         }
         initialized = true
+        updateNotifications()
         await spendQueuedAuthURL()
     }
 
@@ -440,6 +441,56 @@ public final class AppModel {
         return (company, room)
     }
 
+    /// Where in the room a link points — a message or a decision — as a fragment the room can scroll
+    /// to. Only these two shapes with a real id; anything else just opens the room.
+    nonisolated public static func roomLinkFragment(_ raw: String) -> String? {
+        guard let focus = URLComponents(string: raw)?.queryItems?.first(where: { $0.name == "focus" })?.value else { return nil }
+        let parts = focus.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2, ["message", "decision"].contains(parts[0]), AppModel.looksLikeId(parts[1]) else { return nil }
+        return "#\(parts[0])-\(parts[1])"
+    }
+
+    /// The room on screen: the app is frontmost and the workspace is showing it.
+    nonisolated public static func visibleRoom(path: String?, appActive: Bool) -> (company: String, room: String)? {
+        guard appActive, let path else { return nil }
+        let parts = (path.split(separator: "#").first.map(String.init) ?? "").split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[0] == "rooms" else { return nil }
+        return (parts[1], parts[2])
+    }
+
+    // -------------------------------------------------------------- notifications
+
+    public private(set) var notifier: RoomNotifier?
+    private var notificationPoster: NotificationPosting?
+
+    /// Turn on native notifications, with whatever posts them. The app passes the system's; nothing
+    /// is asked of macOS until there is something to show.
+    public func enableNotifications(poster: NotificationPosting) {
+        notificationPoster = poster
+        updateNotifications()
+    }
+
+    /// Notifications run only while somebody is signed in, scoped to the workspace they are in.
+    private func updateNotifications() {
+        guard let poster = notificationPoster else { return }
+        guard identity != nil else { notifier?.stop(); notifier = nil; return }
+        guard notifier == nil else { return }
+        let client = self.client
+        let next = RoomNotifier(
+            fetch: { after in try await client.notifications(after: after) },
+            poster: poster, memory: DefaultsNotifierMemory(scope: workspaceAddress),
+            visibleRoom: { [weak self] in
+                #if canImport(AppKit)
+                let active = NSApp?.isActive ?? false
+                #else
+                let active = false
+                #endif
+                return AppModel.visibleRoom(path: self?.progress.lastRoomPath, appActive: active)
+            })
+        notifier = next
+        next.start()
+    }
+
     nonisolated static func looksLikeId(_ value: String) -> Bool {
         value.count == 36 && value.allSatisfy { $0.isHexDigit || $0 == "-" }
     }
@@ -452,8 +503,9 @@ public final class AppModel {
      * who is not signed in on this Mac lands on sign-in and arrives at the room afterwards,
      * because the destination is written down before anything else happens.
      */
-    public func openSharedRoom(company: String, room: String) async {
-        remember(path: "/rooms/\(company)/\(room)")
+    public func openSharedRoom(company: String, room: String, fragment: String? = nil) async {
+        // Navigation only: the workspace decides whether this person may see the room at all.
+        remember(path: "/rooms/\(company)/\(room)" + (fragment ?? ""))
         await refresh()
         // Tell the web view to go there; it was loaded before any of this was known.
         entryReloads += 1
@@ -803,7 +855,7 @@ public final class AppModel {
         }
         if let shared = AppModel.sharedRoomLink(raw) {
             guard initialized else { queuedAuthURL = raw; return }
-            return await openSharedRoom(company: shared.company, room: shared.room)
+            return await openSharedRoom(company: shared.company, room: shared.room, fragment: AppModel.roomLinkFragment(raw))
         }
         if AppModel.isConnectRuntime(raw) {
             guard initialized else { queuedAuthURL = raw; return }
@@ -828,7 +880,7 @@ public final class AppModel {
         guard let waiting = queuedAuthURL else { return }
         queuedAuthURL = nil
         if let shared = AppModel.sharedRoomLink(waiting) {
-            return await openSharedRoom(company: shared.company, room: shared.room)
+            return await openSharedRoom(company: shared.company, room: shared.room, fragment: AppModel.roomLinkFragment(waiting))
         }
         if AppModel.isConnectRuntime(waiting) {
             adoptRuntimeMoveLink(waiting)

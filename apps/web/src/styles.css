@@ -546,6 +546,32 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .home-rooms button:hover{border-color:var(--line-strong);background:var(--soft)}
 .home-rooms span{display:grid;gap:2px;min-width:0}
 .home-rooms strong{font-size:13px;font-weight:600}
+.home-rooms .room-row-copy{flex:1 1 auto}
+.home-rooms .room-row-copy strong{display:flex;align-items:center;gap:7px}
+.home-rooms .room-preview{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.home-rooms button.has-unread .room-preview{color:var(--ink-2)}
+.home-rooms .room-attention{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.home-rooms .room-attention time{font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
+.unread-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--moss);flex:0 0 auto}
+.attention{font-style:normal;font-size:10px;font-weight:650;line-height:1;padding:4px 7px;border-radius:999px;font-variant-numeric:tabular-nums}
+.attention.unread{background:var(--ink);color:var(--surface)}
+.attention.mention{background:var(--moss-soft);color:var(--moss)}
+.attention.action{background:transparent;border:1px solid var(--line-strong);color:var(--ink)}
+.home-agent-owner{font-size:10px;color:var(--faint)}
+.person-owner{display:block;font-size:10px;color:var(--faint)}
+.mention{font-weight:600;border-radius:4px;padding:0 2px;background:var(--moss-soft);color:var(--moss)}
+.mention.human{background:var(--soft);color:var(--ink)}
+.composer-input{position:relative}
+.mention-picker{position:absolute;left:40px;bottom:calc(100% + 6px);z-index:30;min-width:240px;max-width:min(360px,80vw);margin:0;padding:4px;list-style:none;
+  background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 4px 8px #0000000a,0 12px 32px #00000024}
+.mention-picker li{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:8px;cursor:pointer;font-size:13px}
+.mention-picker li[aria-selected="true"],.mention-picker li:hover{background:var(--soft)}
+.mention-glyph{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--soft);font-size:11px;font-weight:650;flex:0 0 auto}
+.mention-glyph.agent{background:var(--moss-soft);color:var(--moss)}
+.mention-name{display:grid;min-width:0;flex:1 1 auto}
+.mention-name small{font-size:10px;color:var(--faint)}
+.mention-kind{font-size:10px;font-weight:600;color:var(--muted);flex:0 0 auto}
+.decision.focused{outline:2px solid var(--focus);outline-offset:2px}
 .home-rooms small,.home-agent-rooms{font-size:10px;color:var(--muted)}
 .home-agents li{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface)}
 .home-agent-copy{display:grid;gap:2px;min-width:0;flex:1 1 auto}

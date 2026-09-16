@@ -228,6 +228,19 @@ public final class WorkspaceClient: @unchecked Sendable {
         return .init(companyId: companyId, name: payload["name"] as? String ?? name, principalId: principalId)
     }
 
+    /// What has happened for this person since `after`, across every room they are in. A first
+    /// call with no position only establishes one: a new install is not handed old history.
+    public func notifications(after: String?) async throws -> NotificationPage {
+        var components = URLComponents()
+        components.path = "/v1/me/notifications"
+        if let after { components.queryItems = [URLQueryItem(name: "after", value: after)] }
+        guard let path = components.string else { throw WorkspaceError.malformed() }
+        let payload = try await send("GET", path)
+        guard let cursor = payload["cursor"] as? String else { throw WorkspaceError.malformed() }
+        let items = (payload["notifications"] as? [[String: Any]] ?? []).compactMap(RoomNotification.decode)
+        return NotificationPage(cursor: cursor, notifications: items)
+    }
+
     public func rooms(companyId: String) async throws -> [WorkspaceRoom] {
         let payload = try await send("GET", "/v1/companies/\(companyId)/rooms")
         return (payload["rooms"] as? [[String: Any]] ?? []).compactMap(WorkspaceRoom.decode)

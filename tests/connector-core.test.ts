@@ -212,3 +212,49 @@ describe("deciding whether a reconfiguration restarts the runtime", () => {
     expect(needsRestart(undefined, config)).toBe(false);
   });
 });
+
+/**
+ * Structured mentions route wakes. One message is one event, so a participant both addressed and
+ * mentioned is woken once, and a replayed or re-delivered event is never a second wake.
+ */
+describe("mentions route agent wakes", () => {
+  const message = (payload: Record<string, unknown>, actor = HUMAN, actor_kind: RoomEvent["actor_kind"] = "human"): RoomEvent =>
+    ({ id: `m-${Math.random()}`, room_seq: 1, event_type: "message.sent", actor_principal_id: actor, actor_kind, entity_id: "msg", payload: { body_text: "text", ...payload } });
+  const agentMention = (principal_id: string) => ({ principal_id, kind: "agent", start: 0, end: 6 });
+
+  it("wakes exactly the agents a message mentions, from a person or another agent", async () => {
+    const fromHuman = message({ mentions: [agentMention(ME)] });
+    expect(await isRelevantActionable(marker(fromHuman), ME, lookups())).toBe(true);
+    expect(await isRelevantActionable(marker(fromHuman), PEER, lookups())).toBe(false);
+    const fromAgent = message({ mentions: [agentMention(ME)] }, PEER, "agent");
+    expect(await isRelevantActionable(marker(fromAgent), ME, lookups())).toBe(true);
+    // The sender is never woken by its own mention of itself.
+    expect(isActionableCandidate(message({ mentions: [agentMention(ME)] }, ME, "agent"), ME)).toBe(false);
+  });
+
+  it("a person's message mentioning nobody still reaches every agent; one mentioning only a person reaches none", async () => {
+    expect(await isRelevantActionable(marker(message({})), PEER, lookups())).toBe(true);
+    expect(await isRelevantActionable(marker(message({ mentions: [{ principal_id: HUMAN, kind: "human", start: 0, end: 5 }] })), PEER, lookups())).toBe(false);
+    // An agent's message to Everyone that mentions nobody is not a wake for other agents.
+    expect(await isRelevantActionable(marker(message({}, PEER, "agent")), ME, lookups())).toBe(false);
+  });
+
+  it("text that merely looks like a mention routes nothing", async () => {
+    const event = message({ body_text: "@Somebody please look", mentions: [] }, PEER, "agent");
+    expect(await isRelevantActionable(marker(event), ME, lookups())).toBe(false);
+  });
+
+  it("addressed and mentioned together is one marker, and replay or redelivery adds none", () => {
+    const store = new MemoryStateStore({ ...emptyState(), room_id: "11111111-1111-4111-8111-111111111111", agent_principal_id: ME } as never);
+    const runtime = new ConnectorRuntime({
+      config: { baseUrl: "http://workspace.invalid", roomId: "11111111-1111-4111-8111-111111111111", agentPrincipalId: ME, credential: "c" },
+      profile: "test", store, adapter: {} as never, commandSurface: { template: "x COMMAND", verbs: [] }, logPath: "/dev/null",
+    });
+    const both: RoomEvent = { ...message({ addressed_principal_id: ME, mentions: [agentMention(ME)] }), id: "same-event", room_seq: 1 };
+    const apply = (event: RoomEvent) => (runtime as any).applyEvent(event);
+    expect(apply(both)).toBe("applied");
+    expect(apply(both)).toBe("duplicate");
+    expect(apply({ ...both })).toBe("duplicate");
+    expect(runtime.snapshotState.pending_actionable_events.map(item => item.key)).toEqual(["same-event"]);
+  });
+});

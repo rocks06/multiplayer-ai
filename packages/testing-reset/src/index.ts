@@ -110,6 +110,9 @@ export async function resetTestingWorkspace(pool: Pool, input: TestingResetInput
 
     await client.query("DELETE FROM command_receipts WHERE company_id=$1", [input.companyId]);
     await client.query("DELETE FROM room_events WHERE company_id=$1", [input.companyId]);
+    // Mentions and read positions hang off messages and rooms, so they go before them.
+    await client.query("DELETE FROM message_mentions WHERE company_id=$1", [input.companyId]);
+    await client.query("DELETE FROM room_read_cursors WHERE company_id=$1", [input.companyId]);
     await client.query("DELETE FROM messages WHERE company_id=$1", [input.companyId]);
     await client.query("DELETE FROM task_dependencies WHERE company_id=$1", [input.companyId]);
     await client.query("DELETE FROM tasks WHERE company_id=$1", [input.companyId]);
@@ -121,6 +124,8 @@ export async function resetTestingWorkspace(pool: Pool, input: TestingResetInput
       "SELECT agent_id id FROM principals WHERE company_id=$1 AND kind='agent' AND NOT (id=ANY($2::uuid[]))",
       [input.companyId, agents],
     );
+    // Ownership of an agent being removed goes with it; a preserved agent keeps its owners.
+    await client.query("DELETE FROM agent_human_relationships WHERE company_id=$1 AND NOT (agent_principal_id=ANY($2::uuid[]))", [input.companyId, agents]);
     await client.query("DELETE FROM principals WHERE company_id=$1 AND kind='agent' AND NOT (id=ANY($2::uuid[]))", [input.companyId, agents]);
     if (staleAgents.rowCount) await client.query("DELETE FROM agents WHERE company_id=$1 AND id=ANY($2::uuid[])", [input.companyId, staleAgents.rows.map(row => row.id)]);
 

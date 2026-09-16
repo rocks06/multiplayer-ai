@@ -15,6 +15,15 @@ interface Membership { role: RoomRole; responsibilities: string; }
 export interface RunGuard { runId:string; runGeneration:number; leaseToken:string; }
 interface CommandContext { companyId: string; roomId: string; actorId: string; idempotencyKey: string; commandType: string; input: unknown; permission: Permission; runGuard?:RunGuard; }
 
+/** A mention as sent: who, and — from a person's composer — exactly where. */
+export interface MentionInput {principal_id:string;start?:number;end?:number}
+type PrincipalKind="human"|"agent";
+interface ResolvedMention {principal_id:string;kind:PrincipalKind;display_name:string;start:number;end:number}
+
+/** Room activity worth a person's attention: what somebody said or asked, and work an agent finished
+ *  or is stuck on. Presence, sessions and bookkeeping are deliberately absent. */
+export const NOTABLE_EVENT=`(e.event_type IN ('message.sent','decision.requested') OR (e.event_type IN ('task.completed','task.blocked') AND e.actor_kind='agent'))`;
+
 export class RoomService {
   constructor(private readonly pool: DbPool) {}
 
@@ -154,7 +163,10 @@ export class RoomService {
         CASE WHEN s.status IS NULL THEN 'never' WHEN s.status<>'connected' THEN s.status WHEN s.last_seen_at < now()-interval '90 seconds' THEN 'stale' ELSE 'connected' END presence,
         s.runtime_status,s.last_seen_at,s.room_id session_room_id,sr.name session_room_name,
         ri.runtime_type,ri.runtime_version,ri.endpoint runtime_endpoint,ri.probe_status,
-        COALESCE(m.rooms,'[]'::jsonb) rooms
+        COALESCE(m.rooms,'[]'::jsonb) rooms,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('principal_id',h.id,'display_name',h.display_name) ORDER BY h.display_name)
+                    FROM agent_human_relationships rel JOIN principals h ON h.company_id=rel.company_id AND h.id=rel.human_principal_id
+                   WHERE rel.company_id=a.company_id AND rel.agent_principal_id=p.id),'[]'::jsonb) owners
         FROM agents a
         JOIN principals p ON p.company_id=a.company_id AND p.agent_id=a.id AND p.kind='agent'
         LEFT JOIN users u ON u.id=a.owner_user_id
@@ -173,12 +185,13 @@ export class RoomService {
         connector:{enrolled:row.connector_enrolled,presence:row.presence,runtime_status:row.runtime_status??null,last_seen_at:row.last_seen_at??null,room_id:row.session_room_id??null,room_name:row.session_room_name??null},
         runtime:row.runtime_type?{type:row.runtime_type,version:row.runtime_version??null,endpoint:row.runtime_endpoint,probe_status:row.probe_status}:null,
         rooms:row.rooms,
+        owners:row.owners,
       }))};
     } finally { c.release(); }
   }
 
   async createHuman(companyId:string,email:string,displayName:string) { const userId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO users(id,email,display_name) VALUES($1,$2,$3)`,[userId,email,displayName]); await c.query(`INSERT INTO company_users(company_id,user_id) VALUES($1,$2)`,[companyId,userId]); await c.query(`INSERT INTO principals(id,company_id,kind,user_id,display_name) VALUES($1,$2,'human',$3,$4)`,[principalId,companyId,userId,displayName]); await c.query('COMMIT'); return {user_id:userId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
-  async createAgent(companyId:string,ownerUserId:string,name:string) { const agentId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO agents(id,company_id,owner_user_id,name) VALUES($1,$2,$3,$4)`,[agentId,companyId,ownerUserId,name]); await c.query(`INSERT INTO principals(id,company_id,kind,agent_id,display_name) VALUES($1,$2,'agent',$3,$4)`,[principalId,companyId,agentId,name]); await c.query('COMMIT'); return {agent_id:agentId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
+  async createAgent(companyId:string,ownerUserId:string,name:string) { const agentId=uuidv7(), principalId=uuidv7(); const c=await this.pool.connect(); try { await c.query('BEGIN'); await c.query(`INSERT INTO agents(id,company_id,owner_user_id,name) VALUES($1,$2,$3,$4)`,[agentId,companyId,ownerUserId,name]); await c.query(`INSERT INTO principals(id,company_id,kind,agent_id,display_name) VALUES($1,$2,'agent',$3,$4)`,[principalId,companyId,agentId,name]); await c.query(`INSERT INTO agent_human_relationships(company_id,human_principal_id,agent_principal_id,created_by_principal_id) SELECT $1,hp.id,$2,hp.id FROM principals hp WHERE hp.company_id=$1 AND hp.user_id=$3 AND hp.kind='human' ON CONFLICT DO NOTHING`,[companyId,principalId,ownerUserId]); await c.query('COMMIT'); return {agent_id:agentId,principal_id:principalId}; } catch(e){await c.query('ROLLBACK');throw e;} finally{c.release();} }
   /**
    * The rooms this person can open in a company, for resuming after sign-in and for finding the
    * way back into work. Scoped to their own active membership, so every room listed is one they
@@ -189,15 +202,96 @@ export class RoomService {
     const c=await this.pool.connect();
     try {
       await this.actor(c,companyId,actorId);
-      const result=await c.query<{room_id:string;name:string;project_id:string;project_name:string;objective:string}>(
-        `SELECT r.id room_id,r.name,p.id project_id,p.name project_name,p.objective
+      /* What needs attention, per room, from this person's own read position. Unread is what
+         somebody else did that is worth reading — messages, decisions asked for, work an agent
+         finished or is blocked on — never presence or bookkeeping, and nothing from before they
+         joined. Mentions and requests for action are counted apart, because they are asked of
+         this person rather than merely visible to them. */
+      const result=await c.query(
+        `SELECT r.id room_id,r.name,p.id project_id,p.name project_name,p.objective,
+                r.last_event_seq::int last_event_seq,COALESCE(rc.last_read_seq,0)::int last_read_seq,
+                COALESCE(att.unread_count,0) unread_count,COALESCE(att.mention_count,0) mention_count,COALESCE(att.action_count,0) action_count,
+                CASE WHEN latest.room_seq IS NULL THEN NULL ELSE jsonb_build_object('event_type',latest.event_type,'actor_display_name',latest.actor_display_name,
+                  'actor_kind',latest.actor_kind,'text',latest.text,'created_at',latest.created_at,'room_seq',latest.room_seq) END latest
          FROM room_members rm
          JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id
          JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id
+         LEFT JOIN room_read_cursors rc ON rc.company_id=rm.company_id AND rc.room_id=rm.room_id AND rc.principal_id=rm.principal_id
+         LEFT JOIN LATERAL (
+           SELECT count(*)::int unread_count,
+                  count(*) FILTER (WHERE e.event_type='message.sent' AND (e.payload->>'addressed_principal_id'=rm.principal_id::text OR e.payload->'mentioned_principal_ids' @> to_jsonb(rm.principal_id::text)))::int mention_count,
+                  count(*) FILTER (WHERE rm.role='manager' AND (e.event_type='decision.requested' OR e.event_type='task.blocked'))::int action_count
+             FROM room_events e
+            WHERE e.company_id=rm.company_id AND e.room_id=rm.room_id AND e.room_seq>COALESCE(rc.last_read_seq,0)
+              AND e.created_at>rm.joined_at AND e.actor_principal_id<>rm.principal_id AND ${NOTABLE_EVENT}
+         ) att ON true
+         LEFT JOIN LATERAL (
+           SELECT e.event_type,e.actor_display_name,e.actor_kind,e.created_at,e.room_seq,
+                  CASE WHEN e.event_type='message.sent' THEN NULLIF(left(e.payload->>'body_text',160),'')
+                       WHEN e.event_type='decision.requested' THEN e.payload->>'title' ELSE t.title END text
+             FROM room_events e LEFT JOIN tasks t ON t.company_id=e.company_id AND t.id=e.entity_id AND e.entity_type='task'
+            WHERE e.company_id=rm.company_id AND e.room_id=rm.room_id AND ${NOTABLE_EVENT}
+            ORDER BY e.room_seq DESC LIMIT 1
+         ) latest ON true
          WHERE rm.company_id=$1 AND rm.principal_id=$2 AND rm.status='active' AND r.status='active'
          ORDER BY r.created_at`,[companyId,actorId]);
       return {rooms:result.rows};
     } finally { c.release(); }
+  }
+
+  /**
+   * Record how far this person has read a room. Only ever forward, and never past what exists, so
+   * a stale tab or a replayed request cannot make read things unread or unwritten things read.
+   */
+  async markRoomRead(companyId:string,roomId:string,actorId:string,roomSeq:number) {
+    const c=await this.pool.connect();
+    try {
+      await this.membership(c,companyId,roomId,actorId);
+      const saved=await c.query<{last_read_seq:string}>(`INSERT INTO room_read_cursors(company_id,room_id,principal_id,last_read_seq)
+          SELECT $1,$2,$3,LEAST($4::bigint,r.last_event_seq) FROM rooms r WHERE r.company_id=$1 AND r.id=$2
+        ON CONFLICT (company_id,room_id,principal_id) DO UPDATE SET last_read_seq=GREATEST(room_read_cursors.last_read_seq,EXCLUDED.last_read_seq),updated_at=now()
+        RETURNING last_read_seq`,[companyId,roomId,actorId,Math.max(0,Math.floor(roomSeq))]);
+      return {last_read_seq:Number(saved.rows[0]?.last_read_seq??0)};
+    } finally { c.release(); }
+  }
+
+  /**
+   * Record that a person owns an agent. A person may claim an agent for themselves; naming someone
+   * else as an owner takes an existing owner. Ownership grants nothing in any room by itself.
+   */
+  async addAgentOwner(companyId:string,actorId:string,agentPrincipalId:string,humanPrincipalId:string) {
+    const c=await this.pool.connect();
+    try {
+      await this.workspaceActor(c,companyId,actorId);
+      await this.assertOwnershipChange(c,companyId,actorId,agentPrincipalId,humanPrincipalId);
+      await c.query(`INSERT INTO agent_human_relationships(company_id,human_principal_id,agent_principal_id,created_by_principal_id) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[companyId,humanPrincipalId,agentPrincipalId,actorId]);
+      return {owners:await this.ownersOf(c,companyId,agentPrincipalId)};
+    } finally { c.release(); }
+  }
+
+  async removeAgentOwner(companyId:string,actorId:string,agentPrincipalId:string,humanPrincipalId:string) {
+    const c=await this.pool.connect();
+    try {
+      await this.workspaceActor(c,companyId,actorId);
+      await this.assertOwnershipChange(c,companyId,actorId,agentPrincipalId,humanPrincipalId);
+      await c.query(`DELETE FROM agent_human_relationships WHERE company_id=$1 AND human_principal_id=$2 AND agent_principal_id=$3`,[companyId,humanPrincipalId,agentPrincipalId]);
+      return {owners:await this.ownersOf(c,companyId,agentPrincipalId)};
+    } finally { c.release(); }
+  }
+
+  private async assertOwnershipChange(c:DbClient,companyId:string,actorId:string,agentPrincipalId:string,humanPrincipalId:string) {
+    const kinds=await c.query<{id:string;kind:string}>(`SELECT id,kind FROM principals WHERE company_id=$1 AND id=ANY($2::uuid[]) AND status='active'`,[companyId,[agentPrincipalId,humanPrincipalId]]);
+    if(kinds.rows.find(row=>row.id===agentPrincipalId)?.kind!=='agent'||kinds.rows.find(row=>row.id===humanPrincipalId)?.kind!=='human')
+      throw new DomainError('invalid_owner','An owner is a person in this workspace, and what they own is an agent in it',400);
+    if(actorId===humanPrincipalId)return;
+    const owner=await c.query(`SELECT 1 FROM agent_human_relationships WHERE company_id=$1 AND agent_principal_id=$2 AND human_principal_id=$3`,[companyId,agentPrincipalId,actorId]);
+    if(!owner.rowCount)throw new DomainError('forbidden','Only an owner of this agent can change who else owns it',403);
+  }
+
+  private async ownersOf(c:DbClient,companyId:string,agentPrincipalId:string) {
+    const owners=await c.query<{principal_id:string;display_name:string}>(`SELECT h.id principal_id,h.display_name FROM agent_human_relationships rel JOIN principals h ON h.company_id=rel.company_id AND h.id=rel.human_principal_id
+      WHERE rel.company_id=$1 AND rel.agent_principal_id=$2 ORDER BY h.display_name`,[companyId,agentPrincipalId]);
+    return owners.rows;
   }
 
   /**
@@ -286,6 +380,8 @@ export class RoomService {
       await c.query(`INSERT INTO agents(id,company_id,owner_user_id,name) VALUES($1,$2,$3,$4)`,[agentId,input.companyId,ownerUserId,input.name]);
       await c.query(`INSERT INTO principals(id,company_id,kind,agent_id,display_name) VALUES($1,$2,'agent',$3,$4)`,[principalId,input.companyId,agentId,input.name]);
       await c.query(`INSERT INTO agent_runtime_bindings(id,company_id,runtime_installation_id,agent_principal_id,created_by_principal_id) VALUES($1,$2,$3,$4,$5)`,[bindingId,input.companyId,runtimeInstallationId,principalId,input.actorId]);
+      // The person who connected it owns it, recorded — never inferred from what it is called.
+      await c.query(`INSERT INTO agent_human_relationships(company_id,human_principal_id,agent_principal_id,created_by_principal_id) VALUES($1,$2,$3,$2) ON CONFLICT DO NOTHING`,[input.companyId,input.actorId,principalId]);
       await c.query('COMMIT');
       return {agent_id:agentId,principal_id:principalId,display_name:input.name,
         runtime_installation_id:runtimeInstallationId,reused:false,runtime_type:input.runtimeType,
@@ -411,12 +507,49 @@ export class RoomService {
     return Number(result.rows[0]!.last_event_seq);
   }
 
-  async sendMessage(input:{companyId:string;roomId:string;actorId:string;addressedPrincipalId?:string;body:string;artifactIds?:string[];taskId?:string;inReplyToMessageId?:string;idempotencyKey:string;runGuard?:RunGuard}) {
+  /**
+   * Which room participants a message mentions, checked against the room rather than believed.
+   *
+   * A mention names a principal id; the text it covers must read "@" and that participant's name,
+   * and the participant must be an active member of this room — so an id from another room, another
+   * company or a guess is refused, and a mention can never route to somebody the sender could not
+   * address. A person's composer sends exact ranges. An agent names who it mentions and writes
+   * "@Name" in its text; the range is found here, in order, so it cannot drift from the text.
+   */
+  private async resolveMentions(c:DbClient,companyId:string,roomId:string,body:string,requested:MentionInput[]|undefined):Promise<ResolvedMention[]> {
+    if(!requested?.length)return [];
+    if(requested.length>50)throw new DomainError('invalid_mentions','At most 50 mentions are allowed',400);
+    const ids=[...new Set(requested.map(m=>m.principal_id))];
+    const found=await c.query<{id:string;display_name:string;kind:PrincipalKind}>(`SELECT p.id,p.display_name,p.kind FROM room_members rm JOIN principals p ON p.company_id=rm.company_id AND p.id=rm.principal_id
+      WHERE rm.company_id=$1 AND rm.room_id=$2 AND rm.status='active' AND p.status='active' AND p.id=ANY($3::uuid[]) FOR SHARE OF rm`,[companyId,roomId,ids]);
+    const byId=new Map(found.rows.map(row=>[row.id,row]));
+    if(byId.size!==ids.length)throw new DomainError('invalid_mentions','Mention only people and agents who are in this room',400);
+    const placed:ResolvedMention[]=[];
+    const overlaps=(start:number,end:number)=>placed.some(m=>start<m.end&&m.start<end);
+    for(const m of requested.filter(m=>m.start!==undefined||m.end!==undefined)){
+      const who=byId.get(m.principal_id)!,token=`@${who.display_name}`;
+      if(!Number.isInteger(m.start)||!Number.isInteger(m.end)||m.start!<0||m.end!>body.length||m.end!-m.start!!==token.length||body.slice(m.start,m.end)!==token||overlaps(m.start!,m.end!))
+        throw new DomainError('invalid_mentions',`Each mention must cover "@name" for a participant in this room`,400);
+      placed.push({principal_id:who.id,kind:who.kind,display_name:who.display_name,start:m.start!,end:m.end!});
+    }
+    for(const m of requested.filter(m=>m.start===undefined&&m.end===undefined)){
+      const who=byId.get(m.principal_id)!,token=`@${who.display_name}`;
+      let at=body.indexOf(token);
+      while(at>=0&&overlaps(at,at+token.length))at=body.indexOf(token,at+1);
+      if(at<0)throw new DomainError('invalid_mentions',`Write "${token}" in the message to mention ${who.display_name}`,400);
+      placed.push({principal_id:who.id,kind:who.kind,display_name:who.display_name,start:at,end:at+token.length});
+    }
+    return placed.sort((a,b)=>a.start-b.start);
+  }
+
+  async sendMessage(input:{companyId:string;roomId:string;actorId:string;addressedPrincipalId?:string;body:string;artifactIds?:string[];mentions?:MentionInput[];taskId?:string;inReplyToMessageId?:string;idempotencyKey:string;runGuard?:RunGuard}) {
     const artifactIds=[...new Set(input.artifactIds??[])];
     if(!input.body.trim()&&!artifactIds.length)throw new DomainError('message_empty','Write a message or attach a file',400);
     if(artifactIds.length>10)throw new DomainError('too_many_artifacts','Attach at most ten files per message',400);
-    return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds},permission:'message.send'},async(c)=>{
+    const mentionInput=(input.mentions??[]).map(m=>({principal_id:m.principal_id,start:m.start,end:m.end}));
+    return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds,...(mentionInput.length?{mentions:mentionInput}:{})},permission:'message.send'},async(c)=>{
       if(input.addressedPrincipalId)await this.membership(c,input.companyId,input.roomId,input.addressedPrincipalId);
+      const mentions=await this.resolveMentions(c,input.companyId,input.roomId,input.body,mentionInput);
       if(input.inReplyToMessageId){
         const parent=await c.query(`SELECT 1 FROM messages WHERE company_id=$1 AND room_id=$2 AND id=$3`,[input.companyId,input.roomId,input.inReplyToMessageId]);
         if(!parent.rowCount)throw new DomainError('message_not_found','The message being replied to is not in this room',404);
@@ -429,7 +562,11 @@ export class RoomService {
         if(!ready.rowCount)throw new DomainError('artifact_not_ready','That file is not available in this room',409);
         await c.query(`INSERT INTO message_artifacts(company_id,room_id,message_id,artifact_id,position) VALUES($1,$2,$3,$4,$5)`,[input.companyId,input.roomId,id,artifactId,position]);
       }
-      const response={id,body_text:input.body,addressed_principal_id:input.addressedPrincipalId??null,in_reply_to_message_id:input.inReplyToMessageId??null,artifact_ids:artifactIds};
+      for(const m of mentions)await c.query(`INSERT INTO message_mentions(company_id,room_id,message_id,principal_id,start_offset,end_offset) VALUES($1,$2,$3,$4,$5,$6)`,[input.companyId,input.roomId,id,m.principal_id,m.start,m.end]);
+      /* Mentions travel on the event itself, with each participant's kind, so a connector can tell
+         from the event alone whether it — and which other agents — were named, without a lookup. */
+      const response={id,body_text:input.body,addressed_principal_id:input.addressedPrincipalId??null,in_reply_to_message_id:input.inReplyToMessageId??null,artifact_ids:artifactIds,
+        mentions:mentions.map(m=>({principal_id:m.principal_id,kind:m.kind,start:m.start,end:m.end})),mentioned_principal_ids:[...new Set(mentions.map(m=>m.principal_id))]};
       return {response,event:{type:'message.sent',entityType:'message',entityId:id,payload:response}};
     });
   }
@@ -554,13 +691,24 @@ export class RoomService {
            A filename in the text is not delivery; this is what the room can actually open. */
         COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'filename',a.filename,'content_type',a.content_type,'byte_size',a.byte_size,'metadata',a.metadata) ORDER BY ma.position)
                     FROM message_artifacts ma JOIN artifacts a ON a.company_id=ma.company_id AND a.id=ma.artifact_id
-                   WHERE ma.company_id=m.company_id AND ma.message_id=m.id AND a.status='ready'),'[]'::jsonb) attachments
+                   WHERE ma.company_id=m.company_id AND ma.message_id=m.id AND a.status='ready'),'[]'::jsonb) attachments,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('principal_id',mm.principal_id,'start',mm.start_offset,'end',mm.end_offset,'display_name',mp.display_name,'kind',mp.kind) ORDER BY mm.start_offset)
+                    FROM message_mentions mm JOIN principals mp ON mp.company_id=mm.company_id AND mp.id=mm.principal_id
+                   WHERE mm.company_id=m.company_id AND mm.message_id=m.id),'[]'::jsonb) mentions
         FROM messages m JOIN principals p ON p.id=m.sender_principal_id WHERE m.room_id=$1 AND m.company_id=$2 ORDER BY m.created_at DESC LIMIT 50`,[roomId,companyId]);
       const events=await c.query(`SELECT room_seq,event_type,actor_principal_id,actor_kind,actor_display_name,entity_type,entity_id,entity_version,payload,created_at FROM room_events WHERE room_id=$1 AND company_id=$2 ORDER BY room_seq DESC LIMIT 20`,[roomId,companyId]);
       const decisions=await c.query(`SELECT id,run_id,requested_by_principal_id,title,question,rationale,proposed_action,proposed_action_digest,status,version,resolved_by_principal_id,resolution_note,requested_at,resolved_at,expires_at FROM decisions WHERE room_id=$1 AND company_id=$2 AND status='pending' ORDER BY requested_at`,[roomId,companyId]);
       const active=tasks.rows.filter((t:any)=>!['completed','cancelled'].includes(t.status));
       const completed=tasks.rows.filter((t:any)=>t.status==='completed').slice(-10);
-      const snapshot={room:room.rows[0],members:members.rows,tasks:tasks.rows,messages:messages.rows.reverse(),snapshot_seq:Number(room.rows[0].last_event_seq),briefing:{briefing_seq:Number(room.rows[0].last_event_seq),project_objective:room.rows[0].objective,participants:members.rows,joining_principal:{principal_id:actorId,role:member.role,responsibilities:member.responsibilities},active_tasks:active,relevant_completed_work:completed,unresolved_decisions:decisions.rows,blockers:active.filter((t:any)=>t.status==='blocked'),relevant_artifacts:[],important_recent_activity:events.rows.reverse()}};
+      /* Who owns which agent here, among the people in this room: what lets "someone's agent" be
+         resolved, by a person or by another agent, without reading anything into a name. */
+      const relationships=await c.query(`SELECT rel.human_principal_id,h.display_name human_display_name,rel.agent_principal_id,rel.relationship
+        FROM agent_human_relationships rel
+        JOIN principals h ON h.company_id=rel.company_id AND h.id=rel.human_principal_id
+        JOIN room_members hm ON hm.company_id=rel.company_id AND hm.room_id=$2 AND hm.principal_id=rel.human_principal_id AND hm.status='active'
+        JOIN room_members am ON am.company_id=rel.company_id AND am.room_id=$2 AND am.principal_id=rel.agent_principal_id AND am.status='active'
+        WHERE rel.company_id=$1 ORDER BY h.display_name`,[companyId,roomId]);
+      const snapshot={room:room.rows[0],relationships:relationships.rows,members:members.rows,tasks:tasks.rows,messages:messages.rows.reverse(),snapshot_seq:Number(room.rows[0].last_event_seq),briefing:{briefing_seq:Number(room.rows[0].last_event_seq),project_objective:room.rows[0].objective,participants:members.rows,joining_principal:{principal_id:actorId,role:member.role,responsibilities:member.responsibilities},active_tasks:active,relevant_completed_work:completed,unresolved_decisions:decisions.rows,agent_relationships:relationships.rows,blockers:active.filter((t:any)=>t.status==='blocked'),relevant_artifacts:[],important_recent_activity:events.rows.reverse()}};
       await c.query('COMMIT');
       return snapshot;
     } catch(e){await c.query('ROLLBACK');throw e;} finally { c.release(); }

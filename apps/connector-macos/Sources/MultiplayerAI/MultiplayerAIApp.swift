@@ -104,5 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         URLScheme.claim()
         claimURLEvent()
+        // A clicked notification is a room link like any other, and goes through the same checks.
+        model.enableNotifications(poster: SystemNotificationPoster { [weak self] link in
+            guard let self, let url = URL(string: link) else { return }
+            self.receive(url)
+        })
     }
 }

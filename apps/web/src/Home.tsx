@@ -14,19 +14,50 @@ import {useConfirm} from './Confirm';
  * contains; nothing here is inferred.
  */
 /** One list of rooms. Both sections are the same thing and must not drift apart. */
+/**
+ * Rooms, with what needs this person in each. Quiet when nothing does: a dot and a count for unread,
+ * "@" when they were named, and "Needs you" only for a decision or a blocker they can act on — the
+ * three are different asks and never collapse into one number.
+ */
 function RoomList({rooms,onNavigate}:{rooms:HomeRoom[];onNavigate:(to:string)=>void}){
   return <ul className="home-rooms">
-    {rooms.map(room=>
-      <li key={`${room.companyId}:${room.room_id}`}>
-        <button type="button" onClick={()=>onNavigate(`/rooms/${room.companyId}/${room.room_id}`)}>
-          <span>
-            <strong>{room.name}</strong>
-            {room.project_name!==room.name&&<small>{room.project_name}</small>}
+    {rooms.map(room=>{
+      const unread=room.unread_count??0,mentions=room.mention_count??0,actions=room.action_count??0;
+      const latest=room.latest;
+      const preview=latest?`${latest.actor_display_name}: ${latestText(latest)}`:null;
+      const label=[room.name,unread?`${unread} unread`:null,mentions?`${mentions} ${mentions===1?'mention':'mentions'}`:null,actions?'needs you':null].filter(Boolean).join(', ');
+      return <li key={`${room.companyId}:${room.room_id}`}>
+        <button type="button" className={unread?'has-unread':undefined} aria-label={label} onClick={()=>onNavigate(`/rooms/${room.companyId}/${room.room_id}`)}>
+          <span className="room-row-copy">
+            <strong>{unread>0&&<i className="unread-dot" aria-hidden="true"/>}{room.name}</strong>
+            {preview?<small className="room-preview">{preview}</small>:room.project_name!==room.name&&<small>{room.project_name}</small>}
           </span>
-          <ChevronRight size={16}/>
+          <span className="room-attention">
+            {actions>0&&<b className="attention action">Needs you</b>}
+            {mentions>0&&<b className="attention mention" aria-hidden="true">@{mentions>1?` ${mentions}`:''}</b>}
+            {unread>0&&<b className="attention unread" aria-hidden="true">{unread>99?'99+':unread}</b>}
+            {latest&&<time dateTime={latest.created_at}>{shortTime(latest.created_at)}</time>}
+            <ChevronRight size={16}/>
+          </span>
         </button>
-      </li>)}
+      </li>;
+    })}
   </ul>;
+}
+
+export function latestText(latest:NonNullable<HomeRoom['latest']>){
+  if(latest.event_type==='decision.requested')return `needs a decision · ${latest.text??''}`.trim();
+  if(latest.event_type==='task.completed')return `finished ${latest.text??'a task'}`;
+  if(latest.event_type==='task.blocked')return `is blocked on ${latest.text??'a task'}`;
+  return latest.text??'shared a file';
+}
+
+/** Today's time, otherwise the date. Nothing more precise than a person needs to place it. */
+function shortTime(at:string){
+  const date=new Date(at),now=new Date();
+  return date.toDateString()===now.toDateString()
+    ? date.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})
+    : date.toLocaleDateString([],{month:'short',day:'numeric'});
 }
 
 /** A room, and which workspace it came from — a room is only openable with both. */
@@ -72,6 +103,14 @@ export function Home({workspace,memberships,onNavigate}:{
     setAgents(home?await listWorkspaceAgents(home.companyId).catch(()=>[]):[]);
   },[key]);
   useEffect(()=>{void load()},[load]);
+  /* Home keeps up on its own while it is what the person is looking at: coming back to it, and
+     every so often while it stays open. Nothing is fetched while it is hidden. */
+  useEffect(()=>{
+    const again=()=>{if(document.visibilityState==='visible')void load()};
+    const timer=window.setInterval(again,20_000);
+    window.addEventListener('focus',again);document.addEventListener('visibilitychange',again);
+    return()=>{window.clearInterval(timer);window.removeEventListener('focus',again);document.removeEventListener('visibilitychange',again)};
+  },[load]);
 
   if(rooms===null)return <main className="home"><p className="auth-quiet" role="status">Loading your workspace…</p></main>;
 
@@ -145,6 +184,7 @@ export function Home({workspace,memberships,onNavigate}:{
             <span className="home-agent-copy">
               <strong>{agent.display_name}</strong>
               <small className={`connect-state ${state.tone}`}><span className="state-dot" aria-hidden="true"/>{state.label}</small>
+              {agent.owners?.length?<small className="home-agent-owner">{agent.owners.map(owner=>owner.display_name).join(', ')}'s agent</small>:null}
             </span>
             {/* Where it works, from real membership rather than an assumption. */}
             <span className="home-agent-rooms">

@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { NotificationFeed } from "./attention/notification-feed.js";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import {existsSync} from "node:fs";
@@ -55,6 +56,8 @@ export interface AppOptions {
   artifactStorage?: ArtifactStorage;
   /** The origin serving the web app, where a browser sign-in must return. Defaults to WEB_APP_URL. */
   webAppUrl?: string;
+  /** How far behind now the notification feed reads, so late-committing events are never skipped. */
+  notificationSettleSeconds?: number;
 }
 const idem = (request:any) => { const key=request.headers["idempotency-key"]; if(typeof key!=="string") throw new DomainError("idempotency_key_required","Idempotency-Key is required",400); return key; };
 
@@ -113,6 +116,10 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
     return auth.principalFor(session.userId,companyId);
   };
   const service=new RoomService(pool);
+  const notifications=new NotificationFeed(pool,options.notificationSettleSeconds);
+  /* A mention names a participant by id; where it sits in the text is optional for agents, which
+     write "@Name" and let the server place it. Membership and the text itself are checked there. */
+  const mentionsSchema=z.array(z.object({principal_id:z.string().uuid(),start:z.number().int().min(0).optional(),end:z.number().int().min(0).optional()})).max(50).optional();
   const agentRuntime=new AgentRuntimeService(pool,service);
   const realtime=new RealtimeHub(pool,service,realtimeOptions);
   const agentGateway=new AgentGatewayService(pool,service);
@@ -207,7 +214,19 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.post('/v1/companies/:companyId/rooms/:roomId/members',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({principal_id:z.string().uuid(),role:z.enum(['manager','contributor','worker_agent']),responsibilities:z.string().default('')}),req.body);return service.addMember({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),principalId:x.principal_id,role:x.role,responsibilities:x.responsibilities,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/invites',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({ttl_hours:z.number().int().min(1).max(168).optional()}),req.body??{});return invites.issue({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),ttlHours:x.ttl_hours})});
   app.delete('/v1/companies/:companyId/rooms/:roomId/members/:principalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),principalId:z.string().uuid()}),req.params);return service.removeMember({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),principalId:p.principalId,idempotencyKey:idem(req)})});
-  app.post('/v1/companies/:companyId/rooms/:roomId/messages',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({body:z.string().max(100000),artifact_ids:z.array(z.string().uuid()).max(10).optional(),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional()}),req.body);return service.sendMessage({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),addressedPrincipalId:x.addressed_principal_id,body:x.body,artifactIds:x.artifact_ids,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idem(req)})});
+  app.post('/v1/companies/:companyId/rooms/:roomId/read',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({room_seq:z.number().int().min(0)}),req.body);return service.markRoomRead(p.companyId,p.roomId,await principal(req,p.companyId),x.room_seq)});
+  app.post('/v1/companies/:companyId/agents/:agentPrincipalId/owners',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);const x=body(z.object({human_principal_id:z.string().uuid()}),req.body);return service.addAgentOwner(p.companyId,await principal(req,p.companyId),p.agentPrincipalId,x.human_principal_id)});
+  app.delete('/v1/companies/:companyId/agents/:agentPrincipalId/owners/:humanPrincipalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid(),humanPrincipalId:z.string().uuid()}),req.params);return service.removeAgentOwner(p.companyId,await principal(req,p.companyId),p.agentPrincipalId,p.humanPrincipalId)});
+  /* Notifications for whoever is signed in, across every workspace and room they belong to. */
+  app.get('/v1/me/notifications',async req=>{
+    const q=body(z.object({after:z.string().max(200).optional()}),req.query);
+    let userId:string;
+    const header=allowHeaderPrincipal?req.headers["x-principal-id"]:undefined;
+    if(typeof header==="string"){const found=await pool.query<{user_id:string}>(`SELECT user_id FROM principals WHERE id=$1 AND kind='human'`,[header]);if(!found.rows[0])throw new DomainError('unauthenticated','Sign in to read notifications',401);userId=found.rows[0].user_id}
+    else userId=(await auth.resolveSession(readSessionCookie(req))).userId;
+    return notifications.forUser(userId,q.after);
+  });
+  app.post('/v1/companies/:companyId/rooms/:roomId/messages',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({body:z.string().max(100000),artifact_ids:z.array(z.string().uuid()).max(10).optional(),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional(),mentions:mentionsSchema}),req.body);return service.sendMessage({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),addressedPrincipalId:x.addressed_principal_id,mentions:x.mentions,body:x.body,artifactIds:x.artifact_ids,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/tasks',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({title:z.string().min(1),description:z.string().default(''),assignee_principal_id:z.string().uuid().optional()}),req.body);return service.createTask({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),title:x.title,description:x.description,assigneePrincipalId:x.assignee_principal_id,idempotencyKey:idem(req)})});
   app.patch('/v1/companies/:companyId/rooms/:roomId/tasks/:taskId/status',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),taskId:z.string().uuid()}),req.params);const x=body(z.object({status:z.enum(['open','in_progress','blocked','awaiting_decision','completed','cancelled']),expected_version:z.number().int().positive()}),req.body);return service.updateTaskStatus({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),taskId:p.taskId,status:x.status,expectedVersion:x.expected_version,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/tasks/:taskId/dependencies',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),taskId:z.string().uuid()}),req.params);const x=body(z.object({depends_on_task_id:z.string().uuid()}),req.body);return service.addTaskDependency({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),taskId:p.taskId,dependsOnTaskId:x.depends_on_task_id,idempotencyKey:idem(req)})});

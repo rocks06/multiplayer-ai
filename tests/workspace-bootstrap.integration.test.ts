@@ -108,7 +108,9 @@ describe("Workspace bootstrap and agent listing", () => {
 
       const listed = await call("GET", `/v1/companies/${workspace.company_id}/rooms`, undefined, { cookie: me.cookie });
       expect(listed.statusCode).toBe(200);
-      expect(listed.json()).toEqual({ rooms: [{ room_id: room.id, name: "API Launch", project_id: project.id, project_name: "Developer API", objective: "Launch it" }] });
+      // A new room of one's own has nothing unread: creating it is not news to its creator.
+      expect(listed.json()).toEqual({ rooms: [{ room_id: room.id, name: "API Launch", project_id: project.id, project_name: "Developer API", objective: "Launch it",
+        last_event_seq: 2, last_read_seq: 0, unread_count: 0, mention_count: 0, action_count: 0, latest: null }] });
     });
 
     it("is empty for a new workspace rather than absent", async () => {
@@ -192,6 +194,8 @@ describe("Workspace bootstrap and agent listing", () => {
         // an agent named in the workspace is not yet a runtime, and the two are not the same fact.
         runtime: null,
         rooms: [{ room_id: room.id, name: "Launch" }],
+        // Recorded ownership: the person who added it. A name, never a credential.
+        owners: [{ principal_id: expect.any(String), display_name: "Rocco" }],
       });
 
       // Nothing about how the connector authenticates may appear in a product response.

@@ -131,13 +131,15 @@ export class GatewayClient {
   heartbeat(runtimeStatus: "idle" | "working") { return this.sessionHttp("POST", "/heartbeat", { runtime_status: runtimeStatus }); }
   disconnect() { return this.sessionHttp("POST", "/disconnect", {}); }
 
-  sendMessage(input: { body: string; addressedPrincipalId?: string; taskId?: string; inReplyToMessageId?: string; artifactIds?: string[] }, idempotencyKey: string) {
+  /** `mentions` names room participants; the text must contain "@Name" for each, and the server places it. */
+  sendMessage(input: { body: string; addressedPrincipalId?: string; taskId?: string; inReplyToMessageId?: string; artifactIds?: string[]; mentionPrincipalIds?: string[] }, idempotencyKey: string) {
     return this.sessionHttp("POST", "/messages", {
       body: input.body,
       ...(input.addressedPrincipalId ? { addressed_principal_id: input.addressedPrincipalId } : {}),
       ...(input.taskId ? { task_id: input.taskId } : {}),
       ...(input.inReplyToMessageId ? { in_reply_to_message_id: input.inReplyToMessageId } : {}),
       ...(input.artifactIds?.length ? { artifact_ids: input.artifactIds } : {}),
+      ...(input.mentionPrincipalIds?.length ? { mentions: input.mentionPrincipalIds.map(principal_id => ({ principal_id })) } : {}),
     }, idempotencyKey);
   }
 

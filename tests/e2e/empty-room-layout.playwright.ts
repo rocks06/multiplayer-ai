@@ -24,6 +24,8 @@ async function openRoom(page:Page,dense=false,moving=false,withAgent=false,path?
       messages:dense?Array.from({length:70},(_,i)=>({id:`m${i}`,sender_principal_id:person,sender_name:'Alex',sender_kind:'human',body_text:`Message ${i}: The conversation stays readable while the controls stay in place.`,created_at:new Date(1700000000000+i*60000).toISOString()})):[],
       briefing:{briefing_seq:0,project_objective:'Keep the conversation readable',participants:[],joining_principal:{principal_id:person,role:'manager',responsibilities:'Review work'},active_tasks:[],relevant_completed_work:[],blockers:[],relevant_artifacts:[],important_recent_activity:[],unresolved_decisions:[]}};
     window.fetch=async(input,init)=>{
+      // Recording how far a person has read is not a change to the room, and is answered on its own.
+      if(init?.method==='POST'&&new URL(String(input),location.origin).pathname.endsWith('/read'))return new Response(JSON.stringify({last_read_seq:0}),{headers:{'content-type':'application/json'}});
       if(init?.method && init.method!=='GET'){(window as any).fixtureMutations=((window as any).fixtureMutations??0)+1;((window as any).fixtureRequests??=[]).push(`${init.method} ${new URL(String(input),location.origin).pathname}`)}
       const url=String(input),path=new URL(url,location.origin).pathname;
       let data:unknown;

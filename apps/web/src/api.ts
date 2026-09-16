@@ -31,7 +31,9 @@ export class RoomApi {
   snapshot(){return this.request<RoomSnapshot>('/snapshot')}
   createInvite(ttlHours=24){return this.request<{id:string;invite_token:string;invite_path:string;expires_at:string}>('/invites',{method:'POST',body:JSON.stringify({ttl_hours:ttlHours})})}
   decisions(){return this.request<{decisions:Decision[]}>('/decisions?status=pending')}
-  sendMessage(body:string,addressedPrincipalId?:string,artifactIds:string[]=[],key=commandKey()){return this.request('/messages',{method:'POST',headers:{'idempotency-key':key},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined,artifact_ids:artifactIds})})}
+  sendMessage(body:string,addressedPrincipalId?:string,artifactIds:string[]=[],key=commandKey(),mentions:{principal_id:string;start:number;end:number}[]=[]){return this.request('/messages',{method:'POST',headers:{'idempotency-key':key},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined,artifact_ids:artifactIds,...(mentions.length?{mentions}:{})})})}
+  /** Forward only, on the server: marking an older position read never makes anything unread. */
+  markRead(roomSeq:number){return this.request<{last_read_seq:number}>('/read',{method:'POST',body:JSON.stringify({room_seq:roomSeq})})}
   artifacts(){return this.request<{artifacts:import('./types').Artifact[]}>('/artifacts')}
   async uploadArtifact(file:File){
     const query=new URLSearchParams({filename:file.name,content_type:file.type||'application/octet-stream'});
@@ -149,8 +151,13 @@ export interface WorkspaceAgent {
   rooms:Array<{room_id:string;name:string}>|null;
   /** The runtime this agent was connected from, when the workspace knows it. Shown, never trusted. */
   runtime?:{type:string;version:string|null}|null;
+  /** The people who own this agent, recorded rather than inferred from its name. */
+  owners?:Array<{principal_id:string;display_name:string}>;
 }
-export interface WorkspaceRoom {room_id:string;name:string;project_id:string;project_name:string;objective?:string}
+/** What in a room needs this person, from their own read position. */
+export interface RoomAttention {unread_count?:number;mention_count?:number;action_count?:number;last_read_seq?:number;last_event_seq?:number;
+  latest?:{event_type:string;actor_display_name:string;actor_kind:string;text:string|null;created_at:string;room_seq:number}|null}
+export interface WorkspaceRoom extends RoomAttention {room_id:string;name:string;project_id:string;project_name:string;objective?:string}
 
 export const createWorkspace=(name:string)=>
   send<{company_id:string;name:string;principal_id:string}>('/v1/workspaces',{method:'POST',body:JSON.stringify({name})});
