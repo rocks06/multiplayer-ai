@@ -436,6 +436,38 @@ class Connector {
   }
 
   /**
+   * Start one discovered profile's runtime, if it is stopped, and report it as it now is.
+   *
+   * Scoped to exactly the card that was selected. Two requests for the same profile share one start
+   * rather than racing; a running profile is returned untouched; every other profile is never asked.
+   */
+  async startRuntime(id) {
+    const discoveryId = this.detected.get(id);
+    if (!discoveryId) throw new Error('Select an agent from the current discovery results.');
+    this.starting ??= new Map();
+    if (!this.starting.has(id)) {
+      const work = (async () => {
+        const {candidate} = await this.discovery.select(discoveryId).catch(async () => {
+          // Selection insists on ready; a stopped profile is exactly what is being started.
+          const found = (await Promise.all(this.providers.map(provider => provider.discover()))).flat()
+            .find(item => item.discoveryId === discoveryId);
+          if (!found) throw new Error('This agent is no longer in the discovery results. Scan again.');
+          return {candidate: found};
+        });
+        if (typeof candidate.adapter.start !== 'function') throw new Error('This runtime cannot be started from Multiplayer AI.');
+        log(`starting runtime for profile ${candidate.profile}`);
+        const detection = await candidate.adapter.start();
+        // A slot for this profile re-reads its runtime rather than serving a stale "stopped".
+        const slot = this.slots.get(id); if (slot) slot.probeCache = null;
+        return this.runtimeRecord(candidate, detection);
+      })();
+      this.starting.set(id, work);
+      work.finally(() => this.starting.delete(id)).catch(() => {});
+    }
+    return this.starting.get(id);
+  }
+
+  /**
    * The profile on this Mac that holds a saved agent identity.
    *
    * Answered from what is on disk, never from whether a probe happened to succeed: a Hermes busy
@@ -602,6 +634,7 @@ async function daemon() {
         case 'discover':
         case 'detect': return reply(id, true, { runtimes: await connector.discoverAgents() });
         case 'select-runtime': return reply(id, true, { runtime: await connector.selectRuntime(request.runtimeInstallationId) });
+        case 'start-runtime': return reply(id, true, { runtime: await connector.startRuntime(request.runtimeInstallationId) });
         case 'enroll': {
           connector.pendingBaseUrl = request.baseUrl;
           const result = await connector.enroll(request.code, request.deviceLabel);

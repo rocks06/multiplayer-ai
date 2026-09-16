@@ -51,7 +51,13 @@ describe("Agent Gateway v1",()=>{
  /** The shipped helper, spoken to the way the app speaks to it, on a disposable HOME. */
  function helperProcess(){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'mpai-helper-'));
-  const command=path.join(root,'hermes-fixture');fs.writeFileSync(command,'#!/bin/sh\ncase "$1" in\n--version) printf "Hermes v0.20.5\\n";;\nstatus) printf "ready\\n";;\ngateway) printf "Gateway running\\n";;\nchat) exit 0;;\n*) exit 1;;\nesac\n',{mode:0o700});
+  // Hermes' own wording. A profile is stopped while `gateway-stopped` exists; `gateway start` starts
+  // only the profile named by HERMES_HOME, and fails where `gateway-start-fails` exists.
+  const command=path.join(root,'hermes-fixture');fs.writeFileSync(command,['#!/bin/sh','case "$1" in','--version) printf "Hermes v0.20.5\\n";;','status) printf "ready\\n";;',
+   'gateway) case "$2" in',
+   '  status) if [ -f "$HERMES_HOME/gateway-stopped" ]; then printf "✗ Gateway is not running\\n"; else printf "✓ Gateway is supervised by launchd (PID 4242)\\n"; fi;;',
+   '  start) printf "start\\n" >> "$HERMES_HOME/gateway-starts"; if [ -f "$HERMES_HOME/gateway-start-fails" ]; then printf "launchctl bootstrap failed: 5: Input/output error\\n" >&2; exit 1; fi; rm -f "$HERMES_HOME/gateway-stopped"; printf "Service started\\n";;',
+   '  *) exit 1;; esac;;','chat) exit 0;;','*) exit 1;;','esac',''].join('\n'),{mode:0o700});
   const hermesHome=path.join(root,'hermes-home');fs.mkdirSync(hermesHome,{recursive:true});
   const child=spawn(process.env.MPAI_TEST_SIDECAR!,[],{env:{...process.env,HOME:root,HERMES_HOME:hermesHome,MPAI_IDENTITY_DIR:path.join(root,'identity'),MPAI_SUPPORT_DIR:path.join(root,'support'),HERMES_COMMAND:command},stdio:['pipe','pipe','pipe']});
   child.stderr.resume();const lines=readline.createInterface({input:child.stdout});let id=0;
@@ -92,6 +98,48 @@ describe("Agent Gateway v1",()=>{
   * Two agents on one Mac, the way the MacBook Air actually has them: one Hermes installation, two
   * profiles, each its own agent. Everything that happens to one must leave the other exactly as it was.
   */
+ /**
+  * Detect Agent found two stopped profiles and could connect neither. Selecting one now starts that
+  * profile's gateway and nothing else's; a running one is left alone; a failure is reported with
+  * Hermes' own words and can be retried. Profile names are fixtures.
+  */
+ it.runIf(Boolean(process.env.MPAI_TEST_SIDECAR))("bundled helper starts each stopped profile on its own, reports a failed start, then connects both",async()=>{
+  const f=await companyFixture();
+  const first=await agent(f,'Fixture One','one'),second=await agent(f,'Fixture Two','two');
+  const helper=helperProcess();const {call}=helper;
+  const named=path.join(helper.hermesHome,'profiles','fixture-named'),broken=path.join(helper.hermesHome,'profiles','fixture-broken');
+  for(const home of [named,broken])fs.mkdirSync(home,{recursive:true});
+  for(const home of [helper.hermesHome,named,broken])fs.writeFileSync(path.join(home,'gateway-stopped'),'');
+  fs.writeFileSync(path.join(broken,'gateway-start-fails'),'');
+  const starts=(home:string)=>fs.existsSync(path.join(home,'gateway-starts'))?fs.readFileSync(path.join(home,'gateway-starts'),'utf8').split('\n').filter(Boolean).length:0;
+  try {
+   await call('ping');
+   const found=(await call('detect')).runtimes;
+   expect(found.map((r:any)=>[r.profile,r.readiness])).toEqual([['default','installed_not_running'],['fixture-broken','installed_not_running'],['fixture-named','installed_not_running']]);
+   const byProfile=(name:string)=>found.find((r:any)=>r.profile===name);
+   // Default first: it starts, and nothing else is touched.
+   const startedDefault=(await call('start-runtime',{runtimeInstallationId:byProfile('default').runtimeInstallationId})).runtime;
+   expect(startedDefault.readiness).toBe('ready');
+   expect([starts(helper.hermesHome),starts(named),starts(broken)]).toEqual([1,0,0]);
+   expect(fs.existsSync(path.join(named,'gateway-stopped'))).toBe(true);
+   // Then the named profile, on its own.
+   const startedNamed=(await call('start-runtime',{runtimeInstallationId:byProfile('fixture-named').runtimeInstallationId})).runtime;
+   expect(startedNamed.readiness).toBe('ready');
+   expect([starts(helper.hermesHome),starts(named)]).toEqual([1,1]);
+   // Already running: returned as ready, not started again.
+   expect((await call('start-runtime',{runtimeInstallationId:byProfile('default').runtimeInstallationId})).runtime.readiness).toBe('ready');
+   expect(starts(helper.hermesHome)).toBe(1);
+   // A failure says what Hermes said, and the other two stay running.
+   await expect(call('start-runtime',{runtimeInstallationId:byProfile('fixture-broken').runtimeInstallationId})).rejects.toThrow(/Input\/output error/);
+   const after=(await call('detect')).runtimes;
+   expect(after.map((r:any)=>[r.profile,r.readiness])).toEqual([['default','ready'],['fixture-broken','installed_not_running'],['fixture-named','ready']]);
+   // And both started profiles connect, concurrently.
+   const configure=async(a:any,runtime:any)=>{await call('configure',{baseUrl,roomId:f.room.id,agentPrincipalId:a.principal_id,credential:a.credential.credential_token,runtimeSelectionId:runtime.runtimeInstallationId});await call('connect',{runtimeSelectionId:runtime.runtimeInstallationId})};
+   await configure(first,byProfile('default'));await configure(second,byProfile('fixture-named'));
+   await until(async()=>(await agentState(helper,first.principal_id))?.gateway==='live'&&(await agentState(helper,second.principal_id))?.gateway==='live',8000);
+  } finally { await helper.close(); }
+ });
+
  it.runIf(Boolean(process.env.MPAI_TEST_SIDECAR))("bundled helper runs two Hermes profiles as two concurrent agents that move, disconnect and reconnect independently",async()=>{
   const f=await companyFixture();
   const jj=await agent(f,'JJ','jj'),axon=await agent(f,'AXON','axon');

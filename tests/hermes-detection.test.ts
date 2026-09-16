@@ -41,7 +41,7 @@ describe("detecting the Hermes runtime", () => {
           : { status: 0, stdout: answers.version ?? "Hermes Agent v0.20.5", stderr: "" } as any;
       }
       if (argv[0] === "status") return { status: answers.status ?? 0, stdout: answers.statusText ?? "ok", stderr: "" } as any;
-      if (argv[0] === "gateway") return { status: answers.gateway ?? 0, stdout: answers.gatewayText ?? "running", stderr: "" } as any;
+      if (argv[0] === "gateway") return { status: answers.gateway ?? 0, stdout: answers.gatewayText ?? "✓ Gateway is running (PID: 901)", stderr: "" } as any;
       return { status: 0, stdout: "", stderr: "" } as any;
     };
   };
@@ -69,7 +69,7 @@ describe("detecting the Hermes runtime", () => {
   });
 
   it("distinguishes installed but not running from ready", async () => {
-    runtime({ gateway: 1, gatewayText: "gateway is not running", pgrep: "" });
+    runtime({ gateway: 0, gatewayText: "✗ Gateway is not running", pgrep: "" });
     const found = await new HermesAdapter({ command: BIN }).detect();
     expect(found.readiness).toBe("installed_not_running");
     expect(found.available).toBe(true);           // it is there
@@ -97,9 +97,31 @@ describe("detecting the Hermes runtime", () => {
     expect(found.readiness).toBe("control_unavailable");
   });
 
+  /**
+   * Hermes' own words for this profile, and only this profile.
+   *
+   * A launchd-supervised gateway never says "running", and the status output also lists other
+   * profiles' gateways — which is how running gateways were reported as stopped, and how one
+   * profile's state could be read as another's.
+   */
+  it("reads Hermes' real status wording for this profile and ignores other profiles", async () => {
+    const { gatewayRunningFromStatus } = await import("../packages/connector-hermes/src/index.js");
+    expect(gatewayRunningFromStatus("Launchd plist: /x\n✓ Service definition matches the current Hermes install\n✓ Gateway is supervised by launchd (PID 90015)\n  Auto-start at login and auto-restart on crash are available.")).toBe(true);
+    expect(gatewayRunningFromStatus("✓ Gateway is running (PID: 12)\n  (Running manually, not as a system service)")).toBe(true);
+    expect(gatewayRunningFromStatus("✓ Gateway is running via the default-profile multiplexer")).toBe(true);
+    expect(gatewayRunningFromStatus("⚠ Gateway service is registered but launchd is not supervising it\n✓ Detached fallback process is running (PID 7)")).toBe(true);
+    expect(gatewayRunningFromStatus("✗ Gateway is not running\n\nOther profiles:\n  ✓ other            — PID 5")).toBe(false);
+    expect(gatewayRunningFromStatus("✗ Gateway service is not loaded\n  Run: hermes gateway start\n\nOther profiles:\n  ✓ other            — PID 5")).toBe(false);
+    expect(gatewayRunningFromStatus("Gateway service is installed but not running.")).toBe(false);
+    runtime({ gatewayText: "✓ Gateway is supervised by launchd (PID 90015)" });
+    expect((await new HermesAdapter({ command: BIN }).detect()).readiness).toBe("ready");
+    runtime({ gatewayText: "✗ Gateway service is not loaded\n\nOther profiles:\n  ✓ other            — PID 5" });
+    expect((await new HermesAdapter({ command: BIN }).detect()).readiness).toBe("installed_not_running");
+  });
+
   /** Healthy has to mean drivable. It used to mean a file was present. */
   it("reports health from readiness, not from a file existing", async () => {
-    runtime({ gateway: 1, gatewayText: "not running", pgrep: "" });
+    runtime({ gateway: 0, gatewayText: "✗ Gateway is not running", pgrep: "" });
     expect((await new HermesAdapter({ command: BIN }).health()).ok).toBe(false);
     runtime({ pgrep: "901" });
     expect((await new HermesAdapter({ command: BIN }).health()).ok).toBe(true);

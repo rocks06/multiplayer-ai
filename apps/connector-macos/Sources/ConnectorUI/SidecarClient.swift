@@ -259,9 +259,12 @@ public final class SidecarClient {
                 pending.removeValue(forKey: id)?.resume(throwing: SidecarError.refused(message))
                 return
             }
-            let timeout = ["detect", "discover", "select-runtime"].contains(command) ? max(requestTimeout, 60) : requestTimeout
+            // Starting a runtime waits for it to answer, which is bounded inside the helper at well
+            // under this; the reply must not be abandoned while it is still legitimately working.
+            let timeout = command == "start-runtime" ? max(requestTimeout, 150)
+                : ["detect", "discover", "select-runtime"].contains(command) ? max(requestTimeout, 60) : requestTimeout
             // The command name is allowlisted; arguments (including credentials) never enter reports.
-            let label = ["ping", "status", "diagnostics", "detect", "configure", "connect", "disconnect", "reconnect", "signout", "enroll"].contains(command) ? command : "request"
+            let label = ["ping", "status", "diagnostics", "detect", "start-runtime", "configure", "connect", "disconnect", "reconnect", "signout", "enroll"].contains(command) ? command : "request"
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(timeout))
                 guard let self, let waiter = self.pending.removeValue(forKey: id) else { return }

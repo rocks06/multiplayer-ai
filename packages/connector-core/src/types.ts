@@ -142,6 +142,9 @@ export interface AgentRuntimeAdapter {
   invoke(input: AgentInvocation): Promise<AgentInvocationResult>;
   /** Stop an in-flight invocation during shutdown. The marker stays pending for retry. */
   cancel?(): void;
+  /** Start this runtime if it is installed but stopped, and wait for it to be ready. Leaves a
+   *  running runtime untouched. Throws with what the runtime said when it cannot. */
+  start?(): Promise<RuntimeDetection>;
 }
 
 export type ConnectionState =

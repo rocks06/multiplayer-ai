@@ -69,6 +69,12 @@ public final class ConnectorModel {
         begin()
     }
 
+    /// A live model around a given helper, so behaviour that needs a real process can be tested
+    /// without the shipping helper, the Keychain, or this Mac's support directory.
+    init(sidecar: SidecarClient) {
+        self.sidecar = sidecar
+    }
+
     private var started = false
 
     /// Start the background half and keep watching it. Safe to call more than once; a second

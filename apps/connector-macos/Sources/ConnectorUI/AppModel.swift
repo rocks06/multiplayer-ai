@@ -515,6 +515,59 @@ public final class AppModel {
     public var selectedKnownIdentity: KnownRuntimeIdentity? {
         selectedDiscoveredAgent.flatMap { knownDiscoveredIdentities[$0.id] }
     }
+    /// The profile whose runtime is being started right now, shown on its card as Starting agent….
+    public private(set) var startingRuntimeId: String?
+    /// Why a profile could not be started, in the runtime's own words, until it is retried.
+    public private(set) var runtimeStartErrors: [String: String] = [:]
+
+    /**
+     * Start a discovered profile's runtime if it is stopped, and wait for it to be ready.
+     *
+     * A person should never be sent to a terminal to start an agent they have just asked to connect.
+     * Only that one profile is started; a running one is left alone, and one that cannot be
+     * controlled is not something starting can fix. Returns whether it is now connectable.
+     */
+    @discardableResult
+    public func startDiscoveredRuntime(_ id: String) async -> Bool {
+        guard let agent = discoveredAgents.first(where: { $0.id == id }) else { return false }
+        guard AppModel.needsStart(agent.runtime) else { return agent.isConnectable }
+        guard startingRuntimeId == nil else { return false }
+        startingRuntimeId = id
+        runtimeStartErrors[id] = nil
+        defer { startingRuntimeId = nil }
+        let generation = discoveryGeneration
+        do {
+            let reply = try await connector.sidecar.send("start-runtime", ["runtimeInstallationId": id])
+            guard let raw = reply["runtime"] as? [String: Any], var updated = DiscoveredAgent.decode(raw) else {
+                throw SidecarError.refused("The helper did not report the started agent. Check Diagnostics and Retry.")
+            }
+            guard generation == discoveryGeneration else { return false }
+            if updated.displayName == nil { updated.displayName = agent.displayName }
+            discoveredAgents = discoveredAgents.map { $0.id == id ? updated : $0 }
+            if !updated.isConnectable {
+                runtimeStartErrors[id] = updated.runtime.reason ?? updated.runtime.situation
+            }
+            return updated.isConnectable
+        } catch {
+            guard generation == discoveryGeneration else { return false }
+            runtimeStartErrors[id] = error.localizedDescription
+            return false
+        }
+    }
+
+    /// Stopped, and the kind of stopped that starting fixes.
+    nonisolated public static func needsStart(_ runtime: SidecarState.Runtime) -> Bool {
+        runtime.readiness == "installed_not_running"
+    }
+
+    /// Choosing a card starts its agent if it is stopped, so Connect is ready by the time it is pressed.
+    public func chooseDiscoveredAgent(_ id: String) async {
+        selectDiscoveredAgent(id)
+        if let agent = selectedDiscoveredAgent, AppModel.needsStart(agent.runtime), runtimeStartErrors[id] == nil {
+            await startDiscoveredRuntime(id)
+        }
+    }
+
     public func discoveryTitle(_ agent: DiscoveredAgent) -> String {
         agent.title(known: knownDiscoveredIdentities[agent.id])
     }
@@ -522,6 +575,8 @@ public final class AppModel {
     /// One line per card that never contradicts another part of the sheet: a profile this Mac is
     /// already running says where, otherwise the runtime says whether it can be connected.
     public func discoveryStatus(_ agent: DiscoveredAgent) -> String {
+        if startingRuntimeId == agent.id { return "Starting agent…" }
+        if let failure = runtimeStartErrors[agent.id] { return failure }
         if let known = knownDiscoveredIdentities[agent.id] {
             let state = connector.state(of: known.principalId)
             if state.enrolled, state.gateway == "live" {
@@ -550,6 +605,7 @@ public final class AppModel {
     }
     public func dismissAgentDiscovery() {
         guard discoveryPhase != .connecting else { return }
+        runtimeStartErrors = [:]
         discoveryGeneration = UUID()
         pendingAgentMove = nil
         discoveryPhase = .idle
@@ -571,6 +627,7 @@ public final class AppModel {
         showingAgentDiscovery = true
         discoveryPhase = .looking
         discoveredAgents = []; selectedDiscoveredAgentId = nil; discoveryDisplayName = ""
+        runtimeStartErrors = [:]
         knownDiscoveredIdentities = [:]
         problem = nil
         let generation = UUID()
@@ -672,9 +729,14 @@ public final class AppModel {
 
     public func confirmRuntimeConnection(createAsNew: Bool = false, confirmedMove: AgentRoomMove? = nil) async {
         guard !createAsNew, !busy, discoveryPhase != .looking, discoveryPhase != .connecting,
-              let companyId = discoveryCompanyId,
-              let runtime = selectedDiscoveredAgent, runtime.isConnectable,
+              discoveryCompanyId != nil, let chosen = selectedDiscoveredAgent,
               rooms.contains(where: { $0.roomId == discoveryRoomId }) else { return }
+        // A stopped agent is started first, then connected, in the one action the person took.
+        if AppModel.needsStart(chosen.runtime) {
+            guard await startDiscoveredRuntime(chosen.id) else { return }
+        }
+        guard let companyId = discoveryCompanyId,
+              let runtime = selectedDiscoveredAgent, runtime.id == chosen.id, runtime.isConnectable else { return }
         let name = selectedKnownIdentity?.displayName ?? discoveryDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         guard acceptAgentMove(confirmedMove) else { return }

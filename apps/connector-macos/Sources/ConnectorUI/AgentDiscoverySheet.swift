@@ -5,9 +5,12 @@ public struct AgentDiscoverySheet: View {
     @Bindable var app: AppModel
     @State private var advanced = false
     public init(app: AppModel) { self.app = app }
-    private var working: Bool { app.discoveryPhase == .looking || app.discoveryPhase == .connecting }
+    private var working: Bool { app.discoveryPhase == .looking || app.discoveryPhase == .connecting || app.startingRuntimeId != nil }
     private var canConnect: Bool {
-        !working && app.selectedDiscoveredAgent?.isConnectable == true
+        guard let selected = app.selectedDiscoveredAgent else { return false }
+        // A stopped profile can be connected: Connect starts it first.
+        let startable = AppModel.needsStart(selected.runtime) && app.runtimeStartErrors[selected.id] == nil
+        return !working && (selected.isConnectable || startable)
             && app.discoveryCompanyId != nil
             && app.rooms.contains { $0.roomId == app.discoveryRoomId }
             && (app.selectedKnownIdentity != nil || !app.discoveryDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -102,14 +105,22 @@ public struct AgentDiscoverySheet: View {
                 Text("Choose the agent profile to connect. Nothing is created until you connect it.")
                     .foregroundStyle(.secondary)
                 ForEach(app.discoveredAgents) { agent in
-                    Button { app.selectDiscoveredAgent(agent.id) } label: {
+                    Button { Task { await app.chooseDiscoveredAgent(agent.id) } } label: {
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: app.selectedDiscoveredAgentId == agent.id ? "largecircle.fill.circle" : "circle")
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(app.discoveryTitle(agent)).font(.headline)
                                 Text(agent.detail).font(.callout).foregroundStyle(.secondary)
-                                Text(app.discoveryStatus(agent)).font(.caption).foregroundStyle(.secondary)
-                                if let reason = agent.runtime.reason, !agent.isConnectable {
+                                HStack(spacing: 6) {
+                                    if app.startingRuntimeId == agent.id { ProgressView().controlSize(.mini) }
+                                    Text(app.discoveryStatus(agent)).font(.caption)
+                                        .foregroundStyle(app.runtimeStartErrors[agent.id] == nil ? Color.secondary : Color.red)
+                                        .textSelection(.enabled)
+                                }
+                                if app.runtimeStartErrors[agent.id] != nil {
+                                    Button("Retry") { Task { await app.startDiscoveredRuntime(agent.id) } }
+                                        .controlSize(.small).disabled(app.startingRuntimeId != nil)
+                                } else if let reason = agent.runtime.reason, !agent.isConnectable, !AppModel.needsStart(agent.runtime) {
                                     Text(reason).font(.caption).foregroundStyle(.secondary)
                                 }
                             }

@@ -30,6 +30,25 @@ function probe(command: string, args: string[], options: { encoding: string; tim
   });
 }
 
+/**
+ * Whether Hermes' own status output says *this* profile's gateway is up.
+ *
+ * Only affirmative lines Hermes prints for the current profile count, and the "Other profiles"
+ * section it appends is cut off first: a line about another profile is never an answer about this one.
+ */
+export function gatewayRunningFromStatus(text: string): boolean {
+  const own = text.split(/^\s*Other profiles:/m)[0] ?? "";
+  if (/✗ Gateway is not running/.test(own)) return false;
+  return /✓ Gateway is (running|supervised by)/.test(own)
+    || /Detached (fallback|gateway) process is running \(PID/i.test(own)
+    || /Active: active \(running\)/.test(own);
+}
+
+/** The end of what a command said, without terminal colour codes, short enough to show a person. */
+function lastLines(text: string) {
+  return text.replace(/\u001b\[[0-9;]*m/g, "").split("\n").map(line => line.trim()).filter(Boolean).slice(-2).join(" ").slice(0, 300);
+}
+
 const DEFAULT_MINIMUM = "0.18.0";
 const VERSION_PATTERN = /v(\d+)\.(\d+)\.(\d+)/;
 
@@ -159,7 +178,7 @@ export class HermesAdapter implements AgentRuntimeAdapter {
       processId: service.processId,
       configPath: this.configPath(),
       ...(service.running ? {} : {
-        reason: "Hermes is installed and answering, but its gateway is not running. Start it with `hermes gateway start`.",
+        reason: "Hermes is installed and answering, but this profile's gateway is not running. Multiplayer AI starts it when you select this agent.",
       }),
     };
   }
@@ -180,19 +199,73 @@ export class HermesAdapter implements AgentRuntimeAdapter {
     return { ok: true };
   }
 
+  /** The profile directory this adapter drives. The default profile is the Hermes home itself. */
+  private get home() { return this.options.home ?? process.env.HERMES_HOME ?? path.join(process.env.HOME ?? "", ".hermes"); }
+
   /**
-   * Whether Hermes' own gateway is up.
+   * Whether this profile's own gateway is up.
    *
-   * Asked of Hermes rather than inferred from a process listing, because the shape of that listing
-   * is not a contract — the gateway runs as a Python module, and pattern-matching somebody's
-   * command line is a guess that breaks the day the launcher changes. A process id is still read
-   * where one is plainly there, but only as detail to show, never as the answer.
+   * Hermes' status command is prose, and reading it with a pattern is what reported running
+   * gateways as stopped: a launchd-supervised gateway says it is "supervised by launchd", never
+   * "running", and the same output lists every *other* profile's gateway too — so one stopped
+   * profile, or one phrase, decided the answer for all of them. The evidence Hermes itself trusts
+   * comes first: this profile's own `gateway.pid`, naming a live gateway process. Only then is the
+   * status command read, and only the part about this profile.
    */
   private async gatewayState(): Promise<{ running: boolean; processId?: number }> {
+    const recorded = await this.recordedGateway();
+    if (recorded) return { running: true, processId: recorded };
     const result = await probe(await this.command(), ["gateway", "status"], { encoding: "utf8", timeout: this.options.probeTimeoutMs, env: this.environment });
-    const said = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-    const running = !result.error && result.status === 0 && /running|active/i.test(said) && !/not running|stopped|inactive/i.test(said);
-    return { running };
+    return { running: !result.error && gatewayRunningFromStatus(`${result.stdout ?? ""}${result.stderr ?? ""}`) };
+  }
+
+  /** The live gateway process this profile's pid record names, if there is one. */
+  private async recordedGateway(): Promise<number | undefined> {
+    const file = path.join(this.home, "gateway.pid");
+    if (!fs.existsSync(file)) return undefined;
+    let pid: number | undefined;
+    try {
+      const text = fs.readFileSync(file, "utf8").trim();
+      pid = /^\d+$/.test(text) ? Number(text) : Number(JSON.parse(text)?.pid);
+    } catch { return undefined; }
+    if (!pid || !Number.isInteger(pid) || pid <= 1) return undefined;
+    try { process.kill(pid, 0); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") return undefined; }
+    // A recycled pid belongs to something else. Zombies are gone, whatever the table says.
+    const listed = await probe("ps", ["-o", "stat=,command=", "-p", String(pid)], { encoding: "utf8", timeout: this.options.probeTimeoutMs });
+    const line = (listed.stdout ?? "").trim();
+    if (listed.error || !line || line.startsWith("Z") || !/gateway/i.test(line)) return undefined;
+    return pid;
+  }
+
+  /**
+   * Start this profile's gateway, so nobody has to open a terminal to do it.
+   *
+   * Only a profile that is genuinely stopped is started: a running gateway is left exactly as it is,
+   * and a runtime that cannot be controlled at all is not something starting can fix. `hermes gateway
+   * start` under this profile's HERMES_HOME starts that profile's own service and no other, and
+   * never with `--all`, which would kill every profile's gateway. Readiness is then waited for, for
+   * a bounded time, because a started service is not yet an answering one.
+   */
+  async start(options: { readyTimeoutMs?: number; pollMs?: number; startTimeoutMs?: number } = {}): Promise<RuntimeDetection> {
+    const before = await this.detect();
+    if (before.readiness !== "installed_not_running") return before;
+    const result = await probe(await this.command(), ["gateway", "start"], {
+      encoding: "utf8", timeout: options.startTimeoutMs ?? 90_000, env: this.environment,
+    });
+    const said = lastLines(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+    if (result.error) {
+      throw new Error(`Hermes could not start this profile's gateway${said ? `: ${said}` : "."}`);
+    }
+    const deadline = Date.now() + (options.readyTimeoutMs ?? 45_000);
+    let latest = before;
+    while (Date.now() < deadline) {
+      latest = await this.detect();
+      if (latest.readiness === "ready") return latest;
+      if (latest.readiness !== "installed_not_running") break;
+      await new Promise(resolve => setTimeout(resolve, options.pollMs ?? 500));
+    }
+    throw new Error(`Hermes started, but this profile's gateway did not become ready${said ? ` (${said})` : ""}. ${latest.reason ?? ""}`.trim());
   }
 
   /** Where Hermes keeps its configuration, shown as detail when it exists. */
