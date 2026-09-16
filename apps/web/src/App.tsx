@@ -144,10 +144,10 @@ function AddAgent({available,onAdd}:{available:CompanyAgent[];onAdd:(choice:{nam
   </form>;
 }
 
-export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect,onDisconnect,onAddAgent}:{
+export function Participants({members,currentId,tasks,decisions,companyAgents,canManage,actions,onMessage,onConnect,onDisconnect,onRemove,onAddAgent}:{
   members:Member[];currentId:string;tasks:Task[];decisions:Decision[];
   companyAgents?:CompanyAgent[];canManage?:boolean;actions?:WorkActions;onMessage?:(principalId:string)=>void;
-  onConnect?:(member:Member)=>void;onDisconnect?:(member:Member)=>Promise<void>;onAddAgent?:(choice:{name?:string;principalId?:string})=>Promise<void>}){
+  onConnect?:(member:Member)=>void;onDisconnect?:(member:Member)=>Promise<void>;onRemove?:(member:Member)=>Promise<void>;onAddAgent?:(choice:{name?:string;principalId?:string})=>Promise<void>}){
   const humans=members.filter(m=>m.kind==='human'),agents=members.filter(m=>m.kind==='agent');
   // Only agents that are not currently reachable carry an elapsed reading, so the clock runs
   // only when something on screen actually depends on it.
@@ -163,7 +163,7 @@ export function Participants({members,currentId,tasks,decisions,companyAgents,ca
           label={presence.label} tone={presence.tone} detail={presence.detail} paused={record?.status==='paused'}
           elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>
         {actions&&onMessage&&
-          <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect} onDisconnect={onDisconnect}/>}
+          <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect} onDisconnect={onDisconnect} onRemove={onRemove}/>}
       </li>;
     })}</ul>
       {!agents.length&&<p className="small-empty">No agents here yet. Add one you already run.</p>}
@@ -723,6 +723,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
           <Participants members={snapshot.members} currentId={identity.principalId} tasks={snapshot.tasks} decisions={pending}
             companyAgents={companyAgents} canManage={managers} actions={actions} onMessage={messageAgent} onConnect={setConnecting}
             onDisconnect={member=>mutate(()=>api.disconnectMember(member.principal_id)).then(()=>undefined)}
+            onRemove={member=>mutate(()=>api.removeMember(member.principal_id)).then(()=>{loadAgents()})}
             onAddAgent={addAgentToRoom}/>
           <SharedWork tasks={snapshot.tasks} members={snapshot.members} agents={agents} canManage={managers} currentId={identity.principalId} actions={actions}>
             <TaskCreator agents={agents} onCreate={x=>mutate(()=>api.createTask(x))}/>

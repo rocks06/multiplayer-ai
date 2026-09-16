@@ -79,6 +79,9 @@ export class RoomApi {
   pauseAgent(agentId:string){return this.request(`/agents/${agentId}/pause`,{method:'POST',headers:{'idempotency-key':commandKey()}})}
   resumeAgent(agentId:string){return this.request(`/agents/${agentId}/resume`,{method:'POST',headers:{'idempotency-key':commandKey()}})}
   disconnectMember(principalId:string){return this.request(`/members/${principalId}`,{method:'DELETE',headers:{'idempotency-key':commandKey()}})}
+  /** Leave this room only. The server ends a live session first, in the same command, and keeps the
+   *  agent's identity and credential; it stays available for any other room. */
+  removeMember(principalId:string){return this.request(`/members/${principalId}`,{method:'DELETE',headers:{'idempotency-key':commandKey()}})}
 
   resolveDecision(decision:Decision,resolution:'approve'|'reject',note:string){return this.request(`/decisions/${decision.id}/${resolution}`,{method:'POST',headers:{'idempotency-key':`decision-${decision.id}-${resolution}-v${decision.version}`},body:JSON.stringify({proposed_action_digest:decision.proposed_action_digest,expected_version:decision.version,note:note||undefined})})}
   streamUrl(afterSeq?:number){
@@ -144,6 +147,8 @@ export interface WorkspaceAgent {
   owner_display_name:string|null;
   connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'superseded'|'never';runtime_status:string|null;last_seen_at:string|null;room_id:string|null;room_name:string|null};
   rooms:Array<{room_id:string;name:string}>|null;
+  /** The runtime this agent was connected from, when the workspace knows it. Shown, never trusted. */
+  runtime?:{type:string;version:string|null}|null;
 }
 export interface WorkspaceRoom {room_id:string;name:string;project_id:string;project_name:string;objective?:string}
 

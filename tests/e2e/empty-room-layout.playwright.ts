@@ -10,24 +10,28 @@ test.beforeAll(async()=>{
   server=await createServer({configFile:false,appType:'custom',root:fileURLToPath(new URL('../../apps/web',import.meta.url)),server:{host:'127.0.0.1',port:0},esbuild:{jsx:'automatic'},plugins:[{
     name:'empty-room-fixture',resolveId(id){if(id==='/layout-fixture.js')return '\0layout-fixture'},load(id){if(id==='\0layout-fixture')return `import React from 'react';import {createRoot} from 'react-dom/client';import App from '/src/App.tsx';import '/src/styles.css';createRoot(document.getElementById('root')).render(React.createElement(App));`},
   }]});
+  server.middlewares.use('/home',async(_req,res,next)=>{try{res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml('/home', '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/layout-fixture.js"></script></body></html>'))}catch(error){next(error)}});
   server.middlewares.use('/rooms/',async(_req,res,next)=>{try{res.setHeader('Content-Type','text/html');res.end(await server.transformIndexHtml('/rooms/', '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><div id="root"></div><script type="module" src="/layout-fixture.js"></script></body></html>'))}catch(error){next(error)}});
   await server.listen();origin=server.resolvedUrls!.local[0]!;
 });
 test.afterAll(async()=>{await server?.close()});
-async function openRoom(page:Page,dense=false,moving=false){
-  await page.addInitScript(({company,room,person,dense,moving})=>{
+async function openRoom(page:Page,dense=false,moving=false,withAgent=false,path?:string){
+  await page.addInitScript(({company,room,person,dense,moving,withAgent})=>{
     localStorage.setItem(`mpai:onboarding:v1:layout-user:${company}`,'done');
     const snapshot={room:{id:room,name:'Layout room',last_event_seq:0,project_id:'p',project_name:'Layout project',objective:'Keep the conversation readable'},snapshot_seq:0,
-      members:[{principal_id:person,display_name:'Alex',kind:'human',role:'manager',responsibilities:'Review work'}],tasks:[],
+      members:[{principal_id:person,display_name:'Alex',kind:'human',role:'manager',responsibilities:'Review work'},
+        ...(withAgent?[{principal_id:'fixture-agent',display_name:'Fixture Agent',kind:'agent',role:'worker_agent',responsibilities:'',agent_presence:'connected',agent_connection:'connected'}]:[])],tasks:[],
       messages:dense?Array.from({length:70},(_,i)=>({id:`m${i}`,sender_principal_id:person,sender_name:'Alex',sender_kind:'human',body_text:`Message ${i}: The conversation stays readable while the controls stay in place.`,created_at:new Date(1700000000000+i*60000).toISOString()})):[],
       briefing:{briefing_seq:0,project_objective:'Keep the conversation readable',participants:[],joining_principal:{principal_id:person,role:'manager',responsibilities:'Review work'},active_tasks:[],relevant_completed_work:[],blockers:[],relevant_artifacts:[],important_recent_activity:[],unresolved_decisions:[]}};
     window.fetch=async(input,init)=>{
-      if(init?.method && init.method!=='GET') (window as any).fixtureMutations=((window as any).fixtureMutations??0)+1;
+      if(init?.method && init.method!=='GET'){(window as any).fixtureMutations=((window as any).fixtureMutations??0)+1;((window as any).fixtureRequests??=[]).push(`${init.method} ${new URL(String(input),location.origin).pathname}`)}
       const url=String(input),path=new URL(url,location.origin).pathname;
       let data:unknown;
       if(path==='/v1/auth/me')data={user:{id:'layout-user',email:'layout@example.test',display_name:'Alex'},companies:[{company_id:company,company_name:'Layout studio',principal_id:person,display_name:'Alex'}]};
       else if(path.endsWith('/snapshot'))data=snapshot;
       else if(path.endsWith('/rooms'))data={rooms:[{room_id:room,name:'Layout room',project_name:'Layout project'}]};
+      else if(path.endsWith('/members/fixture-agent')&&init?.method==='DELETE')data={status:'removed'};
+      else if(path.endsWith('/agents')&&withAgent)data={agents:[{agent_id:'fixture-agent-id',principal_id:'fixture-agent',display_name:'Fixture Agent',status:'active',rooms:[{room_id:room,name:'Layout room'}],runtime:{type:'hermes',version:'0.21.0'},connector:{enrolled:true,presence:'connected',room_id:room,room_name:'Layout room',runtime_status:'idle'}},{agent_id:'second-id',principal_id:'second-agent',display_name:'Second Fixture Agent',status:'active',rooms:[],runtime:null,connector:{enrolled:false,presence:'never',room_id:null,room_name:null,runtime_status:null}}]};
       else if(path.endsWith('/agents'))data={agents:moving?[{agent_id:'agent',principal_id:'moving-principal',display_name:'JJ',status:'active',rooms:[],connector:{enrolled:true,presence:'connected',room_id:'room-a',room_name:'Room A',runtime_status:'idle'}}]:[]};
       else if(path.endsWith('/artifacts'))data={artifacts:[]};
       else if(path.endsWith('/messages')&&init?.method==='POST')data={ok:true};
@@ -40,11 +44,46 @@ async function openRoom(page:Page,dense=false,moving=false){
       send(){}close(){this.readyState=3;this.onclose?.()}
     }
     Object.defineProperty(window,'WebSocket',{value:FixtureSocket});
-  },{company,room,person,dense,moving});
+  },{company,room,person,dense,moving,withAgent});
+  if(path){await page.goto(`${origin}${path}`);return}
   await page.goto(`${origin}rooms/${company}/${room}`);
   await expect(page.getByRole('heading',{name:'Layout room'})).toBeVisible();
   await expect(page.getByRole('textbox',{name:'Message',exact:true})).toBeVisible();
 }
+test('Remove from room asks in a dialog over the whole window, then removes only this room membership',async({page})=>{
+  await page.setViewportSize({width:1440,height:900});await openRoom(page,false,false,true);
+  await page.getByRole('button',{name:'Supervise Fixture Agent'}).click();
+  for(const name of ['Message Fixture Agent','Pause Fixture Agent','Disconnect from room','Remove from room'])await expect(page.getByRole('button',{name,exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Remove from room',exact:true}).click();
+  const dialog=page.getByRole('alertdialog');
+  await expect(dialog).toContainText('Remove Fixture Agent from this room?');
+  const box=(await dialog.boundingBox())!;
+  // Drawn over the window, not clipped inside the side panel it was opened from.
+  expect(box.x+box.width/2).toBeGreaterThan(1440*0.3);expect(box.x+box.width/2).toBeLessThan(1440*0.7);
+  expect(await page.evaluate(()=>(window as any).fixtureRequests??[])).toEqual([]);
+  await dialog.getByRole('button',{name:'Remove from room',exact:true}).click();
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).fixtureRequests)).toEqual([`DELETE /v1/companies/${company}/rooms/${room}/members/fixture-agent`]);
+});
+test('Create room lists each agent as one aligned row: checkbox, then its name, then optional detail',async({page})=>{
+  await page.setViewportSize({width:1280,height:900});await openRoom(page,false,false,true,'home');
+  await page.getByRole('button',{name:/Create room/}).first().click();
+  const group=page.getByRole('group',{name:'Which agents belong here?'});
+  await expect(group.getByRole('checkbox')).toHaveCount(2);
+  for(const [name,detail] of [['Fixture Agent','Hermes · 0.21.0'],['Second Fixture Agent',null]] as const){
+    const row=group.locator('label.home-check',{hasText:name}).first();
+    const box=(await row.getByRole('checkbox').boundingBox())!,label=(await row.getByText(name,{exact:true}).boundingBox())!,frame=(await row.boundingBox())!;
+    expect(box.width).toBeLessThanOrEqual(20);
+    expect(label.x-(box.x+box.width)).toBeGreaterThanOrEqual(4);
+    expect(label.x-(box.x+box.width)).toBeLessThanOrEqual(16);
+    expect(box.x-frame.x).toBeLessThanOrEqual(16);
+    expect(Math.abs((box.y+box.height/2)-(frame.y+frame.height/2))).toBeLessThanOrEqual(6);
+    if(detail)await expect(row.getByText(detail,{exact:true})).toBeVisible();
+  }
+  await group.getByText('Fixture Agent',{exact:true}).click();
+  await expect(group.getByRole('checkbox',{name:/^Fixture Agent/})).toBeChecked();
+  await page.screenshot({path:test.info().outputPath('create-room-agents.png')});
+});
 for(const accept of [false,true])test(`move agent confirmation ${accept?'confirm':'cancel'} never mutates membership or credentials in the browser`,async({page})=>{
   await page.setViewportSize({width:1440,height:900});await openRoom(page,false,true);
   await page.getByRole('button',{name:'Add agent',exact:true}).click();

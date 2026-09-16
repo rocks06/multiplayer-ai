@@ -246,8 +246,8 @@ export function SharedWork({tasks,members,agents,canManage,currentId,actions,chi
  * own machine may still be finishing its current step, and finds out at its next contact. The
  * copy says that rather than pretending a remote process stopped on command.
  */
-export function AgentControls({member,agent,canManage,actions,onMessage,onConnect,onDisconnect}:{
-  member:Member;agent?:CompanyAgent;canManage:boolean;actions:WorkActions;onMessage:(principalId:string)=>void;onConnect?:(member:Member)=>void;onDisconnect?:(member:Member)=>Promise<void>}){
+export function AgentControls({member,agent,canManage,actions,onMessage,onConnect,onDisconnect,onRemove}:{
+  member:Member;agent?:CompanyAgent;canManage:boolean;actions:WorkActions;onMessage:(principalId:string)=>void;onConnect?:(member:Member)=>void;onDisconnect?:(member:Member)=>Promise<void>;onRemove?:(member:Member)=>Promise<void>}){
   const [open,setOpen]=useState(false);
   const [confirmingPause,setConfirmingPause]=useState(false);
   const {busy,problem,run}=useAction();
@@ -256,6 +256,9 @@ export function AgentControls({member,agent,canManage,actions,onMessage,onConnec
   const paused=agent?.status==='paused';
 
   return <div className="agent-controls">
+    {/* The confirmation has to be drawn for its question to be asked. It was created and never
+        rendered, so Disconnect from room opened nothing and did nothing. */}
+    {dialog}
     <button type="button" className="agent-more" aria-expanded={open}
       aria-label={`Supervise ${member.display_name}`} onClick={()=>{setOpen(v=>!v);setConfirmingPause(false)}}>•••</button>
     {open&&<div className="agent-menu">
@@ -271,6 +274,16 @@ export function AgentControls({member,agent,canManage,actions,onMessage,onConnec
             run:()=>onDisconnect(member),
           });
         }}>Disconnect from room</button>}
+        {onRemove&&<button type="button" className="danger" onClick={()=>{
+          setOpen(false);
+          confirm({
+            title:`Remove ${member.display_name} from this room?`,
+            detail:'It leaves this room only. If it is connected here it is disconnected first. Its identity, '
+              +'credential and profile on its Mac are kept, and it can be added to this or any other room again.',
+            action:'Remove from room',
+            run:()=>onRemove(member),
+          });
+        }}>Remove from room</button>}
 
       {!agent&&<p className="agent-note">This agent is not registered to the workspace, so it cannot be paused from here.</p>}
 

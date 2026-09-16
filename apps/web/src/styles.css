@@ -554,11 +554,18 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 
 .home-form{display:grid;gap:var(--s3);padding:var(--s4);border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface)}
 .home-form .field{display:grid;gap:5px}
-.home-form input,.home-form textarea{width:100%;padding:9px 11px;border:1px solid var(--line-strong);border-radius:var(--r-control);
+.home-form input:not([type=checkbox]),.home-form textarea{width:100%;padding:9px 11px;border:1px solid var(--line-strong);border-radius:var(--r-control);
   background:var(--paper);color:var(--ink);font-size:13px;resize:vertical}
-.home-form input:focus-visible,.home-form textarea:focus-visible{border-color:var(--ink)}
+.home-form input:not([type=checkbox]):focus-visible,.home-form textarea:focus-visible{border-color:var(--ink)}
 .home-choose{display:grid;gap:6px;border:0;padding:0;margin:0}
-.home-check{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2)}
+.home-check{display:flex;align-items:center;justify-content:flex-start;gap:10px;padding:8px 10px;
+  border:1px solid var(--line);border-radius:var(--r-control);background:var(--paper);cursor:pointer;
+  transition:border-color var(--m-state) var(--ease)}
+.home-check:has(input:checked){border-color:var(--ink)}
+.home-check input[type=checkbox]{flex:0 0 auto;width:14px;height:14px;margin:0;accent-color:var(--ink)}
+.home-check-copy{display:grid;gap:1px;min-width:0}
+.home-check-copy strong{font-size:12px;font-weight:600;color:var(--ink);overflow-wrap:anywhere}
+.home-check-copy small{font-size:10px;color:var(--faint)}
 .home-note{font-size:10px;line-height:1.55;color:var(--faint);text-wrap:pretty}
 .home-form-actions{display:flex;gap:7px;justify-content:flex-end}
 .home-form-actions button{padding:8px 12px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--paper);font-size:12px;font-weight:600}

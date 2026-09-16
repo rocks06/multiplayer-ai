@@ -166,7 +166,44 @@ describe('Stage 6 agent supervision',()=>{
   });
 
   it('shows a contributor no supervisory controls at all',()=>{
-    const {container}=controls({canManage:false});
+    const {container}=controls({canManage:false,onRemove:vi.fn(),onDisconnect:vi.fn()});
     expect(container).toBeEmptyDOMElement();
+  });
+
+  /* Leaving one room is not deleting an agent. The menu says which it is, asks first, and hands
+     the choice to the one action it names — Message, Pause, Disconnect stay exactly as they were. */
+  it('offers Remove from room beside the controls it already had, and asks before removing',async()=>{
+    const onRemove=vi.fn(async()=>{}),onDisconnect=vi.fn(async()=>{}),onMessage=vi.fn();
+    controls({onRemove,onDisconnect,onMessage});
+    fireEvent.click(screen.getByRole('button',{name:'Supervise Agent A'}));
+    for(const name of ['Message Agent A','Pause Agent A','Disconnect from room','Remove from room']){
+      expect(screen.getByRole('button',{name})).toBeVisible();
+    }
+    fireEvent.click(screen.getByRole('button',{name:'Remove from room'}));
+    const dialog=await screen.findByRole('alertdialog');
+    expect(dialog).toHaveTextContent('Remove Agent A from this room?');
+    expect(dialog).toHaveTextContent(/this room only/);
+    expect(dialog).toHaveTextContent(/disconnected first/);
+    expect(dialog).toHaveTextContent(/identity, credential and profile on its Mac are kept/);
+    expect(onRemove).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button',{name:'Remove from room'}));
+    await waitFor(()=>expect(onRemove).toHaveBeenCalledExactlyOnceWith(agentA));
+    expect(onDisconnect).not.toHaveBeenCalled();
+    await waitFor(()=>expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+  });
+
+  it('cancelling Remove from room removes nothing, and Disconnect still does what it did',async()=>{
+    const onRemove=vi.fn(async()=>{}),onDisconnect=vi.fn(async()=>{});
+    controls({onRemove,onDisconnect});
+    fireEvent.click(screen.getByRole('button',{name:'Supervise Agent A'}));
+    fireEvent.click(screen.getByRole('button',{name:'Remove from room'}));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button',{name:'Cancel'}));
+    await waitFor(()=>expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(onRemove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button',{name:'Supervise Agent A'}));
+    fireEvent.click(screen.getByRole('button',{name:'Disconnect from room'}));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button',{name:'Disconnect from room'}));
+    await waitFor(()=>expect(onDisconnect).toHaveBeenCalledExactlyOnceWith(agentA));
+    expect(onRemove).not.toHaveBeenCalled();
   });
 });

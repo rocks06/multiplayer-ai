@@ -218,6 +218,30 @@ describe("Agent Gateway v1",()=>{
   } finally { await helper.close(); }
  });
 
+ /* Remove from room: this room's membership ends, a live session here ends first and is told so,
+    and nothing about the agent itself — identity, credential, other rooms — changes. */
+ it("removing an agent from one room ends only that membership and keeps it available everywhere else",async()=>{
+  const f=await companyFixture();const a=await agent(f,"Fixture Agent","remove-one");
+  const other=(await post(`/v1/companies/${f.company.id}/projects/${f.project.id}/rooms`,{name:"Other Room"},{"x-principal-id":f.owner.principal_id})).json();
+  const live=await external(a,f.room.id);await live.connect(0);
+  const removed=await request("DELETE",`/v1/companies/${f.company.id}/rooms/${f.room.id}/members/${a.principal_id}`,undefined,{"x-principal-id":f.owner.principal_id,"idempotency-key":"remove-from-room"});
+  expect(removed.statusCode).toBe(200);
+  await live.waitFor(frame=>frame.type==="session_ended"&&frame.reason==="removed_from_room");
+  expect((await pool.query(`SELECT count(*)::int n FROM external_agent_sessions WHERE agent_principal_id=$1 AND status='connected'`,[a.principal_id])).rows[0].n).toBe(0);
+  expect((await pool.query(`SELECT status FROM room_members WHERE room_id=$1 AND principal_id=$2`,[f.room.id,a.principal_id])).rows[0].status).toBe("removed");
+  expect((await pool.query(`SELECT status FROM principals WHERE id=$1`,[a.principal_id])).rows[0].status).toBe("active");
+  expect((await pool.query(`SELECT status FROM external_agent_credentials WHERE id=$1`,[a.credential.id])).rows[0].status).toBe("active");
+  const listed=(await request("GET",`/v1/companies/${f.company.id}/agents`,undefined,{"x-principal-id":f.owner.principal_id})).json().agents.find((x:any)=>x.principal_id===a.principal_id);
+  expect(listed).toBeTruthy();
+  expect(listed.rooms??[]).toEqual([]);
+  const snapshot=(await request("GET",`/v1/companies/${f.company.id}/rooms/${f.room.id}/snapshot`,undefined,{"x-principal-id":f.owner.principal_id})).json();
+  expect(snapshot.members.some((m:any)=>m.principal_id===a.principal_id)).toBe(false);
+  // Available for another room, with the credential it already has.
+  expect((await post(`/v1/companies/${f.company.id}/rooms/${other.id}/members`,{principal_id:a.principal_id,role:"worker_agent",responsibilities:""},{"x-principal-id":f.owner.principal_id,"idempotency-key":"add-to-other"})).statusCode).toBe(200);
+  const elsewhere=new FakeExternalAgentClient(baseUrl);clients.add(elsewhere);
+  expect((await elsewhere.open(a.credential.credential_token,other.id)).status).toBe(200);
+ });
+
  it("authenticates scoped credentials and rejects revocation, impersonation by IDs, cross-agent/company access, and inactive membership",async()=>{
   const aCo=await companyFixture("A"),bCo=await companyFixture("B");const a=await agent(aCo,"Agent A","a"),b=await agent(aCo,"Agent B","b",false);await agent(bCo,"Agent C","c");
   const probe=new FakeExternalAgentClient(baseUrl);probe.credentialToken=a.credential.credential_token;

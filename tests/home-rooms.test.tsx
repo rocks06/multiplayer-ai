@@ -2,7 +2,8 @@
 import '@testing-library/jest-dom/vitest';
 import {cleanup,fireEvent,render,screen,within} from '@testing-library/react';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {Home} from '../apps/web/src/Home';
+import {Home,runtimeLabel} from '../apps/web/src/Home';
+import {readFileSync} from 'node:fs';
 
 /**
  * Where a room a person was invited into actually appears.
@@ -79,5 +80,51 @@ describe('Home, across every workspace a person belongs to', () => {
     const asked = vi.mocked(fetch).mock.calls.map(([url]) => String(url));
     expect(asked.some(url => url.includes('/c-own/agents'))).toBe(true);
     expect(asked.some(url => url.includes('/c-other/agents'))).toBe(false);
+  });
+});
+
+/** Choosing agents for a new room: one aligned row per agent, box and name together. */
+describe('Create room agent selection', () => {
+  const own = {companyId: 'c-own', name: 'Workspace', accessScope: 'workspace' as const};
+  const fixtureAgents = [
+    {agent_id: 'a1', principal_id: 'p1', display_name: 'Fixture Agent One', status: 'active', owner_display_name: null, rooms: [],
+     connector: {enrolled: true, presence: 'connected', runtime_status: 'idle', last_seen_at: null, room_id: null, room_name: null},
+     runtime: {type: 'hermes', version: '0.21.0'}},
+    {agent_id: 'a2', principal_id: 'p2', display_name: 'Fixture Agent Two', status: 'active', owner_display_name: null, rooms: [],
+     connector: {enrolled: false, presence: 'never', runtime_status: null, last_seen_at: null, room_id: null, room_name: null},
+     runtime: null},
+  ];
+  beforeEach(() => {
+    localStorage.clear();
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const body = /\/agents/.test(String(url)) ? {agents: fixtureAgents} : {rooms: []};
+      return new Response(JSON.stringify(body), {status: 200, headers: {'content-type': 'application/json'}});
+    }));
+  });
+  afterEach(() => {cleanup(); vi.unstubAllGlobals()});
+
+  it('puts each checkbox and its agent name in one row, with runtime detail only when known', async () => {
+    render(<Home workspace={own} memberships={[own]} onNavigate={() => {}}/>);
+    fireEvent.click((await screen.findAllByRole('button', {name: /Create room/}))[0]!);
+    const group = await screen.findByRole('group', {name: 'Which agents belong here?'});
+    const rows = within(group).getAllByRole('checkbox').map(box => box.closest('label')!);
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText('Fixture Agent One')).toBeInTheDocument();
+    expect(within(rows[0]!).getByText('Hermes · 0.21.0')).toBeInTheDocument();
+    expect(within(rows[1]!).getByText('Fixture Agent Two')).toBeInTheDocument();
+    expect(rows[1]!.querySelector('small')).toBeNull();
+    // Box and name are one control: its accessible name is the agent's.
+    const box = within(group).getByRole('checkbox', {name: /Fixture Agent One/});
+    fireEvent.click(within(rows[0]!).getByText('Fixture Agent One'));
+    expect(box).toBeChecked();
+  });
+
+  it('never stretches a checkbox with the form\'s full-width field rule', () => {
+    const css = readFileSync('apps/web/src/styles.css', 'utf8');
+    expect(css).toMatch(/\.home-form input:not\(\[type=checkbox\]\),\.home-form textarea\{width:100%/);
+    expect(css).not.toMatch(/\.home-form input,\.home-form textarea\{width:100%/);
+    expect(runtimeLabel({runtime: {type: 'hermes', version: null}})).toBe('Hermes');
+    expect(runtimeLabel({runtime: {type: 'other-runtime', version: '2'}})).toBe('other-runtime · 2');
+    expect(runtimeLabel({runtime: null})).toBeNull();
   });
 });

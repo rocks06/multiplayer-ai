@@ -169,6 +169,14 @@ export function Home({workspace,memberships,onNavigate}:{
 }
 
 /** A room is a name, an objective, and whichever agents you choose — never all of them by default. */
+/** Secondary detail for an agent row: which runtime, when known. Nothing when it is not. */
+export function runtimeLabel(agent:Pick<WorkspaceAgent,'runtime'>){
+  const runtime=agent.runtime;
+  if(!runtime?.type)return null;
+  const kind=runtime.type==='hermes'?'Hermes':runtime.type;
+  return runtime.version?`${kind} · ${runtime.version}`:kind;
+}
+
 function CreateRoom({companyId,agents,onCancel,onCreated}:{
   companyId:string;agents:WorkspaceAgent[];onCancel:()=>void;onCreated:(room:WorkspaceRoom)=>void}){
   const [name,setName]=useState('');
@@ -209,14 +217,21 @@ function CreateRoom({companyId,agents,onCancel,onCreated}:{
 
     {agents.length>0&&<fieldset className="home-choose">
       <legend className="field-label">Which agents belong here?</legend>
-      {agents.map(agent=>
-        <label key={agent.principal_id} className="home-check">
+      {/* One row per agent: the box and the name belong together. They used to sit at opposite
+          ends of the row, because the form's full-width input rule stretched the checkbox too. */}
+      {agents.map(agent=>{
+        const detail=runtimeLabel(agent);
+        return <label key={agent.principal_id} className="home-check">
           <input type="checkbox" checked={chosen.includes(agent.principal_id)} disabled={busy}
             onChange={event=>setChosen(current=>event.target.checked
               ? [...current,agent.principal_id]
               : current.filter(id=>id!==agent.principal_id))}/>
-          <span>{agent.display_name}</span>
-        </label>)}
+          <span className="home-check-copy">
+            <strong>{agent.display_name}</strong>
+            {detail&&<small>{detail}</small>}
+          </span>
+        </label>;
+      })}
       <small className="home-note">You can add agents later. A room can start empty.</small>
     </fieldset>}
 
