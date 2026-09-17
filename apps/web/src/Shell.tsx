@@ -10,12 +10,14 @@ import {ContextualOnboarding} from './ContextualOnboarding';
  * do I get back, and where is the room I was in. It is a single restrained bar rather than a
  * sidebar, because the room underneath is the product and should keep the width.
  */
-export function Shell({workspace,rooms,currentRoomId,onNavigate,onboardingKey,children}:{
+export function Shell({workspace,rooms,currentRoomId,onNavigate,onboardingKey,bar:showBar=true,children}:{
   workspace:{companyId:string;name:string}|null;
   rooms:WorkspaceRoom[];
   currentRoomId?:string;
   onNavigate:(to:string)=>void;
   onboardingKey?:string;
+  /** Off inside a room, which is immersive and has its own way Home. */
+  bar?:boolean;
   children:React.ReactNode}){
   const [roomsOpen,setRoomsOpen]=useState(false);
   const [accountOpen,setAccountOpen]=useState(false);
@@ -32,8 +34,8 @@ export function Shell({workspace,rooms,currentRoomId,onNavigate,onboardingKey,ch
 
   const current=rooms.find(room=>room.room_id===currentRoomId);
 
-  return <div className="shell">
-    <header className="shell-bar" ref={bar}>
+  return <div className={showBar?'shell':'shell immersive'}>
+    {showBar&&<header className="shell-bar" ref={bar}>
       <button type="button" className="shell-home" onClick={()=>onNavigate('/home')}>
         <span className="brand-mark" aria-hidden="true">M</span>
         <span className="shell-workspace">{workspace?.name??'Home'}</span>
@@ -64,7 +66,7 @@ export function Shell({workspace,rooms,currentRoomId,onNavigate,onboardingKey,ch
             onClick={()=>{void signOut().finally(()=>{location.href='/'})}}>Sign out</button>
         </div>}
       </div>
-    </header>
+    </header>}
     <div className="shell-body">{children}</div>
     {onboardingKey&&<ContextualOnboarding identityKey={onboardingKey}/>}
   </div>;

@@ -8,6 +8,8 @@ export {
   eventKey,
   isActionableCandidate,
   isRelevantActionable,
+  messageWakes,
+  collaborationContributor,
   type RelevanceLookups,
 } from "./relevance.js";
 export { WORKFLOW_STEPS, taskStepKey, type WorkflowStep } from "./idempotency.js";

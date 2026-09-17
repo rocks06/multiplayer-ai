@@ -126,6 +126,8 @@ struct WorkspaceWebView: NSViewRepresentable {
         configuration.websiteDataStore = .default()
         if let origin = URL(string: app.workspaceAddress) {
             PDFPreviewBridge.install(in: configuration, origin: origin)
+            let app = self.app
+            NavigationBridge.install(in: configuration, origin: origin) { path in app.pageChanged(to: path) }
         }
         let view = ProductWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
@@ -238,6 +240,10 @@ struct WorkspaceWebView: NSViewRepresentable {
         func webView(_ view: WKWebView, didFinish navigation: WKNavigation!) {
             guard let url = view.url else { return }
             app.remember(path: WebSession.rememberablePath(url))
+            app.pageChanged(to: url.path)
+            // A sign-in completed inside the page is this app's sign-in too.
+            let store = view.configuration.websiteDataStore.httpCookieStore
+            Task { @MainActor in await app.adoptWebSession(from: await store.allCookies()) }
             // Signing out inside the product sends it to its own front door. That is the native
             // side's job, so the app takes the person back rather than showing them a second
             // sign-in screen that belongs to a different half of the same application.

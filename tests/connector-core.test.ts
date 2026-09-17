@@ -11,6 +11,7 @@ import {
   emptyState,
   ConnectorRuntime,
   MemoryStateStore,
+  collaborationContributor,
   type ActionableMarker,
   type RoomEvent,
   type TaskSummary,
@@ -260,5 +261,25 @@ describe("mentions route agent wakes", () => {
     expect(apply(both)).toBe("duplicate");
     expect(apply({ ...both })).toBe("duplicate");
     expect(runtime.snapshotState.pending_actionable_events.map(item => item.key)).toEqual(["same-event"]);
+  });
+});
+
+describe("one agreed result per collaboration", () => {
+  const turn = (actor: string, lead: string, extra: Record<string, unknown> = {}, actor_kind: RoomEvent["actor_kind"] = "agent"): { type: string; event: RoomEvent } =>
+    ({ type: "room.event", event: { id: `t-${Math.random()}`, room_seq: 1, event_type: "message.sent", actor_principal_id: actor, actor_kind, payload: { collaboration: { id: "c", lead_principal_id: lead }, ...extra } } });
+
+  it("an agent woken only by turns someone else leads is a contributor; the lead is not", () => {
+    expect(collaborationContributor([turn(PEER, PEER)], ME)).toBe(true);
+    expect(collaborationContributor([turn(PEER, ME)], ME)).toBe(false);
+  });
+
+  it("a person asking this agent directly in the same wake is not held back", () => {
+    const person: { type: string; event: RoomEvent } = { type: "room.event", event: { id: "p", room_seq: 2, event_type: "message.sent", actor_principal_id: HUMAN, actor_kind: "human", payload: { addressed_principal_id: ME } } };
+    expect(collaborationContributor([turn(PEER, PEER), person], ME)).toBe(false);
+  });
+
+  it("anything that is not a collaboration turn is not a contributor wake", () => {
+    expect(collaborationContributor([{ type: "room.snapshot" }], ME)).toBe(false);
+    expect(collaborationContributor([{ type: "room.event", event: { id: "x", room_seq: 3, event_type: "message.sent", actor_principal_id: PEER, actor_kind: "agent", payload: {} } }], ME)).toBe(false);
   });
 });

@@ -133,6 +133,47 @@ import Foundation
         #expect(AppModel.buildComparison(app: "abc1234", server: "") == "Not reported")
     }
 
+    /// The Air's missing banners: the app kept treating the last room loaded as on screen, because
+    /// in-page navigation never reached it, so going Home still suppressed that room's notifications.
+    @Test func goingHomeStopsARoomCountingAsOnScreen() {
+        var progress = Progress(); progress.setupComplete = true; progress.workspaceAddress = "https://workspace.test"
+        let app = AppModel(store: MemoryProgressStore(progress), connector: ConnectorModel(live: false))
+        app.pageChanged(to: "/rooms/\(Self.company)/\(Self.room)#message-\(Self.message)")
+        #expect(AppModel.visibleRoom(path: app.visiblePath, appActive: true)! == (Self.company, Self.room))
+        #expect(app.progress.lastRoomPath == "/rooms/\(Self.company)/\(Self.room)")
+        app.pageChanged(to: "/home")
+        #expect(app.visiblePath == "/home")
+        #expect(AppModel.visibleRoom(path: app.visiblePath, appActive: true) == nil)
+        // The room last opened is still remembered for what needs it, without claiming it is on screen.
+        #expect(app.progress.lastRoomPath == "/rooms/\(Self.company)/\(Self.room)")
+        #expect(AppModel.describePage(app.visiblePath) == "Home")
+        #expect(AppModel.describePage("/rooms/\(Self.company)/\(Self.room)") == "A room")
+    }
+
+    @Test func thePageReportsEveryInPageNavigationAndOnlyItsOwnPaths() {
+        for hook in ["pushState", "replaceState", "popstate", "hashchange", NavigationBridge.name] {
+            #expect(NavigationBridge.script.contains(hook))
+        }
+        #expect(NavigationBridge.path("/home") == "/home")
+        #expect(NavigationBridge.path("/rooms/a/b#message-c") == "/rooms/a/b#message-c")
+        #expect(NavigationBridge.path("//evil.example/rooms") == nil)
+        #expect(NavigationBridge.path("https://evil.example/") == nil)
+        #expect(NavigationBridge.path("/" + String(repeating: "a", count: 600)) == nil)
+    }
+
+    /// Signing in inside the page left the app itself signed out, so notifications never started.
+    @Test func aSessionTheWebViewHasIsAdoptedByTheAppOnlyForThisWorkspace() throws {
+        let base = URL(string: "https://workspace.test")!
+        func cookie(_ value: String, host: String = "workspace.test") -> HTTPCookie {
+            HTTPCookie(properties: [.name: WebSession.sessionCookieName, .value: value, .domain: host, .path: "/"])!
+        }
+        #expect(AppModel.shouldAdoptWebSession(base: base, native: [], web: [cookie("web")]))
+        #expect(!AppModel.shouldAdoptWebSession(base: base, native: [cookie("same")], web: [cookie("same")]))
+        #expect(AppModel.shouldAdoptWebSession(base: base, native: [cookie("old")], web: [cookie("new")]))
+        #expect(!AppModel.shouldAdoptWebSession(base: base, native: [], web: []))
+        #expect(!AppModel.shouldAdoptWebSession(base: base, native: [], web: [cookie("elsewhere", host: "other.example")]))
+    }
+
     @Test func aNotificationThatIsNotARoomLinkIsDropped() {
         let raw: [String: Any] = ["id": "x", "kind": "mention", "category": "mention", "company_id": Self.company,
                                   "room_id": Self.room, "link": "https://elsewhere.example/phish"]

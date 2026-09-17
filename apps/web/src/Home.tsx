@@ -24,14 +24,13 @@ function RoomList({rooms,onNavigate}:{rooms:HomeRoom[];onNavigate:(to:string)=>v
     {rooms.map(room=>{
       const unread=room.unread_count??0,mentions=room.mention_count??0,actions=room.action_count??0;
       const latest=room.latest;
-      const preview=latest?`${latest.actor_display_name}: ${latestText(latest)}`:null;
       const label=[room.name,unread?`${unread} unread`:null,mentions?`${mentions} ${mentions===1?'mention':'mentions'}`:null,actions?'needs you':null].filter(Boolean).join(', ');
       return <li key={`${room.companyId}:${room.room_id}`}>
         <button type="button" className={unread?'has-unread':undefined} aria-label={label} onClick={()=>onNavigate(`/rooms/${room.companyId}/${room.room_id}`)}>
           {unread>0&&<b className="unread-badge" aria-hidden="true">{unread>99?'99+':unread}</b>}
+          {/* Name, count and time. What was said lives in the room; repeating it here was clutter. */}
           <span className="room-row-copy">
-            <strong>{unread>0&&<i className="unread-dot" aria-hidden="true"/>}{room.name}</strong>
-            {preview?<small className="room-preview">{preview}</small>:room.project_name!==room.name&&<small>{room.project_name}</small>}
+            <strong>{room.name}</strong>
           </span>
           <span className="room-attention">
             {actions>0&&<b className="attention action">Needs you</b>}

@@ -1,4 +1,4 @@
-import {Fragment,memo,useCallback,useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
+import {Fragment,memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import {ArrowUp,Check,ChevronDown,ChevronRight,Clock3,Copy,Plus,RefreshCw,Share2,ShieldAlert,Users,X} from 'lucide-react';
 import {agentRoomMove,connectOnMac,handoffAgentMove} from './agent-room-move';
 import {bodySegments} from './mentions';
@@ -269,7 +269,9 @@ function Receipts({message,positions,senderId}:{message:Message;positions:ReadPo
   </div>;
 }
 
-function Transcript({messages,members,events,lastEvent,api,currentId='',readPositions=[]}:{messages:Message[];members:Member[];events:RoomEvent[];lastEvent:RoomEvent|null;api:RoomApi;currentId?:string;readPositions?:ReadPosition[]}){
+function Transcript({messages,members,events,lastEvent,api,currentId='',readPositions=[],openingReadSeq=null,onAtLatest}:{messages:Message[];members:Member[];events:RoomEvent[];lastEvent:RoomEvent|null;api:RoomApi;currentId?:string;readPositions?:ReadPosition[];
+  /** How far this person had read when the room opened. Fixed for the visit, so the divider stays put. */
+  openingReadSeq?:number|null|undefined;onAtLatest?:(atLatest:boolean)=>void}){
   /* A decision belongs in the room's story: asked here, answered here, in the order it
      happened. Once resolved it stops asking for attention and simply stays as what occurred. */
   const timeline=useMemo(()=>{
@@ -293,8 +295,41 @@ function Transcript({messages,members,events,lastEvent,api,currentId='',readPosi
   const [focusedReply,setFocusedReply]=useState<string|null>(null);
   const count=timeline.length;
 
-  useEffect(()=>{const el=listRef.current;if(!el)return;const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;if(near)scrollTranscript(el,el.scrollHeight);else setUnseen(n=>n+1)},[count]);
-  const jump=()=>{const el=listRef.current;if(el)scrollTranscript(el,el.scrollHeight);setUnseen(0)};
+  /* Where unread begins for this visit: the first message from someone else after where this person
+     had read to when they came in. A divider marks it, and the room opens there with some of what
+     came before still in view. With nothing unread, the room opens at the latest message. */
+  const unread=useMemo(()=>{
+    if(openingReadSeq===null||openingReadSeq===undefined)return {firstId:null as string|null,count:0};
+    const after=messages.filter(m=>m.sender_principal_id!==currentId&&(m.room_seq??0)>openingReadSeq);
+    return {firstId:after[0]?.id??null,count:after.length};
+  },[messages,openingReadSeq,currentId]);
+  const [atLatest,setAtLatest]=useState(true);
+  const positioned=useRef(false);
+  const dividerRef=useRef<HTMLDivElement>(null);
+  const measureLatest=useCallback(()=>{
+    const el=listRef.current;if(!el)return;
+    const at=el.scrollHeight-el.scrollTop-el.clientHeight<80;
+    setAtLatest(at);onAtLatest?.(at);
+    if(at)setUnseen(0);
+  },[onAtLatest]);
+  useLayoutEffect(()=>{
+    const el=listRef.current;
+    if(positioned.current||!el||!count)return;
+    positioned.current=true;
+    if(/^#(message|decision)-/i.test(location.hash)){measureLatest();return}
+    const divider=dividerRef.current;
+    if(divider){
+      const context=Math.min(120,el.clientHeight/4);
+      el.scrollTop=Math.max(0,el.scrollTop+divider.getBoundingClientRect().top-el.getBoundingClientRect().top-context);
+    } else el.scrollTop=el.scrollHeight;
+    measureLatest();
+  },[count,measureLatest]);
+  useEffect(()=>{
+    const el=listRef.current;if(!el||!positioned.current)return;
+    const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;
+    if(near){scrollTranscript(el,el.scrollHeight);requestAnimationFrame(measureLatest)}else setUnseen(n=>n+1);
+  },[count]);
+  const jump=()=>{const el=listRef.current;if(el){scrollTranscript(el,el.scrollHeight);setTimeout(measureLatest,350)}setUnseen(0)};
   /* Arriving from a notification: go to the message it was about, once it is on screen. */
   const focused=useRef('');
   useEffect(()=>{
@@ -326,7 +361,7 @@ function Transcript({messages,members,events,lastEvent,api,currentId='',readPosi
 
   return <div className="transcript-wrap">
     <div className="pulse-rail" aria-hidden="true"><span className={lastEvent?'pulse active':'pulse'}/></div>
-    <div className="transcript" ref={listRef} data-testid="transcript">
+    <div className="transcript" ref={listRef} data-testid="transcript" onScroll={measureLatest}>
       {!timeline.length&&<div className="empty"><strong>The room is ready.</strong><p>Start with a clear direction or assign the first piece of work.</p></div>}
       {timeline.map((entry,index)=>{
         if(entry.kind==='decision'){
@@ -343,6 +378,10 @@ function Transcript({messages,members,events,lastEvent,api,currentId='',readPosi
         const same=previous?.kind==='message'&&previous.message.sender_principal_id===message.sender_principal_id;
         const rel=relationshipOf(message,byId,members);
           const previousAt=previous?.kind==='message'?previous.message.created_at:undefined;
+          const divider=message.id===unread.firstId
+            ?<div ref={dividerRef} className="unread-divider" role="separator" aria-label={`${unread.count} unread ${unread.count===1?'message':'messages'}`}>
+                <span>{unread.count} unread {unread.count===1?'message':'messages'}</span></div>
+            :null;
           const body=<article
           className={`message ${message.sender_kind} ${rel.direction} ${same?'continued':''} ${focusedReply===message.id?'reply-target':''}`}
           key={message.id} id={`message-${message.id}`} data-message-id={message.id}>
@@ -374,16 +413,16 @@ function Transcript({messages,members,events,lastEvent,api,currentId='',readPosi
           </article>;
           /* The day, written once above the first message of it. A room keeps its history, so a
              column of times with no dates reads as though all of it happened this afternoon. */
-          if(!startsNewDay(message.created_at,previousAt))return body;
+          if(!startsNewDay(message.created_at,previousAt))return divider?<Fragment key={`unread-${message.id}`}>{divider}{body}</Fragment>:body;
           return <div key={`day-${message.id}`} className="day-group">
             <div className="day-separator" role="separator">
               <span>{dayLabel(message.created_at)}</span>
             </div>
-            {body}
+            {divider}{body}
           </div>;
         })}
     </div>
-    {unseen>0&&<button type="button" className="new-items" onClick={jump}>{unseen} new {unseen===1?'update':'updates'} <ArrowUp size={13}/></button>}
+    {!atLatest&&<button type="button" className="new-items" onClick={jump}>{unseen>0?`${unseen} new · Jump to latest`:'Jump to latest'} <ArrowUp size={13}/></button>}
   </div>
 }
 
@@ -536,7 +575,8 @@ function RoomRoute({path,navigate}:{path:string;navigate:(to:string)=>void}){
   if(state.status==='loading')return <main className="route-error"><div className="brand-mark">M</div><p className="auth-quiet">Opening the room…</p></main>;
   if(state.status==='no_access')return <main className="route-error"><div className="brand-mark">M</div><h1>No access to this workspace</h1><p>Your account is not a member of this company.</p></main>;
   if(state.status==='error')return <main className="route-error"><div className="brand-mark">M</div><h1>Something went wrong</h1><p>{state.message}</p></main>;
-  return <Shell workspace={state.workspace} rooms={state.rooms} currentRoomId={room.roomId} onNavigate={navigate} onboardingKey={`${state.userId}:${state.workspace.companyId}`}>
+  // In a room the room is the whole window: its own header carries the way Home, so no bar above it.
+  return <Shell bar={false} workspace={state.workspace} rooms={state.rooms} currentRoomId={room.roomId} onNavigate={navigate} onboardingKey={`${state.userId}:${state.workspace.companyId}`}>
     <Room identity={state.identity} workspace={state.workspace.name} onNavigate={navigate}/>
   </Shell>;
 }
@@ -668,8 +708,17 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
      and the tab visible. Only then does its read position move, and only forward. */
   const latestSeq=Math.max(snapshot?.snapshot_seq??0,lastEvent?.room_seq??0);
   const readSeq=useRef(0);
+  /* Read means reached: the newest message has been on screen, not merely the room opened above it. */
+  const [atLatest,setAtLatest]=useState(true);
+  /* Where this person had read to when they came in, captured in the same render the room first
+     arrives. Set later, the transcript had already placed itself before it knew where unread began. */
+  const opening=useRef<number|null|undefined>(undefined);
+  if(opening.current===undefined&&snapshot){
+    opening.current=snapshot.read_positions?.find(p=>p.principal_id===identity.principalId)?.last_read_seq??null;
+  }
+  const openingReadSeq=opening.current;
   useEffect(()=>{
-    if(!latestSeq)return;
+    if(!latestSeq||!atLatest)return;
     let timer:number|undefined;
     const mark=()=>{
       // Visible is read. Keyboard focus is not required: inside the Mac app focus often sits outside
@@ -681,7 +730,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     mark();
     window.addEventListener('focus',mark);document.addEventListener('visibilitychange',mark);
     return()=>{window.clearTimeout(timer);window.removeEventListener('focus',mark);document.removeEventListener('visibilitychange',mark)};
-  },[latestSeq,api]);
+  },[latestSeq,api,atLatest]);
   /* Who has read what, for receipts. Reading moves no room event, so it is asked for again every
      so often while the room is on screen, and whenever the room itself changes. */
   const [readPositions,setReadPositions]=useState<ReadPosition[]>([]);
@@ -782,12 +831,12 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
 
   return <main className="room-app">
     {dialog}
-    <header className="room-header"><div className="brand-mark">M</div><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div>{managers&&<><button className="share-room" onClick={()=>setSharing(true)}><Share2 size={14}/>Share</button><button className="delete-room" onClick={()=>confirm({title:`Delete ${snapshot.room.name}?`,detail:'Everyone loses access, and any agent sessions and credentials scoped to this room are revoked. The room history is kept.',action:'Delete room',run:async()=>{await deleteWorkspaceRoom(identity.companyId,identity.roomId);onNavigate('/home')}})}>Delete room</button></>}<button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
+    <header className="room-header"><button type="button" className="brand-mark home-button" aria-label="Home" title="Home" onClick={()=>onNavigate('/home')}>M</button><div className="room-title"><span>{snapshot.room.project_name}</span><h1>{snapshot.room.name}</h1></div><div className="objective"><span>Objective</span><p>{snapshot.room.objective}</p></div>{managers&&<><button className="share-room" onClick={()=>setSharing(true)}><Share2 size={14}/>Share</button><button className="delete-room" onClick={()=>confirm({title:`Delete ${snapshot.room.name}?`,detail:'Everyone loses access, and any agent sessions and credentials scoped to this room are revoked. The room history is kept.',action:'Delete room',run:async()=>{await deleteWorkspaceRoom(identity.companyId,identity.roomId);onNavigate('/home')}})}>Delete room</button></>}<button className="briefing-toggle" onClick={()=>setBriefingOpen(!briefingOpen)} aria-expanded={briefingOpen}>Briefing <ChevronDown size={14}/></button><Connection state={connection}/></header>
     {briefingOpen&&<section className="briefing"><div><span>Normalized room briefing</span><h2>{snapshot.briefing.project_objective}</h2></div><dl><div><dt>Your role</dt><dd>{snapshot.briefing.joining_principal.role}</dd></div><div><dt>Your responsibility</dt><dd>{snapshot.briefing.joining_principal.responsibilities||'Contribute to the room objective'}</dd></div><div><dt>Active work</dt><dd>{snapshot.briefing.active_tasks.length} tasks · {snapshot.briefing.blockers.length} blocked</dd></div></dl></section>}
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
       <RoomContext workspace={workspace} snapshot={snapshot}/>
-      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript api={api} currentId={identity.principalId} readPositions={readPositions} messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><AttachmentComposer api={api} members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to,ids,key,mentions)=>mutate(()=>api.sendMessage(body,to,ids,key,mentions))} ownerNames={ownerNames} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
+      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript api={api} currentId={identity.principalId} readPositions={readPositions} openingReadSeq={openingReadSeq} onAtLatest={setAtLatest} messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><AttachmentComposer api={api} members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to,ids,key,mentions)=>mutate(()=>api.sendMessage(body,to,ids,key,mentions))} ownerNames={ownerNames} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
       <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
         <div className="sheet-bar">
           <span>Team &amp; work</span>

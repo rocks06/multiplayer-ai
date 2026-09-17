@@ -485,7 +485,8 @@ public final class AppModel {
                 #else
                 let active = false
                 #endif
-                return AppModel.visibleRoom(path: self?.progress.lastRoomPath, appActive: active)
+                // What the window is showing now, not the last room ever loaded.
+                return AppModel.visibleRoom(path: self?.visiblePath, appActive: active)
             })
         notifier = next
         connector.attention = next.diagnostics
@@ -499,19 +500,31 @@ public final class AppModel {
     /// What only the app can add to notification Diagnostics: which server build it is talking to,
     /// and the read state of the room on screen.
     private func describeAttention(into diagnostics: AttentionDiagnostics) async {
+        diagnostics.visiblePage = AppModel.describePage(visiblePath)
+        if let base = URL(string: workspaceAddress) {
+            diagnostics.session = WebSession.hasSession(for: base, from: HTTPCookieStorage.shared.cookies ?? []) ? "Signed in" : "No session in the app"
+        }
         let app = AppModel.buildCommit.replacingOccurrences(of: "+local", with: "")
         if let server = try? await client.appConfig()["build_commit"] as? String {
             diagnostics.serverBuild = AppModel.buildComparison(app: app, server: server)
         } else {
             diagnostics.serverBuild = "Not reported (server predates build reporting)"
         }
-        guard let room = AppModel.visibleRoom(path: progress.lastRoomPath, appActive: true),
+        guard let room = AppModel.visibleRoom(path: visiblePath, appActive: true),
               let listed = try? await client.rooms(companyId: room.company),
               let current = listed.first(where: { $0.roomId == room.room }) else {
             diagnostics.roomReadState = "No room open"
             return
         }
         diagnostics.roomReadState = "\(current.name): read to \(current.lastReadSeq.map(String.init) ?? "—") of \(current.lastEventSeq.map(String.init) ?? "—") · \(current.unreadCount ?? 0) unread"
+    }
+
+    /// The page on screen, without ids: enough to see whether suppression is right.
+    nonisolated public static func describePage(_ path: String?) -> String {
+        guard let path else { return "Unknown" }
+        if path.hasPrefix("/rooms/") { return "A room" }
+        if path.hasPrefix("/home") || path == "/" { return "Home" }
+        return String(path.split(separator: "#").first ?? "Unknown")
     }
 
     /// Whether the app and the server it talks to are the same release, said plainly.
@@ -543,6 +556,39 @@ public final class AppModel {
 
     /// Bumped when the workspace view must return to `entryURL`. Watched by the web view.
     public var entryReloads = 0
+
+    /// The page the workspace is showing right now — Home, a room, Settings — as the page reports it.
+    public private(set) var visiblePath: String?
+
+    public func pageChanged(to path: String) {
+        visiblePath = path
+        if let room = WebSession.rememberablePath(URL(string: path, relativeTo: URL(string: workspaceAddress)) ?? URL(fileURLWithPath: "/")) {
+            remember(path: room)
+        }
+    }
+
+    /**
+     * Take up a session the page already has.
+     *
+     * Signing in inside the workspace page set the session only in the web view's cookie store, so
+     * the app itself stayed signed out: it could not read the notification feed, and notifications
+     * never started. Copying the session cookie back makes the two one signed-in person again.
+     */
+    public func adoptWebSession(from webCookies: [HTTPCookie]) async {
+        guard let base = URL(string: workspaceAddress),
+              AppModel.shouldAdoptWebSession(base: base, native: HTTPCookieStorage.shared.cookies ?? [], web: webCookies) else { return }
+        for cookie in WebSession.cookies(for: base, from: webCookies) where cookie.name == WebSession.sessionCookieName {
+            HTTPCookieStorage.shared.setCookie(cookie)
+        }
+        if identity == nil { await refresh() }
+    }
+
+    nonisolated public static func shouldAdoptWebSession(base: URL, native: [HTTPCookie], web: [HTTPCookie]) -> Bool {
+        let webSession = WebSession.cookies(for: base, from: web).first { $0.name == WebSession.sessionCookieName && !$0.value.isEmpty }
+        guard let webSession else { return false }
+        let nativeSession = WebSession.cookies(for: base, from: native).first { $0.name == WebSession.sessionCookieName && !$0.value.isEmpty }
+        return nativeSession?.value != webSession.value
+    }
 
     /// Whether an incoming link is asking to show Diagnostics — the first thing anybody is asked
     /// for when something is wrong, and previously reachable only by knowing where to look.

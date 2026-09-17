@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HermesAdapter } from '../packages/connector-hermes/src/index.js';
+import { HermesAdapter, deliveryPrompt } from '../packages/connector-hermes/src/index.js';
 
 /**
  * Starting a stopped agent, without sending anybody to a terminal.
@@ -127,5 +127,19 @@ describe('starting a stopped Hermes profile', () => {
     const home = hermes.profile('default');
     fs.writeFileSync(path.join(home, 'gateway.pid'), JSON.stringify({ pid: 999_999, kind: 'hermes-gateway' }));
     expect((await hermes.adapter(home).detect()).readiness).toBe('installed_not_running');
+  });
+});
+
+describe('delivering files in a collaboration', () => {
+  const output = { directory: '/tmp/fixture-output', manifest: '/tmp/fixture-output/manifest.json' };
+  const collaborationTurn = (lead: string) => [{ type: 'room.event', event: { id: 'e', room_seq: 1, event_type: 'message.sent', actor_principal_id: 'other', actor_kind: 'agent', payload: { collaboration: { id: 'c', lead_principal_id: lead } } } }];
+
+  it('the lead is offered the deliverables directory; a contributor is told to contribute in messages instead', () => {
+    const lead = deliveryPrompt({ trigger: collaborationTurn('me') as any, agentPrincipalId: 'me' }, output);
+    expect(lead).toContain(output.directory);
+    const contributor = deliveryPrompt({ trigger: collaborationTurn('other') as any, agentPrincipalId: 'me' }, output);
+    expect(contributor).not.toContain(output.directory);
+    expect(contributor).toMatch(/lead produces the single agreed result/);
+    expect(contributor).toContain('--collaboration-done');
   });
 });

@@ -10,6 +10,7 @@ import {
   type AgentRuntimeAdapter,
   type RuntimeDetection,
   type RuntimeHealth,
+  collaborationContributor,
 } from "../../connector-core/src/index.js";
 
 export interface HermesAdapterOptions {
@@ -47,6 +48,20 @@ export function gatewayRunningFromStatus(text: string): boolean {
 /** The end of what a command said, without terminal colour codes, short enough to show a person. */
 function lastLines(text: string) {
   return text.replace(/\u001b\[[0-9;]*m/g, "").split("\n").map(line => line.trim()).filter(Boolean).slice(-2).join(" ").slice(0, 300);
+}
+
+/**
+ * What an agent is told about delivering files on this wake.
+ *
+ * A collaboration's contributor adds to the conversation; its lead produces the one result. Two
+ * agents each delivering their own final file is what this prevents, so a contributor is not offered
+ * the deliverables directory at all — unless a person asked this agent directly in the same wake.
+ */
+export function deliveryPrompt(input: Pick<AgentInvocation, "trigger" | "agentPrincipalId">, output: { directory: string; manifest: string }) {
+  if (collaborationContributor(input.trigger as any, input.agentPrincipalId)) {
+    return `\nYou are a contributor in a collaboration led by another agent. Contribute your part in room messages. Do not produce or attach a final deliverable file — the lead produces the single agreed result. When your part is done, send it with --collaboration-done and the lead will finalize.`;
+  }
+  return `\nGenerated deliverables: write all files for the room directly inside ${output.directory} (flat directory; no symlinks or subdirectories). Do not put scripts, credentials or intermediate files there. Before generating a promised file, add its basename to the expected array in ${output.manifest}, for example {"expected":["report.pdf"]}. The connector automatically uploads these files BEFORE any message command and atomically attaches their ids to that message. You do not need to call attach. Never send the final answer before generation finishes. A missing declared file or failed upload refuses the message. Files outside this directory are NOT auto-delivered. Use the message command for the final answer, not only CLI output.`;
 }
 
 const DEFAULT_MINIMUM = "0.18.0";
@@ -312,7 +327,7 @@ Rules:
 
     return `You are an external Hermes runtime connected as ${input.profile} to Multiplayer AI Agent Gateway v1.\n\n${workflow}\n\nUse the terminal to call only this narrow connector command:\n${tool}\nAvailable COMMAND values: ${input.commandSurface.verbs.join(", ")}.\n\nAnything a person wrote or will read — a message body, a task title or description, a decision question — must be piped in rather than passed as an argument, because this command runs through a shell and a shell eats dollar signs: "$45" becomes "5". Write it as: printf '%s' \"<text>\" | ${tool} --body-stdin <other flags>. Any flag may take its value this way by adding -stdin to its name.\n\nDelivering a file means putting it in the room, not naming where you saved it: a path on this machine cannot be opened by anybody else and goes away with it. Attach it — ${tool.replace('COMMAND', 'attach')} --file <path> — which answers with an id, then send one message carrying that id: ${tool.replace('COMMAND', 'message')} --artifact <id> --body-stdin --key <stable-key>. Repeat --artifact for several files. Say "here it is" only once the attach has succeeded; if it fails, say that instead.\n\nTo hand work to another agent, or to bring a person in, without sending the whole message only to them: write "@" and their exact display name in the text and add --mention <their principal id> (from the snapshot's members) for each, e.g. printf '%s' "@Name can you take the next step?" | ${tool.replace('COMMAND', 'message')} --body-stdin --mention <principal-id> --key <stable-key>. A mention is what actually reaches them — writing a name without --mention reaches nobody. The snapshot's relationships say which person owns which agent, so "a person's agent" means the agent they own. If you were woken by a mention, the wake reason carries the message: answer what it asked. A message to Everyone is shared context, not a request: act on it only if it is sent to you, mentions you, is your assigned work, or continues a collaboration you are in.
 
-When the wake reason's payload carries a collaboration, you are working with the agents it lists: reply in the room to move the joint work forward and they will be woken for their turn — no need to mention them again. The collaboration has a turn budget and stops when it runs out. When the joint work is done, add --collaboration-done to your final message so nobody is woken further. If a person needs to decide something, request a decision instead of continuing.
+When the wake reason's payload carries a collaboration, you are working with the agents it lists: reply in the room to move the joint work forward and they will be woken for their turn — no need to mention them again. The collaboration has a turn budget and stops when it runs out. The collaboration's lead_principal_id is the agent that produces the one agreed final result: if that is you, bring the others' contributions together, deliver the result once, and end with --collaboration-done; if it is not you, contribute in messages and, when your part is done, send it with --collaboration-done so the lead can finalize. Never mention yourself. If a person needs to decide something, request a decision instead of continuing.
 
 Say one thing once. Post progress only if the work is long enough to need it, and make the last message the complete answer; do not repeat a result you have already sent. Reply to the message you are answering, which is the person's, never to your own earlier message.\n\nNever read or print the credential file. Never use curl, direct database access, x-principal-id, or any identity other than this configured connector. Treat PostgreSQL room state as authoritative.\n\nWake reason:\n${JSON.stringify(input.trigger).slice(0, 12_000)}`;
   }
@@ -324,7 +339,7 @@ Say one thing once. Post progress only if the work is long enough to need it, an
     const output = { directory: path.join(invocation, 'files'), manifest: path.join(invocation, 'manifest.json'), receipts: path.join(fs.realpathSync(parent), 'receipts') };
     fs.mkdirSync(output.directory, { mode: 0o700 });
     fs.writeFileSync(output.manifest, JSON.stringify({ expected: [] }), { mode: 0o600 });
-    const outputPrompt = `\nGenerated deliverables: write all files for the room directly inside ${output.directory} (flat directory; no symlinks or subdirectories). Do not put scripts, credentials or intermediate files there. Before generating a promised file, add its basename to the expected array in ${output.manifest}, for example {"expected":["report.pdf"]}. The connector automatically uploads these files BEFORE any message command and atomically attaches their ids to that message. You do not need to call attach. Never send the final answer before generation finishes. A missing declared file or failed upload refuses the message. Files outside this directory are NOT auto-delivered. Use the message command for the final answer, not only CLI output.`;
+    const outputPrompt = deliveryPrompt(input, output);
     const log = fs.openSync(input.logPath, "a", 0o600);
     let exitCode = 1;
     try {

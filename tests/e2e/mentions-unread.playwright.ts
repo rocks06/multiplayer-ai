@@ -10,10 +10,17 @@ async function authenticate(context:BrowserContext,email:string){
  const session=await context.request.post('/v1/auth/sessions',{data:{token}});expect(session.ok(),await session.text()).toBeTruthy();
 }
 
+/* Sign in once per person for the whole file and reuse the session. Every sign-in link counts
+   against the real per-address rate limit, which the other suites on this server also spend. */
+const sessions:Record<string,any>={};
+async function signedIn(browser:import('@playwright/test').Browser,email:string){
+ if(!sessions[email]){const context=await browser.newContext();await authenticate(context,email);sessions[email]=await context.storageState();await context.close()}
+ return browser.newContext({storageState:sessions[email]});
+}
+
 test('mention picker, highlighted structured mentions, Home unread badge and read receipts',async({browser,request},testInfo)=>{
  const f=await (await request.get('/__e2e/fixture')).json() as Fixture;
- const alexContext=await browser.newContext(),sarahContext=await browser.newContext();
- await authenticate(alexContext,'alex@multiplayer.local');await authenticate(sarahContext,'sarah@multiplayer.local');
+ const alexContext=await signedIn(browser,'alex@multiplayer.local'),sarahContext=await signedIn(browser,'sarah@multiplayer.local');
  const key=()=>({'idempotency-key':crypto.randomUUID()});
  const api=alexContext.request;
  const project=await (await api.post(`/v1/companies/${f.companyId}/projects`,{data:{name:'Mention fixture',objective:'Exercise attention'}})).json();
@@ -55,7 +62,10 @@ test('mention picker, highlighted structured mentions, Home unread badge and rea
   await alex.keyboard.press('Enter');
   await expect(alex.getByText('@Sarah Chen typed by hand')).toBeVisible();
   await expect(alex.locator('.message',{hasText:'typed by hand'}).locator('.mention')).toHaveCount(0);
-  const snapshot=await (await api.get(`/v1/companies/${f.companyId}/rooms/${room.id}/snapshot`)).json();
+  const readSnapshot=async()=>(await api.get(`/v1/companies/${f.companyId}/rooms/${room.id}/snapshot`)).json();
+  await expect.poll(async()=>(await readSnapshot()).messages?.map((m:any)=>m.body_text),{timeout:5000})
+    .toEqual(['Please @Sarah Chen can you review?','@Sarah Chen typed by hand']);
+  const snapshot=await readSnapshot();
   const [structuredMessage,handTyped]=snapshot.messages.slice(-2);
   expect(structuredMessage.mentions.map((m:any)=>m.principal_id)).toEqual([f.sarahId]);
   expect(handTyped.mentions).toEqual([]);
@@ -83,5 +93,51 @@ test('mention picker, highlighted structured mentions, Home unread badge and rea
   await receipt.click();
   await expect(alex.locator('.message',{hasText:'can you review?'}).locator('.receipts dd')).toHaveText('Sarah Chen');
   await alex.screenshot({path:testInfo.outputPath('receipts.png')});
+ }finally{await alexContext.close();await sarahContext.close()}
+});
+
+test('a room with unread messages opens at the first unread, keeps context above it, and clears only once the newest is reached',async({browser,request})=>{
+ const f=await (await request.get('/__e2e/fixture')).json() as Fixture;
+ const alexContext=await signedIn(browser,'alex@multiplayer.local'),sarahContext=await signedIn(browser,'sarah@multiplayer.local');
+ const api=alexContext.request,key=()=>({'idempotency-key':crypto.randomUUID()});
+ const project=await (await api.post(`/v1/companies/${f.companyId}/projects`,{data:{name:'Unread fixture',objective:'Long history'}})).json();
+ const room=await (await api.post(`/v1/companies/${f.companyId}/projects/${project.id}/rooms`,{data:{name:'Long room'}})).json();
+ expect((await api.post(`/v1/companies/${f.companyId}/rooms/${room.id}/members`,{data:{principal_id:f.sarahId,role:'contributor',responsibilities:''},headers:key()})).ok()).toBeTruthy();
+ let readTo=0;
+ for(let i=1;i<=60;i++){
+  const sent=await (await api.post(`/v1/companies/${f.companyId}/rooms/${room.id}/messages`,{data:{body:`History line ${i}: enough text to take up a row in the transcript.`},headers:key()})).json();
+  if(i===20)readTo=sent.room_seq;
+ }
+ // Sarah had read through line 20 before; forty are new, more than fit on screen.
+ expect((await sarahContext.request.post(`/v1/companies/${f.companyId}/rooms/${room.id}/read`,{data:{room_seq:readTo}})).ok()).toBeTruthy();
+ const unreadCount=async()=>(await (await sarahContext.request.get(`/v1/companies/${f.companyId}/rooms`)).json()).rooms.find((r:any)=>r.room_id===room.id).unread_count;
+ expect(await unreadCount()).toBe(40);
+ const sarah=await sarahContext.newPage();
+ try{
+  await sarah.setViewportSize({width:1280,height:800});
+  await sarah.goto(`/rooms/${f.companyId}/${room.id}`);
+  const divider=sarah.getByRole('separator',{name:'40 unread messages'});
+  await expect(divider).toBeVisible();
+  const list=sarah.getByTestId('transcript');
+  const listBox=(await list.boundingBox())!,dividerBox=(await divider.boundingBox())!;
+  // Opened at the divider, near the top, with earlier messages still visible above it.
+  expect(dividerBox.y).toBeGreaterThan(listBox.y+20);
+  expect(dividerBox.y).toBeLessThan(listBox.y+listBox.height/2);
+  await expect(sarah.getByText('History line 20:',{exact:false})).toBeInViewport();
+  await expect(sarah.getByText('History line 21:',{exact:false})).toBeInViewport();
+  await expect(sarah.getByText('History line 60:',{exact:false})).not.toBeInViewport();
+  const jump=sarah.getByRole('button',{name:/Jump to latest/});
+  await expect(jump).toBeVisible();
+  // Not read until the newest has been reached.
+  await sarah.waitForTimeout(1200);
+  expect(await unreadCount()).toBe(40);
+  await jump.click();
+  await expect(sarah.getByText('History line 60:',{exact:false})).toBeInViewport();
+  await expect(jump).toBeHidden();
+  await expect.poll(unreadCount,{timeout:5000}).toBe(0);
+  // Coming back with nothing unread opens at the latest message, without a divider.
+  await sarah.goto('/home');await sarah.goto(`/rooms/${f.companyId}/${room.id}`);
+  await expect(sarah.getByText('History line 60:',{exact:false})).toBeInViewport();
+  await expect(sarah.getByRole('separator',{name:/unread message/})).toHaveCount(0);
  }finally{await alexContext.close();await sarahContext.close()}
 });

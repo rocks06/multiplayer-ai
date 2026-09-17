@@ -592,11 +592,12 @@ export class RoomService {
     }
     const mentionedAgents=[...new Set(input.mentions.filter(m=>m.kind==='agent').map(m=>m.principal_id))].filter(id=>id!==input.actorId);
     for(const id of mentionedAgents)wake.add(id);
-    let collaboration:{id:string;status:string;turn_count:number;max_turns:number;participant_principal_ids:string[]}|null=null;
+    let collaboration:{id:string;status:string;turn_count:number;max_turns:number;participant_principal_ids:string[];lead_principal_id:string;finalizing:boolean}|null=null;
+    const columns='id,status,turn_count,max_turns,participant_principal_ids,lead_principal_id,finalizing';
     await c.query(`UPDATE agent_collaborations SET status='expired',ended_reason='idle',updated_at=now()
       WHERE company_id=$1 AND room_id=$2 AND status IN ('active','waiting_for_human') AND updated_at<now()-make_interval(mins=>$3::int)`,[input.companyId,input.roomId,COLLABORATION_IDLE_MINUTES]);
     if(input.actorKind==='agent'){
-      const found=await c.query<any>(`SELECT id,status,turn_count,max_turns,participant_principal_ids FROM agent_collaborations
+      const found=await c.query<any>(`SELECT ${columns} FROM agent_collaborations
         WHERE company_id=$1 AND room_id=$2 AND status IN ('active','waiting_for_human') AND $3::uuid=ANY(participant_principal_ids)
         ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,[input.companyId,input.roomId,input.actorId]);
       if(found.rows[0]){
@@ -604,33 +605,44 @@ export class RoomService {
         const participants=[...new Set<string>([...current.participant_principal_ids,...mentionedAgents])].slice(0,20);
         /* Waiting for a person: nobody's turn is woken until that decision is answered, which is
            what sets the collaboration going again. A participant saying it is done still ends it. */
+        const lead=current.lead_principal_id??current.participant_principal_ids[0];
+        const isLead=lead===input.actorId;
         const waiting=current.status==='waiting_for_human'&&!input.collaborationDone;
         const turn=waiting?current.turn_count:current.turn_count+1;
-        const status=input.collaborationDone?'completed':waiting?'waiting_for_human':turn>=current.max_turns?'exhausted':'active';
-        const saved=await c.query<any>(`UPDATE agent_collaborations SET turn_count=$2,status=$3::text,participant_principal_ids=$4::uuid[],
+        /* One agreed result. A contributor saying its part is done does not end the collaboration:
+           it hands the lead the last turn, to produce the single final result. Only the lead ends it. */
+        const contributorDone=Boolean(input.collaborationDone)&&!isLead;
+        const status=input.collaborationDone&&isLead?'completed':waiting?'waiting_for_human':turn>=current.max_turns?'exhausted':'active';
+        const finalizing=status==='active'&&(contributorDone||(current.finalizing&&!isLead));
+        const saved=await c.query<any>(`UPDATE agent_collaborations SET turn_count=$2,status=$3::text,participant_principal_ids=$4::uuid[],finalizing=$5,
             ended_reason=CASE WHEN $3::text='completed' THEN 'done' WHEN $3::text='exhausted' THEN 'max_turns' ELSE NULL END,updated_at=now()
-          WHERE id=$1 RETURNING id,status,turn_count,max_turns,participant_principal_ids`,[current.id,turn,status,participants]);
+          WHERE id=$1 RETURNING ${columns}`,[current.id,turn,status,participants,finalizing]);
         collaboration=saved.rows[0];
-        // Only a collaboration still going carries the turn to the others. Its last turn wakes nobody.
-        if(status==='active')for(const id of participants)if(id!==input.actorId)wake.add(id);
+        // Only a collaboration still going carries the turn on. Its last turn wakes nobody; a
+        // contributor's finished part wakes only the lead.
+        if(status==='active'){
+          if(finalizing)wake.add(lead);
+          else for(const id of participants)if(id!==input.actorId)wake.add(id);
+        }
       } else if(mentionedAgents.length&&!input.collaborationDone){
-        const created=await c.query<any>(`INSERT INTO agent_collaborations(id,company_id,room_id,started_by_principal_id,started_message_id,participant_principal_ids,turn_count,max_turns)
-          VALUES($1,$2,$3,$4,$5,$6::uuid[],1,$7) RETURNING id,status,turn_count,max_turns,participant_principal_ids`,
+        const created=await c.query<any>(`INSERT INTO agent_collaborations(id,company_id,room_id,started_by_principal_id,started_message_id,participant_principal_ids,turn_count,max_turns,lead_principal_id)
+          VALUES($1,$2,$3,$4,$5,$6::uuid[],1,$7,$4) RETURNING ${columns}`,
           [uuidv7(),input.companyId,input.roomId,input.actorId,input.messageId,[input.actorId,...mentionedAgents],COLLABORATION_MAX_TURNS]);
         collaboration=created.rows[0];
       }
     } else if(mentionedAgents.length>=2){
       // A person bringing several agents together asks them to work it out between them.
-      const created=await c.query<any>(`INSERT INTO agent_collaborations(id,company_id,room_id,started_by_principal_id,started_message_id,participant_principal_ids,turn_count,max_turns)
-        VALUES($1,$2,$3,$4,$5,$6::uuid[],0,$7) RETURNING id,status,turn_count,max_turns,participant_principal_ids`,
-        [uuidv7(),input.companyId,input.roomId,input.actorId,input.messageId,mentionedAgents,COLLABORATION_MAX_TURNS]);
+      // The first agent the person named leads: it produces the one final result.
+      const created=await c.query<any>(`INSERT INTO agent_collaborations(id,company_id,room_id,started_by_principal_id,started_message_id,participant_principal_ids,turn_count,max_turns,lead_principal_id)
+        VALUES($1,$2,$3,$4,$5,$6::uuid[],0,$7,$8) RETURNING ${columns}`,
+        [uuidv7(),input.companyId,input.roomId,input.actorId,input.messageId,mentionedAgents,COLLABORATION_MAX_TURNS,mentionedAgents[0]]);
       collaboration=created.rows[0];
     }
     wake.delete(input.actorId);
     return {
       wake_principal_ids:[...wake],
       collaboration:collaboration&&{id:collaboration.id,status:collaboration.status,turn:collaboration.turn_count,max_turns:collaboration.max_turns,
-        participant_principal_ids:collaboration.participant_principal_ids},
+        participant_principal_ids:collaboration.participant_principal_ids,lead_principal_id:collaboration.lead_principal_id,finalizing:collaboration.finalizing},
     };
   }
 
@@ -638,7 +650,8 @@ export class RoomService {
     const artifactIds=[...new Set(input.artifactIds??[])];
     if(!input.body.trim()&&!artifactIds.length)throw new DomainError('message_empty','Write a message or attach a file',400);
     if(artifactIds.length>10)throw new DomainError('too_many_artifacts','Attach at most ten files per message',400);
-    const mentionInput=(input.mentions??[]).map(m=>({principal_id:m.principal_id,start:m.start,end:m.end}));
+    // Naming yourself routes nothing and would only read as an agent talking to itself.
+    const mentionInput=(input.mentions??[]).filter(m=>m.principal_id!==input.actorId).map(m=>({principal_id:m.principal_id,start:m.start,end:m.end}));
     return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds,...(mentionInput.length?{mentions:mentionInput}:{}),...(input.collaborationDone?{collaborationDone:true}:{})},permission:'message.send'},async(c,actor)=>{
       if(input.addressedPrincipalId)await this.membership(c,input.companyId,input.roomId,input.addressedPrincipalId);
       const mentions=await this.resolveMentions(c,input.companyId,input.roomId,input.body,mentionInput);

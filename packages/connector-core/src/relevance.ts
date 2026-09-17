@@ -83,3 +83,25 @@ export function messageWakes(event: RoomEvent, agentPrincipalId: string): boolea
   const mentions = Array.isArray(event.payload?.mentions) ? event.payload!.mentions as Array<{ principal_id?: string }> : [];
   return mentions.some(mention => mention?.principal_id === agentPrincipalId);
 }
+
+/**
+ * Whether this wake makes the agent a collaboration contributor rather than the one producing the
+ * result. Two agents collaborating each delivered their own final file; the collaboration's lead
+ * produces the single agreed result, and other participants contribute in the conversation.
+ *
+ * A contributor is an agent woken only by collaboration turns led by someone else. If a person
+ * addressed or mentioned this agent directly in the same wake, that person asked it for its own
+ * result, so it is not held back.
+ */
+export function collaborationContributor(trigger: Array<{ type: string; event?: RoomEvent }>, agentPrincipalId: string): boolean {
+  const messages = trigger.filter(marker => marker.type === "room.event" && marker.event?.event_type === "message.sent").map(marker => marker.event!);
+  if (!messages.length || messages.length !== trigger.length) return false;
+  const askedByPerson = messages.some(event => event.actor_kind === "human" && (
+    event.payload?.addressed_principal_id === agentPrincipalId ||
+    (Array.isArray(event.payload?.mentions) && (event.payload!.mentions as Array<{ principal_id?: string }>).some(m => m?.principal_id === agentPrincipalId))));
+  if (askedByPerson) return false;
+  return messages.every(event => {
+    const collaboration = event.payload?.collaboration as { lead_principal_id?: string } | undefined | null;
+    return Boolean(collaboration?.lead_principal_id) && collaboration!.lead_principal_id !== agentPrincipalId;
+  });
+}

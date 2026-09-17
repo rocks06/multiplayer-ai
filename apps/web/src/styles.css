@@ -709,8 +709,10 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 }
 @media(max-width:899px){
   .room-app{grid-template-rows:60px auto minmax(0,1fr) auto}
-  .room-header{height:60px;gap:10px;grid-template-columns:minmax(0,1fr) auto auto auto}
-  .room-header>.brand-mark,.room-header>.objective{display:none}
+  /* The M stays at every width: in a room it is the only way Home. Controls take what they need
+     and the title yields, however many controls this person has. */
+  .room-header{height:60px;gap:10px;grid-template-columns:auto minmax(0,1fr);grid-auto-flow:column;grid-auto-columns:auto}
+  .room-header>.objective{display:none}
   .room-header .connection{font-size:0;padding:9px}
   .room-header .connection i{width:7px;height:7px}
 }
@@ -723,3 +725,11 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
   .composer-meta>span{display:none}
 }
 }
+
+/* A room fills the window: no shell bar above it, and its header's mark is the way Home. */
+.shell.immersive .shell-body{overflow:hidden}
+.room-header .home-button{border:0;cursor:pointer;padding:0;font:inherit}
+.room-header .home-button:hover{filter:brightness(1.15)}
+.room-header .home-button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.unread-divider{display:flex;align-items:center;gap:10px;margin:4px 0 16px;color:var(--moss);font-size:10px;font-weight:650;text-transform:uppercase;letter-spacing:.06em}
+.unread-divider::before,.unread-divider::after{content:"";flex:1;height:1px;background:color-mix(in srgb,var(--live) 40%,transparent)}

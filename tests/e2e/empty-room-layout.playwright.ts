@@ -52,6 +52,19 @@ async function openRoom(page:Page,dense=false,moving=false,withAgent=false,path?
   await expect(page.getByRole('heading',{name:'Layout room'})).toBeVisible();
   await expect(page.getByRole('textbox',{name:'Message',exact:true})).toBeVisible();
 }
+for(const viewport of [{width:1440,height:900},{width:800,height:600}])test(`a room fills the window at ${viewport.width}x${viewport.height} with no bar above it, and its M goes Home`,async({page})=>{
+  await page.setViewportSize(viewport);await openRoom(page);
+  await expect(page.locator('.shell-bar')).toHaveCount(0);
+  const header=(await page.locator('.room-header').boundingBox())!;
+  expect(header.y).toBeLessThanOrEqual(12);
+  const room=(await page.locator('.room-app').boundingBox())!;
+  expect(room.y+room.height).toBeGreaterThanOrEqual(viewport.height-14);
+  for(const name of ['Layout room'])await expect(page.getByRole('heading',{name})).toBeVisible();
+  const home=page.getByRole('button',{name:'Home',exact:true});
+  await expect(home).toHaveText('M');
+  await home.click();
+  await expect(page).toHaveURL(/\/home$/);
+});
 test('Remove from room asks in a dialog over the whole window, then removes only this room membership',async({page})=>{
   await page.setViewportSize({width:1440,height:900});await openRoom(page,false,false,true);
   await page.getByRole('button',{name:'Supervise Fixture Agent'}).click();

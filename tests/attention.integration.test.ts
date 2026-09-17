@@ -373,13 +373,36 @@ describe("bounded agent collaboration", () => {
     expect((await pool.query(`SELECT count(*)::int n FROM room_events WHERE room_id=$1 AND event_type='message.sent'`, [f.room.id])).rows[0].n).toBe(13);
   });
 
-  it("ends when an agent says the joint work is done", async () => {
+  it("converges on one result: a contributor finishing wakes only the lead, and only the lead ends it", async () => {
     const f = await fixture();
-    await turn(f.first, `${token("Fixture Agent Two")} please finish the summary`, { mentions: [{ principal_id: f.second.principal_id }] });
-    const done = await turn(f.second, "Summary is complete", { collaboration_done: true });
-    expect(done.wake_principal_ids).toEqual([]);
-    expect(done.collaboration).toMatchObject({ status: "completed" });
-    expect((await turn(f.first, "Thanks")).wake_principal_ids).toEqual([]);
+    const opened = await turn(f.first, `${token("Fixture Agent Two")} please check my draft`, { mentions: [{ principal_id: f.second.principal_id }] });
+    // The agent that started it leads.
+    expect(opened.collaboration).toMatchObject({ lead_principal_id: f.first.principal_id, finalizing: false });
+    const contributorDone = await turn(f.second, "Checked: two corrections, otherwise ready", { collaboration_done: true });
+    expect(contributorDone.wake_principal_ids).toEqual([f.first.principal_id]);
+    expect(contributorDone.collaboration).toMatchObject({ status: "active", finalizing: true });
+    const final = await turn(f.first, "Final version attached", { collaboration_done: true });
+    expect(final.wake_principal_ids).toEqual([]);
+    expect(final.collaboration).toMatchObject({ status: "completed" });
+    expect((await turn(f.second, "Thanks")).wake_principal_ids).toEqual([]);
+  });
+
+  it("a person bringing several agents together makes the first one named the lead", async () => {
+    const f = await fixture();
+    const body = `${token("Fixture Agent Two")} and ${token("Fixture Agent One")}, agree on one plan`;
+    const sent = (await say(f, f.owner.principal_id, body, { mentions: [mention(body, f.second.principal_id, "Fixture Agent Two"), mention(body, f.first.principal_id, "Fixture Agent One")] })).json();
+    const [event] = await messageEvent(f, sent.id);
+    expect(event.payload.collaboration).toMatchObject({ lead_principal_id: f.second.principal_id, turn: 0 });
+    expect([...event.payload.wake_principal_ids].sort()).toEqual([f.first.principal_id, f.second.principal_id].sort());
+  });
+
+  it("an agent cannot mention itself: the mention is dropped, starts nothing and wakes nobody", async () => {
+    const f = await fixture();
+    const own = await turn(f.first, `${token("Fixture Agent One")} noting this for myself`, { mentions: [{ principal_id: f.first.principal_id }] });
+    expect(own.mentions).toEqual([]);
+    expect(own.wake_principal_ids).toEqual([]);
+    expect(own.collaboration).toBeNull();
+    expect(await collaboration(f)).toBeUndefined();
   });
 
   it("waits while a person is asked to decide, and resumes once they answer", async () => {

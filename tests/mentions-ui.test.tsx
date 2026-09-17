@@ -97,14 +97,17 @@ describe('unread state on Home',()=>{
     }));
     render(<Home workspace={own} memberships={[own,shared]} onNavigate={()=>{}}/>);
     const busy=await screen.findByRole('button',{name:'Busy Room, 3 unread, 1 mention, needs you'});
-    expect(within(busy).getByText('Fixture Agent One: Draft is ready')).toBeInTheDocument();
+    // Name, count and time only: no message preview repeated on the card.
+    expect(within(busy).queryByText(/Draft is ready/)).not.toBeInTheDocument();
+    expect(within(busy).getByText('3')).toHaveClass('unread-badge');
     expect(within(busy).getByText('Needs you')).toBeInTheDocument();
     expect(busy).toHaveClass('has-unread');
     const quiet=screen.getByRole('button',{name:'Quiet Room'});
     expect(quiet).not.toHaveClass('has-unread');
     expect(within(quiet).queryByText('Needs you')).not.toBeInTheDocument();
     const sharedRoom=screen.getByRole('button',{name:'Shared Room, 2 unread'});
-    expect(within(sharedRoom).getByText('Fixture Agent One: finished Summary')).toBeInTheDocument();
+    expect(within(sharedRoom).getByText('2')).toHaveClass('unread-badge');
+    expect(within(sharedRoom).queryByText(/Summary/)).not.toBeInTheDocument();
   });
 });
 

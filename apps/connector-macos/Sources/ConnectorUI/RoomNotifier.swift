@@ -65,13 +65,15 @@ public final class AttentionDiagnostics {
     public var lastSuppressed = "—"
     public var serverBuild = "—"
     public var roomReadState = "—"
+    public var visiblePage = "—"
+    public var session = "—"
     public init() {}
 
     public var rows: [(String, String)] {
         [("Notifications", permission), ("Notification polling", polling), ("Last notification check", lastPoll),
          ("Notification feed", feed), ("Notification cursor", cursor), ("Last received", lastReceived),
          ("Last shown", lastShown), ("Last suppressed", lastSuppressed), ("Server build", serverBuild),
-         ("Room read state", roomReadState)]
+         ("App session", session), ("Visible page", visiblePage), ("Room read state", roomReadState)]
     }
 
     nonisolated static func stamp(_ date: Date = Date()) -> String {
