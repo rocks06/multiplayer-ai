@@ -13,7 +13,11 @@ public enum Keychain {
     /// stored moves. What it buys is that a build with a different identity — a verification
     /// build alongside the real one — cannot reach into, overwrite, or invalidate the
     /// credential belonging to the app a person actually uses.
-    private static var service: String { Bundle.main.bundleIdentifier ?? "com.multiplayerai.connector" }
+    private static var service: String { Bundle.main.bundleIdentifier ?? unbundledService }
+    /* What a process with no bundle identity writes under — a test, or a command-line tool. It was
+       the shipping app's own service, so anything run outside an app bundle wrote into the real
+       app’s credentials. Tests set their own, and nothing they do can reach a person’s agent. */
+    nonisolated(unsafe) public static var unbundledService = "com.multiplayerai.connector"
     private static let account = "workspace-credential"
 
     /// Everything needed to reconnect after a restart, except the credential itself.

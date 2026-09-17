@@ -460,6 +460,60 @@ function resolutionProblem(problem:unknown):string{
   return message?`Not resolved — ${message}`:'Not resolved. Nothing was sent.';
 }
 
+/**
+ * What a person is being asked to authorise, in their own language.
+ *
+ * The action is a structured thing an agent proposed, and it used to be shown as the JSON it is:
+ * braces, keys and a hash, in front of somebody deciding whether to allow it. The same content
+ * reads as a name and a short list of plain fields, which is what the decision actually is. No
+ * schema, no payload, no digest — and nothing here interprets or judges, it only reads out what
+ * was proposed.
+ */
+export function actionSummary(proposed:Record<string,unknown>|null|undefined,limit=10){
+  const naming=['action','type','name','operation','kind'];
+  const entries=Object.entries(proposed??{});
+  const named=entries.find(([key,value])=>naming.includes(key.toLowerCase())&&typeof value==='string');
+  const fields:Array<[string,string]>=[];
+  const walk=(value:unknown,path:string[])=>{
+    if(fields.length>=limit)return;
+    if(value===null||value===undefined){fields.push([label(path),'None']);return}
+    if(Array.isArray(value)){
+      const flat=value.filter(item=>item===null||typeof item!=='object');
+      if(flat.length===value.length){fields.push([label(path),value.map(text).join(', ')||'None']);return}
+      value.forEach((item,index)=>walk(item,[...path,String(index+1)]));
+      return;
+    }
+    if(typeof value==='object'){
+      for(const [key,inner] of Object.entries(value as Record<string,unknown>))walk(inner,[...path,key]);
+      return;
+    }
+    fields.push([label(path),text(value)]);
+  };
+  for(const [key,value] of entries){
+    if(named&&key===named[0])continue;
+    walk(value,[key]);
+  }
+  const counted=countLeaves(proposed??{})-(named?1:0);
+  return {headline:named?sentence(String(named[1])):null,fields,more:Math.max(0,counted-fields.length)};
+}
+
+const label=(path:string[])=>path.map(part=>sentence(part)).join(' · ');
+/** A key or an action name as a sentence: one capital at the front, acronyms left alone. */
+const sentence=(raw:string)=>{
+  const words=raw.replace(/[_-]+/g,' ').replace(/([a-z\d])([A-Z])/g,'$1 $2').trim().split(/\s+/);
+  if(!words.length||!words[0])return raw;
+  return words.map((word,index)=>{
+    if(word.length>1&&word===word.toUpperCase())return word;      // URL, ID, API
+    return index===0?word.charAt(0).toUpperCase()+word.slice(1).toLowerCase():word.toLowerCase();
+  }).join(' ');
+};
+const text=(value:unknown)=>typeof value==='boolean'?(value?'Yes':'No'):value===null||value===undefined?'None':String(value);
+const countLeaves=(value:unknown):number=>{
+  if(value===null||value===undefined||typeof value!=='object')return 1;
+  if(Array.isArray(value))return value.some(item=>item&&typeof item==='object')?value.reduce<number>((total,item)=>total+countLeaves(item),0):1;
+  return Object.values(value as Record<string,unknown>).reduce<number>((total,inner)=>total+countLeaves(inner),0);
+};
+
 export function DecisionCard({decision,requester,onResolve,focused=false}:{decision:Decision;requester?:Member;onResolve:(r:'approve'|'reject',note:string)=>Promise<void>;focused?:boolean}){
   const [note,setNote]=useState('');
   const [pending,setPending]=useState<'approve'|'reject'|null>(null);
@@ -477,6 +531,7 @@ export function DecisionCard({decision,requester,onResolve,focused=false}:{decis
     catch(problem){setError(resolutionProblem(problem));setPending(null)}
   };
 
+  const action=actionSummary(decision.proposed_action);
   const card=useRef<HTMLElement>(null);
   // Opened from a notification: bring the decision into view once, where it can be answered.
   useEffect(()=>{if(focused)card.current?.scrollIntoView({block:'center'})},[focused]);
@@ -496,9 +551,15 @@ export function DecisionCard({decision,requester,onResolve,focused=false}:{decis
         {decision.rationale&&<><dt>Why this needs you</dt><dd>{decision.rationale}</dd></>}
         <dt>Exactly what you are authorising</dt>
         <dd>
-          <pre>{JSON.stringify(decision.proposed_action,null,2)}</pre>
-          <span className="digest" title={decision.proposed_action_digest}>Locked to this exact action · {decision.proposed_action_digest.slice(0,12)}</span>
+          {action.headline&&<p className="decision-action">{action.headline}</p>}
+          {action.fields.length>0&&<ul className="decision-fields">
+            {action.fields.map(([label,value])=><li key={label}><span>{label}</span><b>{value}</b></li>)}
+          </ul>}
+          {action.more>0&&<p className="decision-more">and {action.more} further {action.more===1?'detail':'details'}</p>}
+          {!action.headline&&!action.fields.length&&<p className="decision-action">No further details were given.</p>}
+          <span className="decision-locked">Approving authorises exactly this, and nothing else.</span>
         </dd>
+        <dt>Requested by</dt><dd>{who}{requester?.kind==='agent'?' (agent)':''}</dd>
       </dl>
       <label className="instruction">
         <span>Note to {who}</span>

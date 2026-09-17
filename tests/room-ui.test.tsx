@@ -200,7 +200,12 @@ describe('Slice 6 room interface',()=>{
   // The note must never read as though it changes the action being authorised.
   expect(screen.getByText(/does not change the action above/)).toBeVisible();
   expect(screen.getByText(/resumes on its own once you decide/)).toBeVisible();
-  expect(screen.getByText(/Locked to this exact action/)).toBeVisible();
+  // The action, read out rather than dumped: no payload, no schema, no digest.
+  expect(screen.getByText(/authorises exactly this, and nothing else/)).toBeVisible();
+  expect(screen.getByText('Publish')).toBeVisible();
+  expect(screen.getByText('Target')).toBeVisible();
+  expect(screen.getByText('launch-note')).toBeVisible();
+  expect(document.querySelector('.decision-detail pre')).toBeNull();
   expect(screen.getByRole('button',{name:/Approve/})).toBeEnabled();
   expect(screen.getByRole('button',{name:/Reject/})).toBeEnabled();
  });

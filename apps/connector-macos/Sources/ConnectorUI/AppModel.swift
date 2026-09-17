@@ -160,7 +160,13 @@ public final class AppModel {
         return fresh
     }
 
-    public init(store: ProgressStore = DefaultsProgressStore(), connector: ConnectorModel? = nil) {
+    /// The transport every workspace client here is built with. The app uses its own; a test
+    /// gives one that answers without a server, so the whole connect path can be driven end to end.
+    private let transport: URLSession?
+
+    public init(store: ProgressStore = DefaultsProgressStore(), connector: ConnectorModel? = nil,
+                transport: URLSession? = nil) {
+        self.transport = transport
         var loaded = store.load()
         let launched = AppModel.launching(loaded)
         if launched != loaded { store.save(launched); loaded = launched }
@@ -174,7 +180,7 @@ public final class AppModel {
         self.connector = connector ?? ConnectorModel(autostart: false)
         self.connector.primaryPrincipalId = loaded.agentPrincipalId
         self.client = WorkspaceClient(base: URL(string: loaded.workspaceAddress ?? AppModel.defaultAddress)
-                                      ?? URL(string: AppModel.defaultAddress)!)
+                                      ?? URL(string: AppModel.defaultAddress)!, session: transport)
         // A Mac that has been set up wants its background half running before anything is drawn;
         // one that has not is started by the setup screen, where a failure can be reported.
         if loaded.setupComplete, !(connector ?? self.connector).sidecar.isPreview { self.connector.begin() }
@@ -203,7 +209,7 @@ public final class AppModel {
             $0.companyId = nil; $0.agentPrincipalId = nil; $0.agentDisplayName = nil
             $0.roomId = nil; $0.lastRoomPath = nil
         }
-        client = WorkspaceClient(base: url)
+        client = WorkspaceClient(base: url, session: transport)
         identity = nil; company = nil; rooms = []
         await refresh()
     }
@@ -636,7 +642,9 @@ public final class AppModel {
     public var selectedDiscoveredAgentId: String?
     public var discoveryDisplayName = ""
     public var discoveryRoomId = ""
-    public private(set) var discoveryCompanyId: String?
+    /// Which workspace the sheet is connecting into. Set by detection; visible to tests, which
+    /// drive the same connect path without a Mac's real Keychain behind them.
+    public internal(set) var discoveryCompanyId: String?
     private var discoveryAgents: [[String: Any]] = []
     private var knownDiscoveredIdentities: [String: KnownRuntimeIdentity] = [:]
     private var discoveryGeneration = UUID()
@@ -748,13 +756,17 @@ public final class AppModel {
      * and as unavailable when the runtime has not re-reported itself yet, so a connection that had
      * plainly succeeded left the sheet open.
      */
-    func closeDiscoveryWhenConnected(principalId: String? = nil) async {
+    func closeDiscoveryWhenConnected(principalId: String? = nil, confirmed: Bool = false) async {
         let principal = principalId ?? connector.enrolment?.agentPrincipalId
-        guard discoveryPhase == .connected, sessionIsReady(principal) else { return }
+        /* `confirmed` is the session.ready the connect path already waited for. Asking the live
+           state again a moment later was wrong twice over: a session that is ready immediately
+           begins catching up on the room, and an agent that is resyncing is not live — so the
+           sheet stayed open on exactly the connections that had gone best. Ready happened; it
+           does not stop having happened while the agent reads its room. */
+        guard discoveryPhase == .connected, confirmed || sessionIsReady(principal) else { return }
         try? await Task.sleep(for: discoveryCloseDelay)
         // Only if nothing has happened since: a person who pressed Retry is not interrupted.
-        guard discoveryPhase == .connected, showingAgentDiscovery, pendingAgentMove == nil,
-              sessionIsReady(principal) else { return }
+        guard discoveryPhase == .connected, showingAgentDiscovery, pendingAgentMove == nil else { return }
         dismissAgentDiscovery()
     }
 
@@ -941,7 +953,8 @@ public final class AppModel {
             await readWorkspace(companyId)
             /* Connected is an answer, not a screen to stay on: the sheet says so, then gets out of
                the way. A failure keeps it open, because that is where the failure is explained. */
-            await closeDiscoveryWhenConnected(principalId: connected.principalId)
+            // The wait above is the workspace's session.ready for this agent, and nothing else.
+            await closeDiscoveryWhenConnected(principalId: connected.principalId, confirmed: true)
         } catch let error as WorkspaceError {
             problem = error; discoveryPhase = .failed(error.message + " " + error.recovery)
         } catch {
