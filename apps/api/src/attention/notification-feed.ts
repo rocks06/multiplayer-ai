@@ -1,9 +1,10 @@
 import type { DbPool } from "../db.js";
+import { DEFAULT_NOTIFICATION_LEVEL } from "../room-service.js";
 import { DomainError } from "../../../../packages/domain/src/index.js";
 
 /** Why a person is being told: something visible, something said to them, or something only they can do. */
 export type NotificationCategory = "informational" | "mention" | "action_required";
-export type NotificationKind = "direct_message" | "mention" | "decision_requested" | "agent_blocked" | "agent_finished";
+export type NotificationKind = "direct_message" | "mention" | "room_message" | "decision_requested" | "agent_blocked" | "agent_finished";
 
 export interface RoomNotification {
   id: string;
@@ -52,21 +53,33 @@ export class NotificationFeed {
           WHERE p.user_id=$1 AND p.kind='human' AND p.status='active')
        SELECT e.id event_id, e.company_id, e.room_id, r.name room_name, e.room_seq::int room_seq, e.event_type, e.entity_id,
               e.actor_display_name, e.actor_kind, e.payload, e.created_at, to_char(e.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') created_at_text,
-              me.principal_id, rm.role, t.title task_title, t.created_by_principal_id task_creator
+              me.principal_id, rm.role, t.title task_title, t.created_by_principal_id task_creator,
+              COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') level
          FROM me
          JOIN room_members rm ON rm.company_id=me.company_id AND rm.principal_id=me.principal_id AND rm.status='active'
          JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id AND r.status='active'
          JOIN room_events e ON e.company_id=rm.company_id AND e.room_id=rm.room_id
          LEFT JOIN tasks t ON t.company_id=e.company_id AND t.id=e.entity_id AND e.entity_type='task'
          LEFT JOIN room_read_cursors rc ON rc.company_id=rm.company_id AND rc.room_id=rm.room_id AND rc.principal_id=rm.principal_id
+         LEFT JOIN room_notification_preferences np ON np.company_id=rm.company_id AND np.room_id=rm.room_id AND np.user_id=$1
         WHERE (e.created_at, e.id) > ($2::timestamptz, $3::uuid) AND e.created_at <= $4::timestamptz
           AND e.created_at > rm.joined_at AND e.actor_principal_id <> me.principal_id
           AND e.room_seq > COALESCE(rc.last_read_seq, 0)
-          AND ((e.event_type='message.sent' AND (e.payload->>'addressed_principal_id'=me.principal_id::text
-                                                 OR e.payload->'mentioned_principal_ids' @> to_jsonb(me.principal_id::text)))
-            OR (e.event_type='decision.requested' AND rm.role='manager')
-            OR (e.event_type IN ('task.blocked','task.completed') AND e.actor_kind='agent'
-                AND (rm.role='manager' OR t.created_by_principal_id=me.principal_id)))
+          /* What this person asked to be told about this room. Being sent to, named, or needed
+             are what "direct and mentions" means; "all" is the room's activity as well, minus the
+             turns agents take among themselves in a collaboration, which are progress rather than
+             anything asked of a person. Unread state ignores all of this and counts everything. */
+          AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}')<>'off'
+          AND ((e.event_type='message.sent' AND (
+                  (e.payload->>'addressed_principal_id'=me.principal_id::text AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions'))
+               OR (e.payload->'mentioned_principal_ids' @> to_jsonb(me.principal_id::text) AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','mentions'))
+               OR (COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}')='all'
+                   AND NOT (e.actor_kind='agent' AND COALESCE(e.payload->'collaboration','null'::jsonb)<>'null'::jsonb))))
+            OR (e.event_type='decision.requested' AND rm.role='manager' AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','important'))
+            OR (e.event_type='task.blocked' AND e.actor_kind='agent' AND (rm.role='manager' OR t.created_by_principal_id=me.principal_id)
+                AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','important'))
+            OR (e.event_type='task.completed' AND e.actor_kind='agent' AND (rm.role='manager' OR t.created_by_principal_id=me.principal_id)
+                AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}')='all'))
         ORDER BY e.created_at, e.id
         LIMIT ${PAGE}`,
       [userId, from.at, from.id, horizon]);
@@ -89,7 +102,13 @@ function describe(row: any): RoomNotification {
     `multiplayerai://room?company=${row.company_id}&room=${row.room_id}&focus=${encodeURIComponent(focus)}`;
   if (row.event_type === "message.sent") {
     const direct = row.payload?.addressed_principal_id === row.principal_id;
+    const named = Array.isArray(row.payload?.mentioned_principal_ids) && row.payload.mentioned_principal_ids.includes(row.principal_id);
     const text = excerpt(row.payload?.body_text) || "Shared a file";
+    // Everything in a room this person asked to hear all of: theirs to read, not asked of them.
+    if (!direct && !named) {
+      return { id: row.event_id, ...room, created_at, link: link(`message:${row.entity_id}`), body: text,
+        kind: "room_message", category: "informational", title: `${actor} posted in ${row.room_name}` };
+    }
     return { id: row.event_id, ...room, created_at, link: link(`message:${row.entity_id}`), body: text,
       kind: direct ? "direct_message" : "mention", category: "mention",
       title: direct ? `${actor} sent you a message` : `${actor} mentioned you` };

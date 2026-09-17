@@ -22,6 +22,12 @@ interface ResolvedMention {principal_id:string;kind:PrincipalKind;display_name:s
 
 /** Room activity worth a person's attention: what somebody said or asked, and work an agent finished
  *  or is stuck on. Presence, sessions and bookkeeping are deliberately absent. */
+/** How much a person wants to be told about a room, most to least. */
+export const NOTIFICATION_LEVELS=['all','direct_mentions','mentions','important','off'] as const;
+export type NotificationLevel=typeof NOTIFICATION_LEVELS[number];
+/* Sent to you, naming you, or needing you — the three things nobody wants to miss, and nothing
+   else. A room says a great deal that is worth reading later and worth nobody's banner now. */
+export const DEFAULT_NOTIFICATION_LEVEL:NotificationLevel='direct_mentions';
 export const NOTABLE_EVENT=`(e.event_type IN ('message.sent','decision.requested') OR (e.event_type IN ('task.completed','task.blocked') AND e.actor_kind='agent'))`;
 
 /** How many agent turns a collaboration may take before it stops and waits for a person. */
@@ -167,7 +173,8 @@ export class RoomService {
         EXISTS(SELECT 1 FROM external_agent_credentials ec WHERE ec.company_id=a.company_id AND ec.agent_principal_id=p.id AND ec.status='active') connector_enrolled,
         CASE WHEN s.status IS NULL THEN 'never' WHEN s.status<>'connected' THEN s.status WHEN s.last_seen_at < now()-interval '90 seconds' THEN 'stale' ELSE 'connected' END presence,
         s.runtime_status,s.last_seen_at,s.room_id session_room_id,sr.name session_room_name,
-        ri.runtime_type,ri.runtime_version,ri.endpoint runtime_endpoint,ri.probe_status,
+        s.status session_status,s.connected_at session_connected_at,s.disconnected_at session_disconnected_at,
+        ri.runtime_type,ri.runtime_version,ri.endpoint runtime_endpoint,ri.probe_status,ri.runtime_profile,ri.device_label,
         COALESCE(m.rooms,'[]'::jsonb) rooms,
         COALESCE((SELECT jsonb_agg(jsonb_build_object('principal_id',h.id,'display_name',h.display_name) ORDER BY h.display_name)
                     FROM agent_human_relationships rel JOIN principals h ON h.company_id=rel.company_id AND h.id=rel.human_principal_id
@@ -175,7 +182,7 @@ export class RoomService {
         FROM agents a
         JOIN principals p ON p.company_id=a.company_id AND p.agent_id=a.id AND p.kind='agent'
         LEFT JOIN users u ON u.id=a.owner_user_id
-        LEFT JOIN LATERAL (SELECT es.status,es.runtime_status,es.last_seen_at,es.room_id FROM external_agent_sessions es WHERE es.company_id=a.company_id AND es.agent_principal_id=p.id ORDER BY es.last_seen_at DESC LIMIT 1) s ON true
+        LEFT JOIN LATERAL (SELECT es.status,es.runtime_status,es.last_seen_at,es.room_id,es.connected_at,es.disconnected_at FROM external_agent_sessions es WHERE es.company_id=a.company_id AND es.agent_principal_id=p.id ORDER BY es.last_seen_at DESC LIMIT 1) s ON true
         LEFT JOIN rooms sr ON sr.company_id=a.company_id AND sr.id=s.room_id
         LEFT JOIN agent_runtime_bindings arb ON arb.company_id=a.company_id AND arb.agent_principal_id=p.id AND arb.status='active'
         LEFT JOIN runtime_installations ri ON ri.company_id=arb.company_id AND ri.id=arb.runtime_installation_id
@@ -187,7 +194,11 @@ export class RoomService {
         /* Which room the session is in, because this list is workspace-wide and the room view is
            not. "Connected" here with "never appeared" inside a room is the app disagreeing with
            itself; naming the room makes both answers true and the difference legible. */
-        connector:{enrolled:row.connector_enrolled,presence:row.presence,runtime_status:row.runtime_status??null,last_seen_at:row.last_seen_at??null,room_id:row.session_room_id??null,room_name:row.session_room_name??null},
+        connector:{enrolled:row.connector_enrolled,presence:row.presence,runtime_status:row.runtime_status??null,last_seen_at:row.last_seen_at??null,room_id:row.session_room_id??null,room_name:row.session_room_name??null,
+          /* What the agent's own card answers: which session it has, since when, and where it runs.
+             All of it is what the connector reported about itself — shown, never trusted. */
+          session_status:row.session_status??null,connected_at:row.session_connected_at??null,disconnected_at:row.session_disconnected_at??null,
+          profile:row.runtime_profile??null,device:row.device_label??null},
         runtime:row.runtime_type?{type:row.runtime_type,version:row.runtime_version??null,endpoint:row.runtime_endpoint,probe_status:row.probe_status}:null,
         rooms:row.rooms,
         owners:row.owners,
@@ -217,10 +228,13 @@ export class RoomService {
                 r.last_event_seq::int last_event_seq,COALESCE(rc.last_read_seq,0)::int last_read_seq,
                 COALESCE(att.unread_count,0) unread_count,COALESCE(att.mention_count,0) mention_count,COALESCE(att.action_count,0) action_count,
                 CASE WHEN latest.room_seq IS NULL THEN NULL ELSE jsonb_build_object('event_type',latest.event_type,'actor_display_name',latest.actor_display_name,
-                  'actor_kind',latest.actor_kind,'text',latest.text,'created_at',latest.created_at,'room_seq',latest.room_seq) END latest
+                  'actor_kind',latest.actor_kind,'text',latest.text,'created_at',latest.created_at,'room_seq',latest.room_seq) END latest,
+                COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') notification_level
          FROM room_members rm
          JOIN rooms r ON r.company_id=rm.company_id AND r.id=rm.room_id
          JOIN projects p ON p.company_id=r.company_id AND p.id=r.project_id
+         JOIN principals me ON me.company_id=rm.company_id AND me.id=rm.principal_id
+         LEFT JOIN room_notification_preferences np ON np.company_id=rm.company_id AND np.room_id=rm.room_id AND np.user_id=me.user_id
          LEFT JOIN room_read_cursors rc ON rc.company_id=rm.company_id AND rc.room_id=rm.room_id AND rc.principal_id=rm.principal_id
          LEFT JOIN LATERAL (
            SELECT count(*)::int unread_count,
@@ -242,6 +256,62 @@ export class RoomService {
          ORDER BY r.created_at`,[companyId,actorId]);
       return {rooms:result.rows};
     } finally { c.release(); }
+  }
+
+  /**
+   * How much this person wants to be told about one room, and changing it.
+   *
+   * It is theirs and this room's together, and it governs native notifications only: what is
+   * unread is what the room contains, which is not a matter of preference. A room nobody has
+   * chosen for uses the default, so a new room behaves like every other one without a row.
+   */
+  async notificationPreference(companyId:string,roomId:string,actorId:string) {
+    const c=await this.pool.connect();
+    try {
+      const me=await this.membership(c,companyId,roomId,actorId);
+      const found=await c.query<{level:string}>(`SELECT np.level FROM principals p
+        JOIN room_notification_preferences np ON np.company_id=p.company_id AND np.user_id=p.user_id AND np.room_id=$2
+       WHERE p.company_id=$1 AND p.id=$3`,[companyId,roomId,actorId]);
+      return {room_id:roomId,level:found.rows[0]?.level??DEFAULT_NOTIFICATION_LEVEL,role:me.role,levels:NOTIFICATION_LEVELS};
+    } finally { c.release(); }
+  }
+
+  async setNotificationPreference(companyId:string,roomId:string,actorId:string,level:string) {
+    if(!NOTIFICATION_LEVELS.includes(level as NotificationLevel))
+      throw new DomainError('invalid_notification_level',`Choose one of: ${NOTIFICATION_LEVELS.join(', ')}`,400);
+    const c=await this.pool.connect();
+    try {
+      await this.membership(c,companyId,roomId,actorId);
+      const person=await c.query<{user_id:string}>(`SELECT user_id FROM principals WHERE company_id=$1 AND id=$2 AND kind='human'`,[companyId,actorId]);
+      const userId=person.rows[0]?.user_id;
+      if(!userId)throw new DomainError('forbidden','Only a person has notification preferences',403);
+      await c.query(`INSERT INTO room_notification_preferences(company_id,room_id,user_id,level) VALUES($1,$2,$3,$4)
+        ON CONFLICT (company_id,room_id,user_id) DO UPDATE SET level=EXCLUDED.level,updated_at=now()`,[companyId,roomId,userId,level]);
+      return {room_id:roomId,level};
+    } finally { c.release(); }
+  }
+
+  /**
+   * End this agent's live sessions without touching what it is.
+   *
+   * Its credential, its identity and its rooms are all kept, so the Mac it runs on reconnects it
+   * with what it already holds. This is how a person stops an agent from somewhere other than the
+   * Mac it runs on; it is not removal, and it is not a pause of its work in a room.
+   */
+  async disconnectAgentSessions(companyId:string,actorId:string,agentPrincipalId:string) {
+    const c=await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      const actor=await this.workspaceActor(c,companyId,actorId);
+      if(actor.kind!=='human')throw new DomainError('forbidden','Only a person can disconnect an agent',403);
+      const agent=await c.query<{id:string}>(`SELECT id FROM principals WHERE company_id=$1 AND id=$2 AND kind='agent' AND status='active'`,[companyId,agentPrincipalId]);
+      if(!agent.rowCount)throw new DomainError('agent_not_found','That agent is not in this workspace',404);
+      const ended=await c.query<{id:string}>(`UPDATE external_agent_sessions SET status='offline',disconnected_at=now()
+        WHERE company_id=$1 AND agent_principal_id=$2 AND status='connected' RETURNING id`,[companyId,agentPrincipalId]);
+      for(const row of ended.rows)await c.query(`SELECT pg_notify('agent_sessions',$1)`,[JSON.stringify({session_id:row.id,reason:'disconnected_by_person'})]);
+      await c.query('COMMIT');
+      return {agent_principal_id:agentPrincipalId,sessions_ended:ended.rowCount??0};
+    } catch(e){ await c.query('ROLLBACK'); throw e; } finally { c.release(); }
   }
 
   /**
@@ -369,7 +439,7 @@ export class RoomService {
    * never evidence that a second runtime exists. A reconnect therefore returns the principal that
    * is already bound. `createAsNew` is the sole explicit escape hatch and retires the old binding.
    */
-  async connectRuntimeForPrincipal(input:{companyId:string;actorId:string;name:string;runtimeType:string;externalRuntimeId:string;connectorInstallationId:string;endpoint:string;runtimeVersion?:string;createAsNew:boolean}) {
+  async connectRuntimeForPrincipal(input:{companyId:string;actorId:string;name:string;runtimeType:string;externalRuntimeId:string;connectorInstallationId:string;endpoint:string;runtimeVersion?:string;runtimeProfile?:string;deviceLabel?:string;createAsNew:boolean}) {
     const c=await this.pool.connect();
     try {
       await c.query('BEGIN');
@@ -381,13 +451,15 @@ export class RoomService {
 
       const installationId=uuidv7();
       const installation=await c.query<{id:string}>(
-        `INSERT INTO runtime_installations(id,company_id,runtime_type,external_runtime_id,connector_installation_id,endpoint,runtime_version,probe_status)
-         VALUES($1,$2,$3,$4,$5,$6,$7,'healthy')
+        `INSERT INTO runtime_installations(id,company_id,runtime_type,external_runtime_id,connector_installation_id,endpoint,runtime_version,probe_status,runtime_profile,device_label)
+         VALUES($1,$2,$3,$4,$5,$6,$7,'healthy',$8,$9)
          ON CONFLICT(company_id,runtime_type,external_runtime_id) DO UPDATE SET
            connector_installation_id=EXCLUDED.connector_installation_id,endpoint=EXCLUDED.endpoint,
-           runtime_version=EXCLUDED.runtime_version,probe_status='healthy',last_seen_at=now()
+           runtime_version=EXCLUDED.runtime_version,probe_status='healthy',last_seen_at=now(),
+           runtime_profile=COALESCE(EXCLUDED.runtime_profile,runtime_installations.runtime_profile),
+           device_label=COALESCE(EXCLUDED.device_label,runtime_installations.device_label)
          RETURNING id`,
-        [installationId,input.companyId,input.runtimeType,input.externalRuntimeId,input.connectorInstallationId,input.endpoint,input.runtimeVersion??null]);
+        [installationId,input.companyId,input.runtimeType,input.externalRuntimeId,input.connectorInstallationId,input.endpoint,input.runtimeVersion??null,input.runtimeProfile??null,input.deviceLabel??null]);
       const runtimeInstallationId=installation.rows[0]!.id;
       const current=await c.query<{agent_principal_id:string;agent_id:string;display_name:string}>(
         `SELECT b.agent_principal_id,p.agent_id,p.display_name FROM agent_runtime_bindings b

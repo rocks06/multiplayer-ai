@@ -351,6 +351,9 @@ public final class WorkspaceClient: @unchecked Sendable {
             "connector_installation_id": installationId, "endpoint": endpoint,
             "probe_status": "healthy", "create_as_new": createAsNew,
         ]
+        // What this agent's card says about where it runs: its local profile, and this Mac's name.
+        if let profile = runtime.profile, !profile.isEmpty { body["runtime_profile"] = profile }
+        if let device = Host.current().localizedName, !device.isEmpty { body["device_label"] = device }
         if let version = runtime.version { body["runtime_version"] = version }
         let payload = try await send("POST", "/v1/companies/\(companyId)/runtime-connections", body: body)
         guard let principalId = payload["principal_id"] as? String else { throw WorkspaceError.malformed() }

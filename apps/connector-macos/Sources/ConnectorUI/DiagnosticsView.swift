@@ -101,8 +101,12 @@ public struct DiagnosticsView: View {
             ("Log file", text("logFile")),
             ("Last error", state.lastError ?? "—"),
         ]
+        // Every step of the last reconnect, in order: which one failed is the whole question.
+        let reconnect: [(String, String)] = model.reconnectSteps.isEmpty
+            ? [("Last reconnect", "Not attempted in this session")]
+            : model.reconnectSteps.enumerated().map { (index, step) in (index == 0 ? "Last reconnect" : "Reconnect step \(index + 1)", step) }
         let attention: [(String, String)] = model.attention?.rows ?? [("Notifications", "Not started — sign in to the workspace")]
-        return connector + attention + (model.notificationTrace?.rows ?? [])
+        return connector + reconnect + attention + (model.notificationTrace?.rows ?? [])
     }
 
     private func load() async {

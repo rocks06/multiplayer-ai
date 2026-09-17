@@ -29,7 +29,8 @@ async function openRoom(page:Page,dense=false,moving=false,withAgent=false,path?
       if(init?.method && init.method!=='GET'){(window as any).fixtureMutations=((window as any).fixtureMutations??0)+1;((window as any).fixtureRequests??=[]).push(`${init.method} ${new URL(String(input),location.origin).pathname}`)}
       const url=String(input),path=new URL(url,location.origin).pathname;
       let data:unknown;
-      if(path==='/v1/auth/me')data={user:{id:'layout-user',email:'layout@example.test',display_name:'Alex'},companies:[{company_id:company,company_name:'Layout studio',principal_id:person,display_name:'Alex'}]};
+      if(path.endsWith('/notification-preference'))data={room_id:room,level:'direct_mentions'};
+      else if(path==='/v1/auth/me')data={user:{id:'layout-user',email:'layout@example.test',display_name:'Alex'},companies:[{company_id:company,company_name:'Layout studio',principal_id:person,display_name:'Alex'}]};
       else if(path.endsWith('/snapshot'))data=snapshot;
       else if(path.endsWith('/rooms'))data={rooms:[{room_id:room,name:'Layout room',project_name:'Layout project'}]};
       else if(path.endsWith('/members/fixture-agent')&&init?.method==='DELETE')data={status:'removed'};

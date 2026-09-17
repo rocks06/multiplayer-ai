@@ -177,24 +177,74 @@ public final class ConnectorModel {
         await reconnect(principalId: principal)
     }
 
-    /// Start one agent again with the credential it already holds. No code, no new identity.
+    /// How a reconnect is going, for the person who pressed it. Silence was the old answer.
+    public enum Reconnection: Equatable, Sendable {
+        case working(String)
+        case succeeded(String)
+        case failed(String)
+
+        public var text: String {
+            switch self {
+            case .working(let step), .succeeded(let step), .failed(let step): return step
+            }
+        }
+        public var done: Bool { if case .working = self { return false } else { return true } }
+    }
+
+    /// The last reconnect for each agent, by principal id.
+    public var reconnection: [String: Reconnection] = [:]
+    /// Every step of the last reconnect, in order, for Diagnostics. No credential, no token.
+    public var reconnectSteps: [String] = []
+    public func reconnection(of principalId: String?) -> Reconnection? {
+        guard let principalId else { return nil }
+        return reconnection[principalId]
+    }
+
+    private func record(_ principalId: String, _ state: Reconnection) {
+        reconnection[principalId] = state
+        let mark: String
+        switch state {
+        case .working: mark = "…"
+        case .succeeded: mark = "✓"
+        case .failed: mark = "failed"
+        }
+        reconnectSteps.append("\(AttentionDiagnostics.stamp()) \(state.text) \(mark)")
+        reconnectSteps = Array(reconnectSteps.suffix(12))
+    }
+
+    /**
+     * Start one agent again with the credential it already holds. No code, no new identity.
+     *
+     * Every step says so while it happens, and the end says which end it was. A reconnect is three
+     * separate things that can each fail — a helper that answers, an agent the helper holds, and a
+     * session the workspace confirms — and reporting only the last of them as a line of red text
+     * somewhere else is why a failed first attempt read as nothing happening at all.
+     */
     public func reconnect(principalId: String) async {
         guard !busy else { return }
         busy = true
         notice = nil
+        reconnectSteps = []
         defer { busy = false }
-        if sidecar.state.running == false, sidecar.processIdentifier == nil { sidecar.start() }
         do {
             guard enrolment(for: principalId) != nil else {
                 throw SidecarError.refused("This agent is not saved on this Mac. Choose Detect Agent to connect it.")
             }
+            record(principalId, .working("Starting the background helper"))
+            if let failure = await sidecar.ensureResponsive() { throw SidecarError.refused(failure) }
+            record(principalId, .working("Giving the helper this agent's saved credential"))
             // Configure as well as restart: after a crash, a relaunch or a Disconnect the helper may
             // not hold this agent at all, and "reconnect" of nothing was a button that did nothing.
             if let failure = await sidecar.resumeSession(principalId: principalId, restart: true) {
                 throw SidecarError.refused(failure)
             }
+            record(principalId, .working("Waiting for the workspace to confirm the session"))
             try await waitForAuthenticatedSession(principalId: principalId)
-        } catch { notice = error.localizedDescription }
+            record(principalId, .succeeded("Connected at \(AttentionDiagnostics.stamp())"))
+        } catch {
+            notice = error.localizedDescription
+            record(principalId, .failed(error.localizedDescription))
+        }
     }
 
     /// Stop one agent and end its room session now. Its identity, credential and room stay saved,

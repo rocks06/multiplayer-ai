@@ -241,7 +241,44 @@ public final class SidecarClient {
     }
 
     @discardableResult
-    public func send(_ command: String, _ arguments: [String: Any] = [:]) async throws -> [String: Any] {
+    /**
+     * The helper is running and answering, or it is made to.
+     *
+     * A reconnect used to be sent into whatever was there: a helper that had died, or whose pipe
+     * had closed, took the command, answered nothing, and the attempt failed for reasons a person
+     * could not see — while pressing Reconnect a second time, by then against a restarted helper,
+     * worked. This settles that before anything is asked of it. A helper that is merely busy is
+     * given a second chance before it is restarted, because restarting it stops every agent on
+     * this Mac; one that is gone or wedged is restarted, which is the only way back.
+     *
+     * Returns nil when the helper answers, or why it cannot.
+     */
+    public func ensureResponsive(attempts: Int = 2) async -> String? {
+        for attempt in 0..<max(1, attempts) {
+            if process == nil || processIdentifier == nil {
+                start()
+                if processIdentifier == nil { return lastLaunchFailure ?? "The background helper could not be started." }
+            }
+            do {
+                _ = try await send("ping", timeout: min(6, requestTimeout))
+                ipcStatus = "Ready"
+                return nil
+            } catch {
+                lastIPCFailure = "Helper did not answer a ping (attempt \(attempt + 1))."
+                guard attempt + 1 < max(1, attempts) else {
+                    return "The background helper is not answering. Quit and open Multiplayer AI again, then try once more."
+                }
+                // Wedged rather than slow: a restart is what a person would otherwise do by hand.
+                stop()
+                try? await Task.sleep(for: .milliseconds(300))
+                start()
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+        return nil
+    }
+
+    public func send(_ command: String, _ arguments: [String: Any] = [:], timeout requested: Double? = nil) async throws -> [String: Any] {
         guard let stdin, processIdentifier != nil else { throw SidecarError.stopped }
         let id = nextId
         nextId += 1
@@ -261,8 +298,8 @@ public final class SidecarClient {
             }
             // Starting a runtime waits for it to answer, which is bounded inside the helper at well
             // under this; the reply must not be abandoned while it is still legitimately working.
-            let timeout = command == "start-runtime" ? max(requestTimeout, 150)
-                : ["detect", "discover", "select-runtime"].contains(command) ? max(requestTimeout, 60) : requestTimeout
+            let timeout = requested ?? (command == "start-runtime" ? max(requestTimeout, 150)
+                : ["detect", "discover", "select-runtime"].contains(command) ? max(requestTimeout, 60) : requestTimeout)
             // The command name is allowlisted; arguments (including credentials) never enter reports.
             let label = ["ping", "status", "diagnostics", "detect", "start-runtime", "configure", "connect", "disconnect", "reconnect", "signout", "enroll"].contains(command) ? command : "request"
             Task { @MainActor [weak self] in

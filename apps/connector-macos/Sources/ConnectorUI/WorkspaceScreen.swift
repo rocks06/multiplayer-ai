@@ -47,7 +47,11 @@ public struct WorkspaceScreen: View {
                 Text(alert.detail).font(.system(size: 12)).foregroundStyle(Palette.muted)
             }
             Spacer(minLength: 16)
-            if app.connector.busy { ProgressView().controlSize(.small) }
+            // What the last Reconnect did, beside the button that starts the next one.
+            ReconnectProgress(model: app.connector, principalId: app.connector.enrolment?.agentPrincipalId)
+            if app.connector.busy && app.connector.reconnection(of: app.connector.enrolment?.agentPrincipalId) == nil {
+                ProgressView().controlSize(.small)
+            }
             if alert.offersReconnect {
                 Button(app.connector.notice == nil ? "Reconnect" : "Retry") { Task { await app.connector.reconnect() } }
                     .disabled(app.connector.busy)

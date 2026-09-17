@@ -110,7 +110,9 @@ describe("Workspace bootstrap and agent listing", () => {
       expect(listed.statusCode).toBe(200);
       // A new room of one's own has nothing unread: creating it is not news to its creator.
       expect(listed.json()).toEqual({ rooms: [{ room_id: room.id, name: "API Launch", project_id: project.id, project_name: "Developer API", objective: "Launch it",
-        last_event_seq: 2, last_read_seq: 0, unread_count: 0, mention_count: 0, action_count: 0, latest: null }] });
+        last_event_seq: 2, last_read_seq: 0, unread_count: 0, mention_count: 0, action_count: 0, latest: null,
+        // Nobody has chosen for this room, so it behaves like every other one: the default.
+        notification_level: "direct_mentions" }] });
     });
 
     it("is empty for a new workspace rather than absent", async () => {
@@ -189,7 +191,9 @@ describe("Workspace bootstrap and agent listing", () => {
         display_name: "Agent A",
         status: "active",
         owner_display_name: "Rocco",
-        connector: { enrolled: false, presence: "never", runtime_status: null, last_seen_at: null, room_id: null, room_name: null },
+        connector: { enrolled: false, presence: "never", runtime_status: null, last_seen_at: null, room_id: null, room_name: null,
+          // What the agent's own view answers about where it runs. Nothing has reported yet.
+          session_status: null, connected_at: null, disconnected_at: null, profile: null, device: null },
         // Which physical runtime this agent is, when one has ever identified itself. Null here:
         // an agent named in the workspace is not yet a runtime, and the two are not the same fact.
         runtime: null,
@@ -215,7 +219,8 @@ describe("Workspace bootstrap and agent listing", () => {
       const enrolled = (await call("POST", "/v1/agent-gateway/v1/enroll", { code: issued.enrollment_code, device_label: "MacBook" })).json();
       const only = async () => (await call("GET", `/v1/companies/${workspace.company_id}/agents`, undefined, { cookie: me.cookie })).json().agents[0];
 
-      expect((await only()).connector).toEqual({ enrolled: true, presence: "never", runtime_status: null, last_seen_at: null, room_id: null, room_name: null });
+      expect((await only()).connector).toEqual({ enrolled: true, presence: "never", runtime_status: null, last_seen_at: null, room_id: null, room_name: null,
+        session_status: null, connected_at: null, disconnected_at: null, profile: null, device: null });
 
       const client = new FakeExternalAgentClient(baseUrl); clients.add(client);
       client.credentialToken = enrolled.credential_token; client.roomId = room.id;

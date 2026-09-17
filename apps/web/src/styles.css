@@ -700,12 +700,12 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .room-app>.oversight-trigger{grid-row:4}
 /* Seven header children with manager controls; never create an implicit second
    row beneath a fixed-height header. Flexible text yields before the controls. */
-.room-header{grid-template-columns:auto minmax(0,.7fr) minmax(0,1.2fr) auto auto auto auto}
+.room-header{grid-template-columns:auto minmax(0,.7fr) minmax(0,1.2fr) auto auto auto auto auto}
 .room-title{min-width:0}
 .room-title h1,.room-title>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .conversation>.composer{align-self:end;min-width:0}
 @media(max-width:1100px){
-  .room-header{grid-template-columns:auto minmax(0,1fr) minmax(0,1fr) auto auto auto}
+  .room-header{grid-template-columns:auto minmax(0,1fr) minmax(0,1fr) auto auto auto auto}
 }
 @media(max-width:899px){
   .room-app{grid-template-rows:60px auto minmax(0,1fr) auto}
@@ -740,3 +740,40 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .composer-input .composer-send:not(:disabled):hover{opacity:.88;transform:none;background:var(--ink)}
 .composer-input .composer-send:not(:disabled):active{transform:scale(.97)}
 .composer-input .composer-send:disabled{opacity:.4;cursor:default;background:var(--ink)}
+
+/* One agent, in full: opened from its row, and the only place it can be stopped or removed. */
+.home-agent-open{display:flex;align-items:center;gap:10px;width:100%;padding:0;text-align:left;color:inherit;background:none}
+.home-agent-open:hover strong{text-decoration:underline;text-underline-offset:3px}
+.home-agent-open>svg{flex:0 0 auto;color:var(--faint)}
+.agent-sheet-scrim{position:fixed;inset:0;z-index:40;display:grid;place-items:center;padding:20px;background:color-mix(in srgb,var(--ink) 28%,transparent);backdrop-filter:blur(3px)}
+.agent-detail{width:min(520px,100%);max-height:min(86vh,720px);overflow:auto;padding:18px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);box-shadow:var(--shadow-float)}
+.agent-detail header{display:flex;align-items:center;gap:10px}
+.agent-detail-title{flex:1 1 auto;min-width:0;display:grid;gap:3px}
+.agent-detail h2{margin:0;font:600 17px/1.2 var(--serif)}
+.agent-detail .agent-detail-close{display:grid;place-items:center;width:28px;height:28px;border-radius:var(--r-control);color:var(--muted)}
+.agent-detail .agent-detail-close:hover{background:var(--soft);color:var(--ink)}
+.agent-detail-rows{display:grid;gap:0;margin:16px 0 14px}
+.agent-detail-rows>div{display:grid;grid-template-columns:132px minmax(0,1fr);gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}
+.agent-detail-rows dt{font-size:11px;color:var(--muted)}
+.agent-detail-rows dd{margin:0;font-size:12px;overflow-wrap:anywhere}
+.agent-detail-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.agent-detail-actions button,.agent-detail-actions a{padding:8px 12px;border:1px solid var(--line-strong);border-radius:var(--r-control);font-size:12px;font-weight:550;background:var(--surface);color:var(--ink);text-decoration:none}
+.agent-detail-actions .home-primary{background:var(--ink);color:var(--on-ink);border-color:var(--ink)}
+.agent-detail-actions .danger-action{border-color:var(--stop);color:var(--stop)}
+.agent-detail-actions button:disabled{opacity:.45;cursor:default}
+.agent-detail-confirm{margin-bottom:10px;padding:12px;border:1px solid color-mix(in srgb,var(--stop) 35%,transparent);border-radius:var(--r-surface);background:var(--stop-soft)}
+.agent-detail-confirm p{margin:0 0 10px;font-size:12px;line-height:1.5}
+
+/* How much one room may interrupt this person. Native notifications only; unread is unaffected. */
+.room-notifications{position:relative}
+.room-notifications-button{display:flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:11px;font-weight:650;color:var(--muted);white-space:nowrap}
+.room-notifications-button:hover{border-color:var(--line-strong);color:var(--ink)}
+.room-notifications-menu{position:absolute;z-index:30;right:0;top:calc(100% + 6px);width:min(320px,80vw);padding:6px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);box-shadow:var(--shadow-float)}
+.room-notifications-menu button{display:flex;align-items:flex-start;gap:8px;width:100%;padding:7px 8px;border-radius:var(--r-control);text-align:left}
+.room-notifications-menu button:hover,.room-notifications-menu button:focus-visible{background:var(--soft)}
+.room-notifications-mark{display:grid;place-items:center;width:16px;height:16px;flex:0 0 auto;color:var(--moss)}
+.room-notifications-copy{display:grid;gap:2px;min-width:0}
+.room-notifications-copy strong{font-size:12px;font-weight:600}
+.room-notifications-copy small{font-size:10px;line-height:1.4;color:var(--muted)}
+.room-notifications-lead{margin:6px 8px;font-size:10px;line-height:1.4;color:var(--faint)}
+@media (max-width:860px){.room-notifications-button span{display:none}}

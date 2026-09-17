@@ -729,12 +729,24 @@ public final class AppModel {
         selectedDiscoveredAgentId = nil
         discoveryPhase = .results
     }
-    public static func discoveryPreview(records: [[String: Any]], phase: AgentDiscoveryPhase = .results) -> AppModel {
-        let model = AppModel(store: MemoryProgressStore(), connector: ConnectorModel(live: false))
+    public static func discoveryPreview(records: [[String: Any]], phase: AgentDiscoveryPhase = .results,
+                                        connector: ConnectorModel? = nil) -> AppModel {
+        let model = AppModel(store: MemoryProgressStore(), connector: connector ?? ConnectorModel(live: false))
         model.acceptDiscovery(records.compactMap(DiscoveredAgent.decode))
         model.discoveryPhase = phase
         return model
     }
+    /// Long enough to read "Connected", short enough not to be waited on.
+    var discoveryCloseDelay: Duration = .milliseconds(1200)
+
+    func closeDiscoveryWhenConnected() async {
+        guard discoveryPhase == .connected, connector.health == .connected else { return }
+        try? await Task.sleep(for: discoveryCloseDelay)
+        // Only if nothing has happened since: a person who pressed Retry is not interrupted.
+        guard discoveryPhase == .connected, showingAgentDiscovery, pendingAgentMove == nil else { return }
+        dismissAgentDiscovery()
+    }
+
     public func dismissAgentDiscovery() {
         guard discoveryPhase != .connecting else { return }
         runtimeStartErrors = [:]
@@ -909,6 +921,9 @@ public final class AppModel {
             try await connector.waitForAuthenticatedSession(principalId: connected.principalId)
             discoveryPhase = .connected
             await readWorkspace(companyId)
+            /* Connected is an answer, not a screen to stay on: the sheet says so, then gets out of
+               the way. A failure keeps it open, because that is where the failure is explained. */
+            await closeDiscoveryWhenConnected()
         } catch let error as WorkspaceError {
             problem = error; discoveryPhase = .failed(error.message + " " + error.recovery)
         } catch {

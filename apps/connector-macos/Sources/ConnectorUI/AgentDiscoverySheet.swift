@@ -50,6 +50,12 @@ public struct AgentDiscoverySheet: View {
                 }
             }
         }
+        // Diagnostics opened from here has to open here: setting the flag alone only ever drew it
+        // inside the menu bar popover, so pressing Open Diagnostics in this sheet did nothing.
+        .sheet(isPresented: Binding(get: { app.connector.showingDiagnostics },
+                                    set: { app.connector.showingDiagnostics = $0 })) {
+            DiagnosticsView(model: app.connector).padding(20).frame(width: 560, height: 520)
+        }
         .padding(24).frame(width: 560, height: 600)
         .interactiveDismissDisabled(app.discoveryPhase == .connecting || app.connector.busy)
         .onAppear { app.connector.workspaceAddress = app.workspaceAddress }
@@ -90,6 +96,8 @@ public struct AgentDiscoverySheet: View {
                 Label("Connection interrupted", systemImage: "exclamationmark.circle")
                 Text("The authenticated session is no longer live. Your saved identity is preserved.")
                 Button("Retry connection") { Task { await app.connector.reconnect() } }
+                    .disabled(app.connector.busy)
+                ReconnectProgress(model: app.connector, principalId: app.connector.enrolment?.agentPrincipalId)
             }
         case .failed(let message):
             Label("Could not connect or check this Mac", systemImage: "exclamationmark.triangle")

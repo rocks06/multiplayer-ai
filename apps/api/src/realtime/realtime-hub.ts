@@ -151,7 +151,8 @@ export class RealtimeHub {
          room went on showing it connected. Supersession is ordinary and recoverable; revocation
          is not, and only one of them should ever reach a person. */
       /* Taken out of the room is a third thing: stop, and do not come back on your own. */
-      if (reason === "removed_from_room") {
+      // Disconnected by a person is the same kind of thing: stop, and wait to be reconnected.
+      if (reason === "removed_from_room" || reason === "disconnected_by_person") {
         this.send(session,{type:"session_ended",room_id:session.roomId,reason});
         session.socket.close(4410,reason);
       } else {

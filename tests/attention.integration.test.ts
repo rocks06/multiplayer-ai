@@ -288,11 +288,121 @@ describe("notifications", () => {
     const blocked = await f.first.client.updateTask(task.id, "blocked", started.body.version, "block");
     const resumed = await f.first.client.updateTask(task.id, "in_progress", blocked.body.version, "resume");
     expect((await f.first.client.completeTask(task.id, resumed.body.version, "complete")).status).toBe(200);
+    // Blocked work needs a person; finished work is worth reading, and only "all" asks for it.
     const feed = await notificationsFor(f.owner.principal_id, cursor);
     expect(feed.notifications.map((n: any) => [n.kind, n.category, n.body])).toEqual([
       ["agent_blocked", "action_required", "Write the summary"],
-      ["agent_finished", "informational", "Write the summary"],
     ]);
+    await setLevel(f, f.owner.principal_id, "all");
+    const everything = await notificationsFor(f.owner.principal_id, cursor);
+    expect(everything.notifications.map((n: any) => n.kind)).toEqual(["agent_blocked", "agent_finished"]);
+  });
+});
+
+/** What a person asked to be told about one room. Native notifications only; never unread. */
+const setLevel = async (f: Fixture, principalId: string, level: string, roomId = f.room.id) =>
+  call("PUT", f.url(`/rooms/${roomId}/notification-preference`), principalId, { level });
+
+describe("per-room notification preferences", () => {
+  it("defaults to direct messages, mentions and what needs a person, per person and per room", async () => {
+    const f = await fixture();
+    const listed = await roomFor(f, f.owner.principal_id);
+    expect(listed.notification_level).toBe("direct_mentions");
+    expect((await call("GET", f.url(`/rooms/${f.room.id}/notification-preference`), f.owner.principal_id)).json())
+      .toMatchObject({ level: "direct_mentions" });
+
+    // One person's choice is theirs: the other person in the same room keeps the default.
+    expect((await setLevel(f, f.owner.principal_id, "off")).statusCode).toBe(200);
+    expect((await roomFor(f, f.owner.principal_id)).notification_level).toBe("off");
+    expect((await roomFor(f, f.colleague.principal_id)).notification_level).toBe("direct_mentions");
+    expect((await setLevel(f, f.owner.principal_id, "shouting")).statusCode).toBe(400);
+  });
+
+  it("notifies according to the level, and leaves unread alone whatever the level is", async () => {
+    const f = await fixture();
+    const body = `${token("Fixture Owner")} please look`;
+    const mentionOwner = () => say(f, f.colleague.principal_id, body, { mentions: [mention(body, f.owner.principal_id, "Fixture Owner")] });
+    const direct = () => say(f, f.colleague.principal_id, "Just for you", { addressed_principal_id: f.owner.principal_id });
+    const broadcast = () => say(f, f.colleague.principal_id, "For the room");
+
+    const kinds = async (before: string) => (await notificationsFor(f.owner.principal_id, before)).notifications.map((n: any) => n.kind);
+
+    let cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    await mentionOwner(); await direct(); await broadcast();
+    expect(await kinds(cursor)).toEqual(["mention", "direct_message"]);
+
+    await setLevel(f, f.owner.principal_id, "mentions");
+    cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    await mentionOwner(); await direct(); await broadcast();
+    expect(await kinds(cursor)).toEqual(["mention"]);
+
+    await setLevel(f, f.owner.principal_id, "all");
+    cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    await mentionOwner(); await direct(); await broadcast();
+    expect(await kinds(cursor)).toEqual(["mention", "direct_message", "room_message"]);
+
+    await setLevel(f, f.owner.principal_id, "important");
+    cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    await mentionOwner(); await direct(); await broadcast();
+    expect(await kinds(cursor)).toEqual([]);
+    const asked = await f.first.client.requestDecision({ title: "Ship it", question: "Ship?", proposed_action: { type: "ship" } }, "level-decision");
+    expect(asked.status).toBe(200);
+    expect(await kinds(cursor)).toEqual(["decision_requested"]);
+
+    await setLevel(f, f.owner.principal_id, "off");
+    cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    await mentionOwner(); await direct();
+    expect(await kinds(cursor)).toEqual([]);
+    // Unread is what the room contains, counted the same however little it may interrupt.
+    const room = await roomFor(f, f.owner.principal_id);
+    expect(room.unread_count).toBeGreaterThan(0);
+    expect(room.mention_count).toBeGreaterThan(0);
+  });
+
+  it("does not notify a person for every turn agents take with each other, even at all activity", async () => {
+    const f = await fixture();
+    await setLevel(f, f.owner.principal_id, "all");
+    const cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    const opened = await agentSays(f.first, `${token("Fixture Agent Two")} let us work this out`, { mentions: [{ principal_id: f.second.principal_id }] });
+    expect(opened.status).toBe(200);
+    expect((await agentSays(f.second, "Checked, one correction", {})).status).toBe(200);
+    // Their turns are progress, not something asked of a person.
+    expect((await notificationsFor(f.owner.principal_id, cursor)).notifications).toEqual([]);
+    // Naming the person still reaches them.
+    const body = `${token("Fixture Owner")} we need your call`;
+    expect((await agentSays(f.first, body, { mentions: [{ principal_id: f.owner.principal_id }] })).status).toBe(200);
+    expect((await notificationsFor(f.owner.principal_id, cursor)).notifications.map((n: any) => n.kind)).toEqual(["mention"]);
+  });
+});
+
+describe("an agent's own view", () => {
+  it("reports its profile, device, session and last activity, and can be disconnected without losing it", async () => {
+    const f = await fixture();
+    // What the Mac reported about itself when the runtime was connected.
+    const runtime = (await call("POST", f.url(`/runtime-connections`), f.owner.principal_id, {
+      name: "Fixture Runtime Agent", runtime_type: "hermes", external_runtime_id: crypto.randomUUID(),
+      connector_installation_id: crypto.randomUUID(), endpoint: "http://127.0.0.1:1", runtime_version: "0.21.0",
+      probe_status: "healthy", runtime_profile: "fixture-profile", device_label: "Fixture Machine",
+    })).json();
+    const listed = async (principalId: string) => (await call("GET", f.url(`/agents`), f.owner.principal_id)).json()
+      .agents.find((a: any) => a.principal_id === principalId);
+    expect(await listed(runtime.principal_id)).toMatchObject({
+      connector: { profile: "fixture-profile", device: "Fixture Machine" },
+      runtime: { type: "hermes", version: "0.21.0" },
+    });
+
+    // A live agent's session, and what disconnecting does to it.
+    const connected = await listed(f.first.principal_id);
+    expect(connected.connector).toMatchObject({ presence: "connected", session_status: "connected", room_name: "Fixture Room" });
+    expect(connected.connector.connected_at).toBeTruthy();
+    const ended = (await call("POST", f.url(`/agents/${f.first.principal_id}/disconnect`), f.owner.principal_id)).json();
+    expect(ended).toMatchObject({ sessions_ended: 1 });
+    const after = await listed(f.first.principal_id);
+    expect(after.connector).toMatchObject({ presence: "offline", session_status: "offline", enrolled: true });
+    expect(after.connector.disconnected_at).toBeTruthy();
+    // Its identity, credential and rooms are untouched: it is stopped, not removed.
+    expect(after.rooms.map((room: any) => room.name)).toEqual(["Fixture Room"]);
+    expect((await pool.query(`SELECT status FROM external_agent_credentials WHERE agent_principal_id=$1`, [f.first.principal_id])).rows.map(r => r.status)).toEqual(["active"]);
   });
 });
 

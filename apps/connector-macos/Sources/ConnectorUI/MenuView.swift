@@ -91,6 +91,8 @@ public struct MenuView: View {
 
             Divider()
 
+            ReconnectProgress(model: model, principalId: model.enrolment?.agentPrincipalId)
+
             HStack(spacing: 8) {
                 Button("Reconnect") { Task { await model.reconnect() } }
                     .disabled(model.busy)
@@ -112,6 +114,48 @@ public struct MenuView: View {
     }
 }
 
+/**
+ * What a reconnect is doing, while it does it.
+ *
+ * Pressing Reconnect used to produce nothing until it was over, and nothing at all when it failed
+ * on the first of its three steps — so an attempt that failed and a second that worked looked like
+ * one button that needed pressing twice. Each step says so, and the end says which end it was.
+ */
+public struct ReconnectProgress: View {
+    @Bindable var model: ConnectorModel
+    let principalId: String?
+
+    public init(model: ConnectorModel, principalId: String?) {
+        self.model = model; self.principalId = principalId
+    }
+
+    public var body: some View {
+        if let state = model.reconnection(of: principalId) {
+            HStack(spacing: 7) {
+                switch state {
+                case .working:
+                    ProgressView().controlSize(.small)
+                case .succeeded:
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                case .failed:
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+                Text(state.text)
+                    .font(.system(size: 11))
+                    .foregroundStyle(isFailure(state) ? Color.red : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Reconnect: \(state.text)")
+        }
+    }
+
+    private func isFailure(_ state: ConnectorModel.Reconnection) -> Bool {
+        if case .failed = state { return true }; return false
+    }
+}
+
 /// One agent on this Mac: who it is, where it works, what it is doing, and the one action that fits.
 struct AgentRow: View {
     @Bindable var model: ConnectorModel
@@ -119,6 +163,7 @@ struct AgentRow: View {
 
     var body: some View {
         let health = model.health(of: enrolment.agentPrincipalId)
+        VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(enrolment.agentDisplayName ?? "Agent").font(.system(size: 12, weight: .medium))
@@ -136,6 +181,9 @@ struct AgentRow: View {
         }
         .font(.system(size: 12))
         .accessibilityElement(children: .combine)
+        // What its own Reconnect is doing, under the agent it belongs to.
+        ReconnectProgress(model: model, principalId: enrolment.agentPrincipalId)
+        }
     }
 }
 

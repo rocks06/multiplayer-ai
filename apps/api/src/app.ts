@@ -7,7 +7,7 @@ import {join,resolve} from "node:path";
 import { z } from "zod";
 import { DomainError } from "../../../packages/domain/src/index.js";
 import { createPool, type DbPool } from "./db.js";
-import { RoomService } from "./room-service.js";
+import { RoomService, NOTIFICATION_LEVELS } from "./room-service.js";
 import { RealtimeHub, type RealtimeOptions } from "./realtime/realtime-hub.js";
 import { AgentRuntimeService } from "./agent-runtime/runtime-service.js";
 import { AgentGatewayService } from "./agent-gateway/gateway-service.js";
@@ -203,11 +203,13 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
       external_runtime_id:z.string().uuid(),connector_installation_id:z.string().uuid(),
       endpoint:z.string().min(1).max(500),runtime_version:z.string().max(100).optional(),
       probe_status:z.literal('healthy'),create_as_new:z.boolean().default(false),
+      // What the connector says about itself, so an agent's card can name its profile and its Mac.
+      runtime_profile:z.string().max(200).optional(),device_label:z.string().max(200).optional(),
     }),req.body);
     return service.connectRuntimeForPrincipal({companyId:p.companyId,actorId:await principal(req,p.companyId),
       name:x.name,runtimeType:x.runtime_type,externalRuntimeId:x.external_runtime_id,
       connectorInstallationId:x.connector_installation_id,endpoint:x.endpoint,
-      runtimeVersion:x.runtime_version,createAsNew:x.create_as_new});
+      runtimeVersion:x.runtime_version,runtimeProfile:x.runtime_profile,deviceLabel:x.device_label,createAsNew:x.create_as_new});
   });
   app.delete('/v1/companies/:companyId/agents/:agentPrincipalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);return service.removeAgent(p.companyId,await principal(req,p.companyId),p.agentPrincipalId)});
   app.post('/v1/companies/:companyId/projects',async req=>{const p=body(z.object({companyId:z.string().uuid()}),req.params);const x=body(z.object({name:z.string().min(1),objective:z.string().min(1)}),req.body);return service.createProject(p.companyId,await principal(req,p.companyId),x.name,x.objective)});
@@ -219,6 +221,11 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.delete('/v1/companies/:companyId/rooms/:roomId/members/:principalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),principalId:z.string().uuid()}),req.params);return service.removeMember({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),principalId:p.principalId,idempotencyKey:idem(req)})});
   app.get('/v1/companies/:companyId/rooms/:roomId/read-positions',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.readPositions(p.companyId,p.roomId,await principal(req,p.companyId))});
   app.post('/v1/companies/:companyId/rooms/:roomId/read',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({room_seq:z.number().int().min(0)}),req.body);return service.markRoomRead(p.companyId,p.roomId,await principal(req,p.companyId),x.room_seq)});
+  app.get('/v1/companies/:companyId/rooms/:roomId/notification-preference',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.notificationPreference(p.companyId,p.roomId,await principal(req,p.companyId))});
+  app.put('/v1/companies/:companyId/rooms/:roomId/notification-preference',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({level:z.enum(NOTIFICATION_LEVELS)}),req.body);return service.setNotificationPreference(p.companyId,p.roomId,await principal(req,p.companyId),x.level)});
+  /* Stopping an agent's live session is not removing it: its credential, identity and rooms are
+     untouched, and the Mac it runs on reconnects it with what it already holds. */
+  app.post('/v1/companies/:companyId/agents/:agentPrincipalId/disconnect',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);return service.disconnectAgentSessions(p.companyId,await principal(req,p.companyId),p.agentPrincipalId)});
   app.post('/v1/companies/:companyId/agents/:agentPrincipalId/owners',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);const x=body(z.object({human_principal_id:z.string().uuid()}),req.body);return service.addAgentOwner(p.companyId,await principal(req,p.companyId),p.agentPrincipalId,x.human_principal_id)});
   app.delete('/v1/companies/:companyId/agents/:agentPrincipalId/owners/:humanPrincipalId',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid(),humanPrincipalId:z.string().uuid()}),req.params);return service.removeAgentOwner(p.companyId,await principal(req,p.companyId),p.agentPrincipalId,p.humanPrincipalId)});
   /* Notifications for whoever is signed in, across every workspace and room they belong to. */

@@ -148,7 +148,9 @@ async function send<T>(path:string,init:RequestInit={}):Promise<T>{
 export interface WorkspaceAgent {
   agent_id:string;principal_id:string;display_name:string;status:'active'|'paused'|'archived';
   owner_display_name:string|null;
-  connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'superseded'|'never';runtime_status:string|null;last_seen_at:string|null;room_id:string|null;room_name:string|null};
+  connector:{enrolled:boolean;presence:'connected'|'stale'|'offline'|'revoked'|'superseded'|'never';runtime_status:string|null;last_seen_at:string|null;room_id:string|null;room_name:string|null;
+    /** Its session, and where it runs — reported by the connector about itself. */
+    session_status?:string|null;connected_at?:string|null;disconnected_at?:string|null;profile?:string|null;device?:string|null};
   rooms:Array<{room_id:string;name:string}>|null;
   /** The runtime this agent was connected from, when the workspace knows it. Shown, never trusted. */
   runtime?:{type:string;version:string|null}|null;
@@ -158,7 +160,28 @@ export interface WorkspaceAgent {
 /** What in a room needs this person, from their own read position. */
 export interface RoomAttention {unread_count?:number;mention_count?:number;action_count?:number;last_read_seq?:number;last_event_seq?:number;
   latest?:{event_type:string;actor_display_name:string;actor_kind:string;text:string|null;created_at:string;room_seq:number}|null}
-export interface WorkspaceRoom extends RoomAttention {room_id:string;name:string;project_id:string;project_name:string;objective?:string}
+export interface WorkspaceRoom extends RoomAttention {room_id:string;name:string;project_id:string;project_name:string;objective?:string;notification_level?:NotificationLevel}
+
+/** How much a person wants to be told about one room. Native notifications only; never unread. */
+export type NotificationLevel='all'|'direct_mentions'|'mentions'|'important'|'off';
+export const NOTIFICATION_CHOICES:Array<{level:NotificationLevel;label:string;detail:string}>=[
+  {level:'all',label:'All activity',detail:'Everything in the room, except agents\u2019 turns with each other.'},
+  {level:'direct_mentions',label:'Direct, mentions and Needs you',detail:'Sent to you, naming you, or waiting on you. The default.'},
+  {level:'mentions',label:'Mentions only',detail:'Only when somebody writes your name.'},
+  {level:'important',label:'Important only',detail:'Only decisions and blocked work that need a person.'},
+  {level:'off',label:'Off',detail:'No notifications. Unread still counts, as it always does.'},
+];
+
+export const roomNotificationPreference=(companyId:string,roomId:string)=>
+  send<{room_id:string;level:NotificationLevel}>(`/v1/companies/${companyId}/rooms/${roomId}/notification-preference`);
+
+export const setRoomNotificationPreference=(companyId:string,roomId:string,level:NotificationLevel)=>
+  send<{room_id:string;level:NotificationLevel}>(`/v1/companies/${companyId}/rooms/${roomId}/notification-preference`,
+    {method:'PUT',body:JSON.stringify({level})});
+
+/** End its live sessions. Its credential, identity and rooms are kept; its Mac brings it back. */
+export const disconnectWorkspaceAgent=(companyId:string,principalId:string)=>
+  send<{agent_principal_id:string;sessions_ended:number}>(`/v1/companies/${companyId}/agents/${principalId}/disconnect`,{method:'POST'});
 
 export const createWorkspace=(name:string)=>
   send<{company_id:string;name:string;principal_id:string}>('/v1/workspaces',{method:'POST',body:JSON.stringify({name})});

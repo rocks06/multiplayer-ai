@@ -3,7 +3,7 @@ import {ChevronRight,Plus} from 'lucide-react';
 import {ApiError,addRoomMember,createProject,createRoom,
   listWorkspaceAgents,listWorkspaceRooms,removeWorkspaceAgent,type WorkspaceAgent,type WorkspaceRoom} from './api';
 import {connectionOf} from './Welcome';
-import {useConfirm} from './Confirm';
+import {AgentDetail} from './AgentDetail';
 
 /**
  * Home answers one question: where is my work?
@@ -73,7 +73,9 @@ export function Home({workspace,memberships,onNavigate}:{
   const [agents,setAgents]=useState<WorkspaceAgent[]>([]);
   const [creating,setCreating]=useState(false);
   const [addingAgent,setAddingAgent]=useState(false);
-  const {confirm,dialog}=useConfirm();
+  /* Which agent is open, by id: the row is a way in, and the agent's own view answers everything
+     a row cannot. Held by id so a reload of the list keeps showing current state, not a copy. */
+  const [openAgentId,setOpenAgentId]=useState<string|null>(null);
 
   /* Every workspace this person belongs to, not merely the first one.
 
@@ -111,6 +113,8 @@ export function Home({workspace,memberships,onNavigate}:{
     return()=>{window.clearInterval(timer);window.removeEventListener('focus',again);document.removeEventListener('visibilitychange',again)};
   },[load]);
 
+  const openAgent=agents.find(agent=>agent.principal_id===openAgentId)??null;
+
   if(rooms===null)return <main className="home"><p className="auth-quiet" role="status">Loading your workspace…</p></main>;
 
   if(!workspace)return <main className="home empty-home">
@@ -123,7 +127,6 @@ export function Home({workspace,memberships,onNavigate}:{
         <a className="home-secondary" href="multiplayerai://connect-runtime">Connect existing agent</a>
       </div>
     </section>
-    {dialog}
   </main>;
 
   return <main className="home">
@@ -179,31 +182,27 @@ export function Home({workspace,memberships,onNavigate}:{
         {agents.map(agent=>{
           const state=connectionOf(agent);
           return <li key={agent.principal_id}>
-            <span className="identity-mark agent" aria-hidden="true">{agent.display_name.slice(0,1).toUpperCase()}</span>
-            <span className="home-agent-copy">
-              <strong>{agent.display_name}</strong>
-              <small className={`connect-state ${state.tone}`}><span className="state-dot" aria-hidden="true"/>{state.label}</small>
-              {agent.owners?.length?<small className="home-agent-owner">{agent.owners.map(owner=>owner.display_name).join(', ')}'s agent</small>:null}
-            </span>
-            {/* Where it works, from real membership rather than an assumption. */}
-            <span className="home-agent-rooms">
-              {agent.rooms?.length ? agent.rooms.map(room=>room.name).join(', ') : 'No room yet'}
-            </span>
-            <button type="button" className="danger-link" onClick={()=>confirm({
-              title:`Remove ${agent.display_name}?`,
-              detail:'Its credentials and sessions are revoked and it leaves every room. What it '
-                +'already did stays in the room history.',
-              action:'Remove agent',
-              run:async()=>{
-                await removeWorkspaceAgent(workspace.companyId,agent.principal_id);
-                await load();
-              },
-            })}>Remove agent</button>
+            {/* The whole row opens the agent. Everything one can do to it lives in its own view. */}
+            <button type="button" className="home-agent-open" aria-label={`${agent.display_name}, ${state.label}`}
+              onClick={()=>setOpenAgentId(agent.principal_id)}>
+              <span className="identity-mark agent" aria-hidden="true">{agent.display_name.slice(0,1).toUpperCase()}</span>
+              <span className="home-agent-copy">
+                <strong>{agent.display_name}</strong>
+                <small className={`connect-state ${state.tone}`}><span className="state-dot" aria-hidden="true"/>{state.label}</small>
+                {agent.owners?.length?<small className="home-agent-owner">{agent.owners.map(owner=>owner.display_name).join(', ')}'s agent</small>:null}
+              </span>
+              {/* Where it works, from real membership rather than an assumption. */}
+              <span className="home-agent-rooms">
+                {agent.rooms?.length ? agent.rooms.map(room=>room.name).join(', ') : 'No room yet'}
+              </span>
+              <ChevronRight size={16} aria-hidden="true"/>
+            </button>
           </li>;
         })}
       </ul>}
     </section>
-    {dialog}
+    {openAgent&&<AgentDetail companyId={workspace.companyId} agent={openAgent}
+      onClose={()=>setOpenAgentId(null)} onChanged={load}/>}
   </main>;
 }
 

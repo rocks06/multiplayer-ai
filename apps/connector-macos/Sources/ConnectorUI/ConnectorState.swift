@@ -15,6 +15,8 @@ public struct SidecarState: Decodable, Equatable, Sendable {
            to Hermes" cannot be confused — and identity is the runtime's own durable id, not its
            name, its port, or the app installation that happens to be talking to it. */
         public var runtimeType: String?
+        /// The local profile this runtime is, as the adapter names it. Shown, never trusted.
+        public var profile: String?
         public var externalRuntimeId: String?
         public var connectorInstallationId: String?
         public var endpoint: String?
@@ -25,13 +27,13 @@ public struct SidecarState: Decodable, Equatable, Sendable {
         public var readiness: String?
         public var serviceRunning: Bool?
         public init(available: Bool, name: String, version: String? = nil, path: String? = nil, reason: String? = nil,
-                    runtimeType: String? = nil, externalRuntimeId: String? = nil,
+                    runtimeType: String? = nil, profile: String? = nil, externalRuntimeId: String? = nil,
                     connectorInstallationId: String? = nil, endpoint: String? = nil,
                     healthEndpoint: String? = nil, transport: String? = nil, probeStatus: String? = nil,
                     readiness: String? = nil, serviceRunning: Bool? = nil) {
             self.available = available; self.name = name; self.version = version
             self.path = path; self.reason = reason
-            self.runtimeType = runtimeType; self.externalRuntimeId = externalRuntimeId
+            self.runtimeType = runtimeType; self.profile = profile; self.externalRuntimeId = externalRuntimeId
             self.connectorInstallationId = connectorInstallationId; self.endpoint = endpoint
             self.healthEndpoint = healthEndpoint; self.transport = transport; self.probeStatus = probeStatus
             self.readiness = readiness; self.serviceRunning = serviceRunning
