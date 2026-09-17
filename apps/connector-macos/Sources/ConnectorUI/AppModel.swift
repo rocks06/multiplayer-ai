@@ -488,7 +488,37 @@ public final class AppModel {
                 return AppModel.visibleRoom(path: self?.progress.lastRoomPath, appActive: active)
             })
         notifier = next
+        connector.attention = next.diagnostics
+        next.afterPoll = { [weak self, weak next] in
+            guard let self, let diagnostics = next?.diagnostics else { return }
+            await self.describeAttention(into: diagnostics)
+        }
         next.start()
+    }
+
+    /// What only the app can add to notification Diagnostics: which server build it is talking to,
+    /// and the read state of the room on screen.
+    private func describeAttention(into diagnostics: AttentionDiagnostics) async {
+        let app = AppModel.buildCommit.replacingOccurrences(of: "+local", with: "")
+        if let server = try? await client.appConfig()["build_commit"] as? String {
+            diagnostics.serverBuild = AppModel.buildComparison(app: app, server: server)
+        } else {
+            diagnostics.serverBuild = "Not reported (server predates build reporting)"
+        }
+        guard let room = AppModel.visibleRoom(path: progress.lastRoomPath, appActive: true),
+              let listed = try? await client.rooms(companyId: room.company),
+              let current = listed.first(where: { $0.roomId == room.room }) else {
+            diagnostics.roomReadState = "No room open"
+            return
+        }
+        diagnostics.roomReadState = "\(current.name): read to \(current.lastReadSeq.map(String.init) ?? "—") of \(current.lastEventSeq.map(String.init) ?? "—") · \(current.unreadCount ?? 0) unread"
+    }
+
+    /// Whether the app and the server it talks to are the same release, said plainly.
+    nonisolated public static func buildComparison(app: String, server: String) -> String {
+        let shortApp = String(app.prefix(7)), shortServer = String(server.prefix(7))
+        guard !shortServer.isEmpty else { return "Not reported" }
+        return shortApp == shortServer || shortApp == "unknown" ? shortServer : "\(shortServer) — differs from this app (\(shortApp)); the server may not be deployed yet"
     }
 
     nonisolated static func looksLikeId(_ value: String) -> Bool {

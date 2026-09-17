@@ -553,6 +553,15 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .home-rooms .room-attention{display:flex;align-items:center;gap:8px;flex:0 0 auto}
 .home-rooms .room-attention time{font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
 .unread-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--moss);flex:0 0 auto}
+.home-rooms button{position:relative}
+.unread-badge{position:absolute;top:-7px;right:-7px;min-width:20px;height:20px;padding:0 6px;border-radius:999px;display:grid;place-items:center;
+  box-sizing:border-box;background:var(--moss);color:#fff;font:650 11px/1 system-ui,sans-serif;font-variant-numeric:tabular-nums;
+  box-shadow:0 0 0 2px var(--paper)}
+.receipts{margin-top:4px}
+.receipts button{padding:0;border:0;background:none;font-size:10px;color:var(--faint);cursor:pointer}
+.receipts button:hover,.receipts button:focus-visible{color:var(--muted)}
+.receipts dl{display:grid;grid-template-columns:auto 1fr;gap:2px 8px;margin:4px 0 0;font-size:10px;color:var(--muted)}
+.receipts dt{font-weight:600}.receipts dd{margin:0}
 .attention{font-style:normal;font-size:10px;font-weight:650;line-height:1;padding:4px 7px;border-radius:999px;font-variant-numeric:tabular-nums}
 .attention.unread{background:var(--ink);color:var(--surface)}
 .attention.mention{background:var(--moss-soft);color:var(--moss)}

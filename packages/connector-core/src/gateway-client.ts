@@ -132,7 +132,7 @@ export class GatewayClient {
   disconnect() { return this.sessionHttp("POST", "/disconnect", {}); }
 
   /** `mentions` names room participants; the text must contain "@Name" for each, and the server places it. */
-  sendMessage(input: { body: string; addressedPrincipalId?: string; taskId?: string; inReplyToMessageId?: string; artifactIds?: string[]; mentionPrincipalIds?: string[] }, idempotencyKey: string) {
+  sendMessage(input: { body: string; addressedPrincipalId?: string; taskId?: string; inReplyToMessageId?: string; artifactIds?: string[]; mentionPrincipalIds?: string[]; collaborationDone?: boolean }, idempotencyKey: string) {
     return this.sessionHttp("POST", "/messages", {
       body: input.body,
       ...(input.addressedPrincipalId ? { addressed_principal_id: input.addressedPrincipalId } : {}),
@@ -140,6 +140,7 @@ export class GatewayClient {
       ...(input.inReplyToMessageId ? { in_reply_to_message_id: input.inReplyToMessageId } : {}),
       ...(input.artifactIds?.length ? { artifact_ids: input.artifactIds } : {}),
       ...(input.mentionPrincipalIds?.length ? { mentions: input.mentionPrincipalIds.map(principal_id => ({ principal_id })) } : {}),
+      ...(input.collaborationDone ? { collaboration_done: true } : {}),
     }, idempotencyKey);
   }
 

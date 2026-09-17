@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import UserNotifications
 
 /// Something in a room worth a macOS notification, as the workspace describes it.
@@ -40,9 +41,54 @@ public struct NotificationPage: Sendable {
 /// Where notifications go. The system implementation below; a recording one in tests.
 @MainActor
 public protocol NotificationPosting: AnyObject {
-    /// Whether the person allows notifications, asking once if they have never been asked.
-    func authorized() async -> Bool
+    /// What macOS currently allows, in words: "authorized", "denied", "not determined", "provisional".
+    func permissionStatus() async -> String
+    /// Ask, if the person has never been asked. Returns whether notifications may be shown.
+    func requestPermission() async -> Bool
     func post(_ notification: RoomNotification) async
+}
+
+/**
+ * What notifications and unread state are doing, for Diagnostics. Nothing secret: no credentials,
+ * no session tokens, no message bodies — titles, room names, times and states only.
+ */
+@Observable
+@MainActor
+public final class AttentionDiagnostics {
+    public var permission = "Not checked"
+    public var polling = "Not started"
+    public var lastPoll = "—"
+    public var feed = "—"
+    public var cursor = "—"
+    public var lastReceived = "—"
+    public var lastShown = "—"
+    public var lastSuppressed = "—"
+    public var serverBuild = "—"
+    public var roomReadState = "—"
+    public init() {}
+
+    public var rows: [(String, String)] {
+        [("Notifications", permission), ("Notification polling", polling), ("Last notification check", lastPoll),
+         ("Notification feed", feed), ("Notification cursor", cursor), ("Last received", lastReceived),
+         ("Last shown", lastShown), ("Last suppressed", lastSuppressed), ("Server build", serverBuild),
+         ("Room read state", roomReadState)]
+    }
+
+    nonisolated static func stamp(_ date: Date = Date()) -> String {
+        let formatter = DateFormatter(); formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: date)
+    }
+
+    /// Where the feed has read up to, as a time. The cursor itself is opaque and not worth showing.
+    nonisolated static func describeCursor(_ cursor: String?) -> String {
+        guard var text = cursor else { return "Not started" }
+        text = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while text.count % 4 != 0 { text += "=" }
+        guard let data = Data(base64Encoded: text),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let at = value["at"] as? String else { return "Unreadable position" }
+        return "Read up to \(at)"
+    }
 }
 
 /// What the notifier remembers between launches: how far it has read, and what it already showed.
@@ -93,11 +139,17 @@ public final class RoomNotifier {
     private let visibleRoom: () -> (company: String, room: String)?
     private var polling: Task<Void, Never>?
     private var inFlight = false
+    public let diagnostics: AttentionDiagnostics
+    /// Called after every read of the feed, so the app can add what only it knows to Diagnostics.
+    public var afterPoll: (() async -> Void)?
     static let rememberedDeliveries = 500
 
     public init(fetch: @escaping Fetch, poster: NotificationPosting, memory: NotifierMemory,
-                visibleRoom: @escaping () -> (company: String, room: String)?) {
+                visibleRoom: @escaping () -> (company: String, room: String)?,
+                diagnostics: AttentionDiagnostics = AttentionDiagnostics()) {
         self.fetch = fetch; self.poster = poster; self.memory = memory; self.visibleRoom = visibleRoom
+        self.diagnostics = diagnostics
+        diagnostics.cursor = AttentionDiagnostics.describeCursor(memory.cursor)
     }
 
     /// Read once. Returns what was shown, for whoever wants to know.
@@ -106,20 +158,37 @@ public final class RoomNotifier {
         guard !inFlight else { return [] }
         inFlight = true
         defer { inFlight = false }
-        guard let page = try? await fetch(memory.cursor) else { return [] }
+        diagnostics.lastPoll = AttentionDiagnostics.stamp()
+        let page: NotificationPage
+        do { page = try await fetch(memory.cursor) }
+        catch {
+            diagnostics.feed = "Failed: \(error.localizedDescription)"
+            await afterPoll?()
+            return []
+        }
+        diagnostics.feed = "OK · \(page.notifications.count) new"
         var delivered = memory.delivered
         var shown: [RoomNotification] = []
         let fresh = page.notifications.filter { !delivered.contains($0.id) }
-        let allowed = fresh.isEmpty ? false : await poster.authorized()
+        let allowed = fresh.isEmpty ? false : await poster.requestPermission()
+        if !fresh.isEmpty { diagnostics.permission = await poster.permissionStatus() }
         for notification in fresh {
             // Recorded whether or not it is shown: seen here is seen, and must not surface later.
             delivered.append(notification.id)
-            guard allowed, !RoomNotifier.suppressed(notification, visible: visibleRoom()) else { continue }
+            let label = "\(notification.title) · \(notification.roomName) · \(AttentionDiagnostics.stamp())"
+            diagnostics.lastReceived = label
+            if !allowed { diagnostics.lastSuppressed = "\(label) (notifications not allowed)"; continue }
+            if RoomNotifier.suppressed(notification, visible: visibleRoom()) {
+                diagnostics.lastSuppressed = "\(label) (room already on screen)"; continue
+            }
             await poster.post(notification)
+            diagnostics.lastShown = label
             shown.append(notification)
         }
         memory.delivered = Array(delivered.suffix(RoomNotifier.rememberedDeliveries))
         memory.cursor = page.cursor
+        diagnostics.cursor = AttentionDiagnostics.describeCursor(page.cursor)
+        await afterPoll?()
         return shown
     }
 
@@ -132,7 +201,15 @@ public final class RoomNotifier {
 
     public func start(every interval: Duration = .seconds(15)) {
         guard polling == nil else { return }
+        diagnostics.polling = "Running every \(interval.components.seconds)s"
         polling = Task { [weak self] in
+            /* Asked when notifications start working for this person, not on the first qualifying
+               event: waiting for one meant a person could use the app for a day, never be asked,
+               and never know notifications existed. Asking again after an answer does nothing. */
+            if let self {
+                _ = await self.poster.requestPermission()
+                self.diagnostics.permission = await self.poster.permissionStatus()
+            }
             while !Task.isCancelled {
                 await self?.poll()
                 try? await Task.sleep(for: interval)
@@ -143,6 +220,7 @@ public final class RoomNotifier {
     public func stop() {
         polling?.cancel()
         polling = nil
+        diagnostics.polling = "Stopped (signed out)"
     }
 }
 
@@ -160,9 +238,18 @@ public final class SystemNotificationPoster: NSObject, NotificationPosting, UNUs
         center.delegate = self
     }
 
-    public func authorized() async -> Bool {
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
+    public func permissionStatus() async -> String {
+        switch await center.notificationSettings().authorizationStatus {
+        case .authorized: return "authorized"
+        case .provisional: return "provisional"
+        case .denied: return "denied — allow Multiplayer AI in System Settings › Notifications"
+        case .notDetermined: return "not determined"
+        default: return "unavailable"
+        }
+    }
+
+    public func requestPermission() async -> Bool {
+        switch await center.notificationSettings().authorizationStatus {
         case .authorized, .provisional: return true
         case .notDetermined: return (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
         default: return false

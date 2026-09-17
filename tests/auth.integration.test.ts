@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { DeliveryEnvironment } from "../apps/api/src/auth/delivery-config.js";
 import * as pg from "pg";
 import { readFile } from "node:fs/promises";
 import { buildApp } from "../apps/api/src/app.js";
@@ -197,10 +198,11 @@ describe("Human authentication", () => {
 
   it("says how sign-in links are delivered, so the product can say the right thing", async () => {
     const configured = buildApp(new Pool({ connectionString }), { pollIntervalMs: 50 },
-      { allowHeaderPrincipal: false, environment: { SIGN_IN_DELIVERY: "logging" } });
+      { allowHeaderPrincipal: false, environment: { SIGN_IN_DELIVERY: "logging", RENDER_GIT_COMMIT: "0123456789abcdef0123" } as DeliveryEnvironment });
     const answer = await configured.inject({ method: "GET", url: "/v1/app-config" });
     expect(answer.statusCode).toBe(200);
-    expect(answer.json()).toEqual({ sign_in_delivery: "logging" });
+    // Which build answered, so a server that was never redeployed is visible from the app.
+    expect(answer.json()).toEqual({ sign_in_delivery: "logging", build_commit: "0123456789ab" });
     await configured.close();
   });
 

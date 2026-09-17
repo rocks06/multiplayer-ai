@@ -55,12 +55,13 @@ describe("connector relevance", () => {
     expect(await isRelevantActionable(marker(event), ME, lookups([], { requested_by_principal_id: PEER }))).toBe(false);
   });
 
-  it("separates addressed messages, human broadcasts, and other agents' traffic", async () => {
+  it("separates addressed messages, passive broadcasts, and other agents' traffic", async () => {
     const addressed: RoomEvent = { id: "e5", room_seq: 14, event_type: "message.sent", actor_principal_id: PEER, actor_kind: "agent", payload: { addressed_principal_id: ME } };
     const broadcast: RoomEvent = { id: "e6", room_seq: 15, event_type: "message.sent", actor_principal_id: HUMAN, actor_kind: "human", payload: {} };
     const elsewhere: RoomEvent = { id: "e7", room_seq: 16, event_type: "message.sent", actor_principal_id: PEER, actor_kind: "agent", payload: { addressed_principal_id: PEER } };
     expect(await isRelevantActionable(marker(addressed), ME, lookups())).toBe(true);
-    expect(await isRelevantActionable(marker(broadcast), ME, lookups())).toBe(true);
+    // A message to Everyone is context for agents, never a prompt to reply.
+    expect(await isRelevantActionable(marker(broadcast), ME, lookups())).toBe(false);
     expect(await isRelevantActionable(marker(elsewhere), ME, lookups())).toBe(false);
   });
 
@@ -222,25 +223,28 @@ describe("mentions route agent wakes", () => {
     ({ id: `m-${Math.random()}`, room_seq: 1, event_type: "message.sent", actor_principal_id: actor, actor_kind, entity_id: "msg", payload: { body_text: "text", ...payload } });
   const agentMention = (principal_id: string) => ({ principal_id, kind: "agent", start: 0, end: 6 });
 
-  it("wakes exactly the agents a message mentions, from a person or another agent", async () => {
-    const fromHuman = message({ mentions: [agentMention(ME)] });
-    expect(await isRelevantActionable(marker(fromHuman), ME, lookups())).toBe(true);
-    expect(await isRelevantActionable(marker(fromHuman), PEER, lookups())).toBe(false);
-    const fromAgent = message({ mentions: [agentMention(ME)] }, PEER, "agent");
-    expect(await isRelevantActionable(marker(fromAgent), ME, lookups())).toBe(true);
-    // The sender is never woken by its own mention of itself.
-    expect(isActionableCandidate(message({ mentions: [agentMention(ME)] }, ME, "agent"), ME)).toBe(false);
+  it("follows exactly the recipients the workspace recorded on the event", async () => {
+    const recorded = message({ wake_principal_ids: [ME], mentions: [agentMention(ME)] });
+    expect(await isRelevantActionable(marker(recorded), ME, lookups())).toBe(true);
+    expect(await isRelevantActionable(marker(recorded), PEER, lookups())).toBe(false);
+    // A collaboration turn wakes a participant that was not mentioned this time.
+    const turn = message({ wake_principal_ids: [ME], mentions: [], collaboration: { id: "c", status: "active", turn: 2, max_turns: 12 } }, PEER, "agent");
+    expect(await isRelevantActionable(marker(turn), ME, lookups())).toBe(true);
+    // Recorded as nobody: a broadcast, or a collaboration's last turn.
+    expect(await isRelevantActionable(marker(message({ wake_principal_ids: [] })), ME, lookups())).toBe(false);
+    // The sender is never woken, even if it were listed.
+    expect(isActionableCandidate(message({ wake_principal_ids: [ME] }, ME, "agent"), ME)).toBe(false);
   });
 
-  it("a person's message mentioning nobody still reaches every agent; one mentioning only a person reaches none", async () => {
-    expect(await isRelevantActionable(marker(message({})), PEER, lookups())).toBe(true);
-    expect(await isRelevantActionable(marker(message({ mentions: [{ principal_id: HUMAN, kind: "human", start: 0, end: 5 }] })), PEER, lookups())).toBe(false);
-    // An agent's message to Everyone that mentions nobody is not a wake for other agents.
-    expect(await isRelevantActionable(marker(message({}, PEER, "agent")), ME, lookups())).toBe(false);
+  it("an event from before recipients were recorded wakes the addressed or mentioned agent, never a broadcast", async () => {
+    expect(await isRelevantActionable(marker(message({ mentions: [agentMention(ME)] })), ME, lookups())).toBe(true);
+    expect(await isRelevantActionable(marker(message({ mentions: [agentMention(ME)] })), PEER, lookups())).toBe(false);
+    expect(await isRelevantActionable(marker(message({ addressed_principal_id: ME })), ME, lookups())).toBe(true);
+    expect(await isRelevantActionable(marker(message({})), ME, lookups())).toBe(false);
   });
 
   it("text that merely looks like a mention routes nothing", async () => {
-    const event = message({ body_text: "@Somebody please look", mentions: [] }, PEER, "agent");
+    const event = message({ body_text: "@Somebody please look", mentions: [], wake_principal_ids: [] }, PEER, "agent");
     expect(await isRelevantActionable(marker(event), ME, lookups())).toBe(false);
   });
 
@@ -250,7 +254,7 @@ describe("mentions route agent wakes", () => {
       config: { baseUrl: "http://workspace.invalid", roomId: "11111111-1111-4111-8111-111111111111", agentPrincipalId: ME, credential: "c" },
       profile: "test", store, adapter: {} as never, commandSurface: { template: "x COMMAND", verbs: [] }, logPath: "/dev/null",
     });
-    const both: RoomEvent = { ...message({ addressed_principal_id: ME, mentions: [agentMention(ME)] }), id: "same-event", room_seq: 1 };
+    const both: RoomEvent = { ...message({ addressed_principal_id: ME, mentions: [agentMention(ME)], wake_principal_ids: [ME] }), id: "same-event", room_seq: 1 };
     const apply = (event: RoomEvent) => (runtime as any).applyEvent(event);
     expect(apply(both)).toBe("applied");
     expect(apply(both)).toBe("duplicate");

@@ -7,8 +7,15 @@ import Foundation
 @Suite @MainActor struct RoomNotifierTests {
     final class RecordingPoster: NotificationPosting {
         var allowed = true
+        var status = "not determined"
+        var requests = 0
         var posted: [RoomNotification] = []
-        func authorized() async -> Bool { allowed }
+        func permissionStatus() async -> String { status }
+        func requestPermission() async -> Bool {
+            requests += 1
+            if status == "not determined" { status = allowed ? "authorized" : "denied" }
+            return allowed
+        }
         func post(_ notification: RoomNotification) async { posted.append(notification) }
     }
 
@@ -83,6 +90,47 @@ import Foundation
         #expect(app.queuedAuthURL == link || app.entryURL.absoluteString.hasSuffix("/rooms/\(Self.company)/\(Self.room)#message-\(Self.message)"))
         await app.openSharedRoom(company: Self.company, room: Self.room, fragment: AppModel.roomLinkFragment(link))
         #expect(app.entryURL.absoluteString == "https://workspace.test/rooms/\(Self.company)/\(Self.room)#message-\(Self.message)")
+    }
+
+    /// The Air never showed a prompt: permission was only asked for once a qualifying event arrived.
+    @Test func permissionIsAskedForWhenNotificationsStartNotOnTheFirstEvent() async throws {
+        let poster = RecordingPoster()
+        let notifier = RoomNotifier(fetch: { _ in NotificationPage(cursor: "c", notifications: []) },
+                                    poster: poster, memory: MemoryNotifierMemory(), visibleRoom: { nil })
+        notifier.start(every: .seconds(60))
+        for _ in 0..<50 where poster.requests == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        notifier.stop()
+        #expect(poster.requests >= 1)
+        #expect(notifier.diagnostics.permission == "authorized")
+        #expect(notifier.diagnostics.polling == "Stopped (signed out)")
+    }
+
+    @Test func diagnosticsSayWhatWasReceivedShownAndSuppressedAndWhyTheFeedFailed() async {
+        let poster = RecordingPoster()
+        var fail = true
+        let notifier = RoomNotifier(fetch: { _ in
+            if fail { throw WorkspaceError(code: "notifications_unavailable", message: "The workspace server does not provide notifications yet.", status: 404, recovery: "") }
+            return NotificationPage(cursor: "eyJhdCI6IjIwMjYtMDEtMDFUMDA6MDA6MDAuMDAwWiIsImlkIjoieCJ9",
+                                    notifications: [Self.note("shown"), Self.note("hidden", room: "00000000-0000-4000-8000-0000000000b9")])
+        }, poster: poster, memory: MemoryNotifierMemory(), visibleRoom: { (Self.company, "00000000-0000-4000-8000-0000000000b9") })
+        await notifier.poll()
+        #expect(notifier.diagnostics.feed.contains("does not provide notifications"))
+        #expect(notifier.diagnostics.cursor == "Not started")
+        fail = false
+        await notifier.poll()
+        #expect(notifier.diagnostics.feed == "OK · 2 new")
+        #expect(notifier.diagnostics.lastShown.hasPrefix("Fixture Agent mentioned you · Fixture Room"))
+        #expect(notifier.diagnostics.lastSuppressed.hasSuffix("(room already on screen)"))
+        #expect(notifier.diagnostics.cursor == "Read up to 2026-01-01T00:00:00.000Z")
+        // Nothing secret reaches Diagnostics: no message body, no link, no cursor token.
+        let text = notifier.diagnostics.rows.map(\.1).joined(separator: " ")
+        #expect(!text.contains("Please review") && !text.contains("multiplayerai://") && !text.contains("eyJ"))
+    }
+
+    @Test func aServerOnADifferentBuildIsCalledOut() {
+        #expect(AppModel.buildComparison(app: "0a3d693", server: "0a3d6931234") == "0a3d693")
+        #expect(AppModel.buildComparison(app: "abc1234", server: "7291d09").contains("differs from this app"))
+        #expect(AppModel.buildComparison(app: "abc1234", server: "") == "Not reported")
     }
 
     @Test func aNotificationThatIsNotARoomLinkIsDropped() {

@@ -1,4 +1,4 @@
-import type {ApiErrorShape,CompanyAgent,Decision,RoomIdentity,RoomSnapshot,TaskStatus} from './types';
+import type {ApiErrorShape,CompanyAgent,Decision,RoomIdentity,RoomSnapshot,TaskStatus,ReadPosition} from './types';
 
 export const commandKey=()=>{
  const webCrypto=globalThis.crypto;
@@ -33,6 +33,7 @@ export class RoomApi {
   decisions(){return this.request<{decisions:Decision[]}>('/decisions?status=pending')}
   sendMessage(body:string,addressedPrincipalId?:string,artifactIds:string[]=[],key=commandKey(),mentions:{principal_id:string;start:number;end:number}[]=[]){return this.request('/messages',{method:'POST',headers:{'idempotency-key':key},body:JSON.stringify({body,addressed_principal_id:addressedPrincipalId||undefined,artifact_ids:artifactIds,...(mentions.length?{mentions}:{})})})}
   /** Forward only, on the server: marking an older position read never makes anything unread. */
+  readPositions(){return this.request<{read_positions:ReadPosition[]}>('/read-positions')}
   markRead(roomSeq:number){return this.request<{last_read_seq:number}>('/read',{method:'POST',body:JSON.stringify({room_seq:roomSeq})})}
   artifacts(){return this.request<{artifacts:import('./types').Artifact[]}>('/artifacts')}
   async uploadArtifact(file:File){

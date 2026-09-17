@@ -28,6 +28,7 @@ function RoomList({rooms,onNavigate}:{rooms:HomeRoom[];onNavigate:(to:string)=>v
       const label=[room.name,unread?`${unread} unread`:null,mentions?`${mentions} ${mentions===1?'mention':'mentions'}`:null,actions?'needs you':null].filter(Boolean).join(', ');
       return <li key={`${room.companyId}:${room.room_id}`}>
         <button type="button" className={unread?'has-unread':undefined} aria-label={label} onClick={()=>onNavigate(`/rooms/${room.companyId}/${room.room_id}`)}>
+          {unread>0&&<b className="unread-badge" aria-hidden="true">{unread>99?'99+':unread}</b>}
           <span className="room-row-copy">
             <strong>{unread>0&&<i className="unread-dot" aria-hidden="true"/>}{room.name}</strong>
             {preview?<small className="room-preview">{preview}</small>:room.project_name!==room.name&&<small>{room.project_name}</small>}
@@ -35,7 +36,6 @@ function RoomList({rooms,onNavigate}:{rooms:HomeRoom[];onNavigate:(to:string)=>v
           <span className="room-attention">
             {actions>0&&<b className="attention action">Needs you</b>}
             {mentions>0&&<b className="attention mention" aria-hidden="true">@{mentions>1?` ${mentions}`:''}</b>}
-            {unread>0&&<b className="attention unread" aria-hidden="true">{unread>99?'99+':unread}</b>}
             {latest&&<time dateTime={latest.created_at}>{shortTime(latest.created_at)}</time>}
             <ChevronRight size={16}/>
           </span>

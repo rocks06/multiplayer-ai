@@ -64,7 +64,7 @@ public struct DiagnosticsView: View {
             if let value = report[key] as? Int { return String(value) }
             return "—"
         }
-        return [
+        let connector: [(String, String)] = [
             // First, because "which build is this?" is the question that has cost the most time.
             ("App build", AppModel.buildCommit),
             ("Health", Diagnosis.health(of: state).title),
@@ -93,6 +93,8 @@ public struct DiagnosticsView: View {
             ("Log file", text("logFile")),
             ("Last error", state.lastError ?? "—"),
         ]
+        let attention: [(String, String)] = model.attention?.rows ?? [("Notifications", "Not started — sign in to the workspace")]
+        return connector + attention
     }
 
     private func load() async {

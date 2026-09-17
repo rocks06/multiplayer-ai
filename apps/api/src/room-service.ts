@@ -24,6 +24,11 @@ interface ResolvedMention {principal_id:string;kind:PrincipalKind;display_name:s
  *  or is stuck on. Presence, sessions and bookkeeping are deliberately absent. */
 export const NOTABLE_EVENT=`(e.event_type IN ('message.sent','decision.requested') OR (e.event_type IN ('task.completed','task.blocked') AND e.actor_kind='agent'))`;
 
+/** How many agent turns a collaboration may take before it stops and waits for a person. */
+export const COLLABORATION_MAX_TURNS=12;
+/** A collaboration nobody has taken a turn in for this long has ended. */
+export const COLLABORATION_IDLE_MINUTES=30;
+
 export class RoomService {
   constructor(private readonly pool: DbPool) {}
 
@@ -253,6 +258,32 @@ export class RoomService {
         RETURNING last_read_seq`,[companyId,roomId,actorId,Math.max(0,Math.floor(roomSeq))]);
       return {last_read_seq:Number(saved.rows[0]?.last_read_seq??0)};
     } finally { c.release(); }
+  }
+
+  /**
+   * How far each participant has got through a room, for read receipts.
+   *
+   * A person has *read* up to their read position. An agent does not read: its connector has had
+   * events *delivered* up to what it acknowledged, which says nothing about whether it acted on them,
+   * so the two are reported apart and never called the same thing.
+   */
+  async readPositions(companyId:string,roomId:string,actorId:string) {
+    const c=await this.pool.connect();
+    try {
+      await this.membership(c,companyId,roomId,actorId);
+      return {read_positions:await this.readPositionsWith(c,companyId,roomId)};
+    } finally { c.release(); }
+  }
+
+  private async readPositionsWith(c:DbClient,companyId:string,roomId:string) {
+    const rows=await c.query(`SELECT rm.principal_id,p.display_name,p.kind,
+        CASE WHEN p.kind='human' THEN COALESCE(rc.last_read_seq,0)::int END last_read_seq,
+        CASE WHEN p.kind='agent' THEN (SELECT max(s.last_ack_room_seq)::int FROM external_agent_sessions s
+                                        WHERE s.company_id=rm.company_id AND s.room_id=rm.room_id AND s.agent_principal_id=rm.principal_id) END delivered_seq
+      FROM room_members rm JOIN principals p ON p.company_id=rm.company_id AND p.id=rm.principal_id
+      LEFT JOIN room_read_cursors rc ON rc.company_id=rm.company_id AND rc.room_id=rm.room_id AND rc.principal_id=rm.principal_id
+      WHERE rm.company_id=$1 AND rm.room_id=$2 AND rm.status='active' ORDER BY p.display_name`,[companyId,roomId]);
+    return rows.rows;
   }
 
   /**
@@ -542,12 +573,73 @@ export class RoomService {
     return placed.sort((a,b)=>a.start-b.start);
   }
 
-  async sendMessage(input:{companyId:string;roomId:string;actorId:string;addressedPrincipalId?:string;body:string;artifactIds?:string[];mentions?:MentionInput[];taskId?:string;inReplyToMessageId?:string;idempotencyKey:string;runGuard?:RunGuard}) {
+  /**
+   * Which agents a message wakes, decided here, once, and recorded on the event.
+   *
+   * A message to Everyone is a broadcast: it is context for every agent and a prompt for none. An
+   * agent is woken when the message is sent to it, when it is mentioned, or when it is working in a
+   * collaboration another participant just took a turn in. Collaborations are bounded: an agent that
+   * hands work to another agent starts one; each agent turn counts against a budget; it ends when an
+   * agent says the joint work is done, when the budget is spent, after a long silence, and it waits
+   * while a person is asked to decide. The sender is never woken by its own message.
+   */
+  private async routeMessage(c:DbClient,input:{companyId:string;roomId:string;actorId:string;actorKind:string;messageId:string;addressedPrincipalId?:string;
+      mentions:ResolvedMention[];collaborationDone?:boolean}) {
+    const wake=new Set<string>();
+    if(input.addressedPrincipalId){
+      const addressed=await c.query<{kind:string}>(`SELECT kind FROM principals WHERE company_id=$1 AND id=$2`,[input.companyId,input.addressedPrincipalId]);
+      if(addressed.rows[0]?.kind==='agent')wake.add(input.addressedPrincipalId);
+    }
+    const mentionedAgents=[...new Set(input.mentions.filter(m=>m.kind==='agent').map(m=>m.principal_id))].filter(id=>id!==input.actorId);
+    for(const id of mentionedAgents)wake.add(id);
+    let collaboration:{id:string;status:string;turn_count:number;max_turns:number;participant_principal_ids:string[]}|null=null;
+    await c.query(`UPDATE agent_collaborations SET status='expired',ended_reason='idle',updated_at=now()
+      WHERE company_id=$1 AND room_id=$2 AND status IN ('active','waiting_for_human') AND updated_at<now()-make_interval(mins=>$3::int)`,[input.companyId,input.roomId,COLLABORATION_IDLE_MINUTES]);
+    if(input.actorKind==='agent'){
+      const found=await c.query<any>(`SELECT id,status,turn_count,max_turns,participant_principal_ids FROM agent_collaborations
+        WHERE company_id=$1 AND room_id=$2 AND status IN ('active','waiting_for_human') AND $3::uuid=ANY(participant_principal_ids)
+        ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,[input.companyId,input.roomId,input.actorId]);
+      if(found.rows[0]){
+        const current=found.rows[0];
+        const participants=[...new Set<string>([...current.participant_principal_ids,...mentionedAgents])].slice(0,20);
+        /* Waiting for a person: nobody's turn is woken until that decision is answered, which is
+           what sets the collaboration going again. A participant saying it is done still ends it. */
+        const waiting=current.status==='waiting_for_human'&&!input.collaborationDone;
+        const turn=waiting?current.turn_count:current.turn_count+1;
+        const status=input.collaborationDone?'completed':waiting?'waiting_for_human':turn>=current.max_turns?'exhausted':'active';
+        const saved=await c.query<any>(`UPDATE agent_collaborations SET turn_count=$2,status=$3::text,participant_principal_ids=$4::uuid[],
+            ended_reason=CASE WHEN $3::text='completed' THEN 'done' WHEN $3::text='exhausted' THEN 'max_turns' ELSE NULL END,updated_at=now()
+          WHERE id=$1 RETURNING id,status,turn_count,max_turns,participant_principal_ids`,[current.id,turn,status,participants]);
+        collaboration=saved.rows[0];
+        // Only a collaboration still going carries the turn to the others. Its last turn wakes nobody.
+        if(status==='active')for(const id of participants)if(id!==input.actorId)wake.add(id);
+      } else if(mentionedAgents.length&&!input.collaborationDone){
+        const created=await c.query<any>(`INSERT INTO agent_collaborations(id,company_id,room_id,started_by_principal_id,started_message_id,participant_principal_ids,turn_count,max_turns)
+          VALUES($1,$2,$3,$4,$5,$6::uuid[],1,$7) RETURNING id,status,turn_count,max_turns,participant_principal_ids`,
+          [uuidv7(),input.companyId,input.roomId,input.actorId,input.messageId,[input.actorId,...mentionedAgents],COLLABORATION_MAX_TURNS]);
+        collaboration=created.rows[0];
+      }
+    } else if(mentionedAgents.length>=2){
+      // A person bringing several agents together asks them to work it out between them.
+      const created=await c.query<any>(`INSERT INTO agent_collaborations(id,company_id,room_id,started_by_principal_id,started_message_id,participant_principal_ids,turn_count,max_turns)
+        VALUES($1,$2,$3,$4,$5,$6::uuid[],0,$7) RETURNING id,status,turn_count,max_turns,participant_principal_ids`,
+        [uuidv7(),input.companyId,input.roomId,input.actorId,input.messageId,mentionedAgents,COLLABORATION_MAX_TURNS]);
+      collaboration=created.rows[0];
+    }
+    wake.delete(input.actorId);
+    return {
+      wake_principal_ids:[...wake],
+      collaboration:collaboration&&{id:collaboration.id,status:collaboration.status,turn:collaboration.turn_count,max_turns:collaboration.max_turns,
+        participant_principal_ids:collaboration.participant_principal_ids},
+    };
+  }
+
+  async sendMessage(input:{companyId:string;roomId:string;actorId:string;addressedPrincipalId?:string;body:string;artifactIds?:string[];mentions?:MentionInput[];collaborationDone?:boolean;taskId?:string;inReplyToMessageId?:string;idempotencyKey:string;runGuard?:RunGuard}) {
     const artifactIds=[...new Set(input.artifactIds??[])];
     if(!input.body.trim()&&!artifactIds.length)throw new DomainError('message_empty','Write a message or attach a file',400);
     if(artifactIds.length>10)throw new DomainError('too_many_artifacts','Attach at most ten files per message',400);
     const mentionInput=(input.mentions??[]).map(m=>({principal_id:m.principal_id,start:m.start,end:m.end}));
-    return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds,...(mentionInput.length?{mentions:mentionInput}:{})},permission:'message.send'},async(c)=>{
+    return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds,...(mentionInput.length?{mentions:mentionInput}:{}),...(input.collaborationDone?{collaborationDone:true}:{})},permission:'message.send'},async(c,actor)=>{
       if(input.addressedPrincipalId)await this.membership(c,input.companyId,input.roomId,input.addressedPrincipalId);
       const mentions=await this.resolveMentions(c,input.companyId,input.roomId,input.body,mentionInput);
       if(input.inReplyToMessageId){
@@ -565,8 +657,11 @@ export class RoomService {
       for(const m of mentions)await c.query(`INSERT INTO message_mentions(company_id,room_id,message_id,principal_id,start_offset,end_offset) VALUES($1,$2,$3,$4,$5,$6)`,[input.companyId,input.roomId,id,m.principal_id,m.start,m.end]);
       /* Mentions travel on the event itself, with each participant's kind, so a connector can tell
          from the event alone whether it — and which other agents — were named, without a lookup. */
+      const routing=await this.routeMessage(c,{companyId:input.companyId,roomId:input.roomId,actorId:input.actorId,actorKind:actor.kind,messageId:id,
+        addressedPrincipalId:input.addressedPrincipalId,mentions,collaborationDone:input.collaborationDone});
       const response={id,body_text:input.body,addressed_principal_id:input.addressedPrincipalId??null,in_reply_to_message_id:input.inReplyToMessageId??null,artifact_ids:artifactIds,
-        mentions:mentions.map(m=>({principal_id:m.principal_id,kind:m.kind,start:m.start,end:m.end})),mentioned_principal_ids:[...new Set(mentions.map(m=>m.principal_id))]};
+        mentions:mentions.map(m=>({principal_id:m.principal_id,kind:m.kind,start:m.start,end:m.end})),mentioned_principal_ids:[...new Set(mentions.map(m=>m.principal_id))],
+        ...routing};
       return {response,event:{type:'message.sent',entityType:'message',entityId:id,payload:response}};
     });
   }
@@ -694,7 +789,8 @@ export class RoomService {
                    WHERE ma.company_id=m.company_id AND ma.message_id=m.id AND a.status='ready'),'[]'::jsonb) attachments,
         COALESCE((SELECT jsonb_agg(jsonb_build_object('principal_id',mm.principal_id,'start',mm.start_offset,'end',mm.end_offset,'display_name',mp.display_name,'kind',mp.kind) ORDER BY mm.start_offset)
                     FROM message_mentions mm JOIN principals mp ON mp.company_id=mm.company_id AND mp.id=mm.principal_id
-                   WHERE mm.company_id=m.company_id AND mm.message_id=m.id),'[]'::jsonb) mentions
+                   WHERE mm.company_id=m.company_id AND mm.message_id=m.id),'[]'::jsonb) mentions,
+        (SELECT e.room_seq::int FROM room_events e WHERE e.company_id=m.company_id AND e.room_id=m.room_id AND e.entity_id=m.id AND e.event_type='message.sent' LIMIT 1) room_seq
         FROM messages m JOIN principals p ON p.id=m.sender_principal_id WHERE m.room_id=$1 AND m.company_id=$2 ORDER BY m.created_at DESC LIMIT 50`,[roomId,companyId]);
       const events=await c.query(`SELECT room_seq,event_type,actor_principal_id,actor_kind,actor_display_name,entity_type,entity_id,entity_version,payload,created_at FROM room_events WHERE room_id=$1 AND company_id=$2 ORDER BY room_seq DESC LIMIT 20`,[roomId,companyId]);
       const decisions=await c.query(`SELECT id,run_id,requested_by_principal_id,title,question,rationale,proposed_action,proposed_action_digest,status,version,resolved_by_principal_id,resolution_note,requested_at,resolved_at,expires_at FROM decisions WHERE room_id=$1 AND company_id=$2 AND status='pending' ORDER BY requested_at`,[roomId,companyId]);
@@ -708,7 +804,8 @@ export class RoomService {
         JOIN room_members hm ON hm.company_id=rel.company_id AND hm.room_id=$2 AND hm.principal_id=rel.human_principal_id AND hm.status='active'
         JOIN room_members am ON am.company_id=rel.company_id AND am.room_id=$2 AND am.principal_id=rel.agent_principal_id AND am.status='active'
         WHERE rel.company_id=$1 ORDER BY h.display_name`,[companyId,roomId]);
-      const snapshot={room:room.rows[0],relationships:relationships.rows,members:members.rows,tasks:tasks.rows,messages:messages.rows.reverse(),snapshot_seq:Number(room.rows[0].last_event_seq),briefing:{briefing_seq:Number(room.rows[0].last_event_seq),project_objective:room.rows[0].objective,participants:members.rows,joining_principal:{principal_id:actorId,role:member.role,responsibilities:member.responsibilities},active_tasks:active,relevant_completed_work:completed,unresolved_decisions:decisions.rows,agent_relationships:relationships.rows,blockers:active.filter((t:any)=>t.status==='blocked'),relevant_artifacts:[],important_recent_activity:events.rows.reverse()}};
+      const readPositions=await this.readPositionsWith(c,companyId,roomId);
+      const snapshot={room:room.rows[0],read_positions:readPositions,relationships:relationships.rows,members:members.rows,tasks:tasks.rows,messages:messages.rows.reverse(),snapshot_seq:Number(room.rows[0].last_event_seq),briefing:{briefing_seq:Number(room.rows[0].last_event_seq),project_objective:room.rows[0].objective,participants:members.rows,joining_principal:{principal_id:actorId,role:member.role,responsibilities:member.responsibilities},active_tasks:active,relevant_completed_work:completed,unresolved_decisions:decisions.rows,agent_relationships:relationships.rows,blockers:active.filter((t:any)=>t.status==='blocked'),relevant_artifacts:[],important_recent_activity:events.rows.reverse()}};
       await c.query('COMMIT');
       return snapshot;
     } catch(e){await c.query('ROLLBACK');throw e;} finally { c.release(); }

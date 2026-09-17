@@ -32,7 +32,7 @@ const COMMAND_SURFACE = [
   'task --id ID',
   'status --id ID --status STATUS --version N --key KEY',
   'complete --id ID --version N --key KEY',
-  'message --body TEXT [--to ID] [--mention ID] [--task ID] [--reply-to ID] --key KEY',
+  'message --body TEXT [--to ID] [--mention ID] [--collaboration-done] [--task ID] [--reply-to ID] --key KEY',
   'decision --title TEXT --question TEXT --rationale TEXT --proposed-action-json JSON --key KEY',
   'heartbeat --runtime-status idle|working',
   'attach --file PATH [--name NAME] [--type MIME]',
@@ -163,6 +163,8 @@ async function runVerb(verb, argv) {
         artifactIds: [].concat(args.artifact ?? []).filter(Boolean),
         // Repeatable: --mention <principal id>, with "@Name" written in the body for each.
         mentionPrincipalIds: [].concat(args.mention ?? []).filter(Boolean),
+        // Says the joint work with other agents is finished, so this turn wakes nobody further.
+        collaborationDone: args['collaboration-done'] === 'true',
       }, need('key'));
       break;
     case 'decision': {

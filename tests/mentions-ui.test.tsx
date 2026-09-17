@@ -107,3 +107,19 @@ describe('unread state on Home',()=>{
     expect(within(sharedRoom).getByText('Fixture Agent One: finished Summary')).toBeInTheDocument();
   });
 });
+
+describe('read receipts',()=>{
+  it('counts people who read up to a message as seen, and agents only as delivered, never the sender',async()=>{
+    const {receiptsFor}=await import('../apps/web/src/App');
+    const positions=[
+      {principal_id:'sender',display_name:'Fixture Sender',kind:'human' as const,last_read_seq:9,delivered_seq:null},
+      {principal_id:'reader',display_name:'Fixture Reader',kind:'human' as const,last_read_seq:7,delivered_seq:null},
+      {principal_id:'behind',display_name:'Fixture Behind',kind:'human' as const,last_read_seq:3,delivered_seq:null},
+      {principal_id:'agent',display_name:'Fixture Agent One',kind:'agent' as const,last_read_seq:null,delivered_seq:8},
+    ];
+    const receipts=receiptsFor({room_seq:5},positions,'sender');
+    expect(receipts.seen.map(p=>p.display_name)).toEqual(['Fixture Reader']);
+    expect(receipts.delivered.map(p=>p.display_name)).toEqual(['Fixture Agent One']);
+    expect(receiptsFor({room_seq:null},positions,'sender')).toEqual({seen:[],delivered:[]});
+  });
+});

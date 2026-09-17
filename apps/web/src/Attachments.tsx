@@ -70,9 +70,18 @@ export function AttachmentComposer({members,onSend,to,onAddressee,focusToken,api
   const choose=(member:Member)=>{
     if(!picking)return;
     const next=insertMention(body,picking,member);
+    caretAfterUpdate.current=next.caret;
     setBody(next.text);setTokens(current=>[...current,{principal_id:member.principal_id,display_name:member.display_name}]);setPicking(null);
-    requestAnimationFrame(()=>{field.current?.focus();field.current?.setSelectionRange(next.caret,next.caret)});
   };
+  /* The caret goes after the inserted name in the same commit as the text. Deferring it to the
+     next frame let a fast typist's next keys land before it moved, scrambling what they wrote. */
+  const caretAfterUpdate=useRef<number|null>(null);
+  useLayoutEffect(()=>{
+    const caret=caretAfterUpdate.current,textarea=field.current;
+    if(caret===null||!textarea)return;
+    caretAfterUpdate.current=null;
+    textarea.focus();textarea.setSelectionRange(caret,caret);
+  },[body]);
   const attachControl=useRef<HTMLDivElement>(null),attachButton=useRef<HTMLButtonElement>(null),menuId=useId();
   useEffect(()=>{
     if(!menu)return;

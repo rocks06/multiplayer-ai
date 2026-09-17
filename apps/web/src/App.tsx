@@ -16,7 +16,7 @@ import {Shell} from './Shell';
 import {AgentControls,SharedWork,type WorkActions} from './Work';
 import {describePresence,elapsedLabel,type AgentPresence} from './presence';
 import {useRoomSession} from './use-room';
-import type {CompanyAgent,ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus} from './types';
+import type {CompanyAgent,ConnectionState,Decision,Member,Message,RoomEvent,RoomIdentity,RoomSnapshot,Task,TaskStatus,ReadPosition} from './types';
 import type {WorkspaceAgent} from './api';
 import './styles.css';
 import {AttachmentCard,AttachmentComposer,RoomFiles} from './Attachments';
@@ -240,7 +240,36 @@ function relationshipOf(message:Message,byId:Map<string,Message>,members:Member[
 
 const DECISION_VERBS:Record<string,string>={'decision.requested':'asked for a decision','decision.approved':'approved','decision.rejected':'rejected','decision.cancelled':'cancelled a decision','decision.expired':'decision expired'};
 
-function Transcript({messages,members,events,lastEvent,api}:{messages:Message[];members:Member[];events:RoomEvent[];lastEvent:RoomEvent|null;api:RoomApi}){
+/**
+ * Read receipts on a person's own message. People who have read up to it are "seen"; agents whose
+ * connector has had it delivered are listed apart, because delivery to software is not somebody
+ * having read it. Quiet until there is something to say.
+ */
+export function receiptsFor(message:Pick<Message,'room_seq'>,positions:ReadPosition[],senderId:string){
+  const seq=message.room_seq??null;
+  if(seq===null)return {seen:[] as ReadPosition[],delivered:[] as ReadPosition[]};
+  const others=positions.filter(p=>p.principal_id!==senderId);
+  return {
+    seen:others.filter(p=>p.kind==='human'&&(p.last_read_seq??0)>=seq),
+    delivered:others.filter(p=>p.kind==='agent'&&(p.delivered_seq??0)>=seq),
+  };
+}
+
+function Receipts({message,positions,senderId}:{message:Message;positions:ReadPosition[];senderId:string}){
+  const [open,setOpen]=useState(false);
+  const {seen,delivered}=receiptsFor(message,positions,senderId);
+  if(!seen.length&&!delivered.length)return null;
+  const label=[seen.length?`Seen by ${seen.length}`:null,delivered.length?`Delivered to ${delivered.length} ${delivered.length===1?'agent':'agents'}`:null].filter(Boolean).join(' · ');
+  return <div className="receipts">
+    <button type="button" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>{label}</button>
+    {open&&<dl>
+      {seen.length>0&&<><dt>Seen by</dt><dd>{seen.map(p=>p.display_name).join(', ')}</dd></>}
+      {delivered.length>0&&<><dt>Delivered to</dt><dd>{delivered.map(p=>p.display_name).join(', ')}</dd></>}
+    </dl>}
+  </div>;
+}
+
+function Transcript({messages,members,events,lastEvent,api,currentId='',readPositions=[]}:{messages:Message[];members:Member[];events:RoomEvent[];lastEvent:RoomEvent|null;api:RoomApi;currentId?:string;readPositions?:ReadPosition[]}){
   /* A decision belongs in the room's story: asked here, answered here, in the order it
      happened. Once resolved it stops asking for attention and simply stays as what occurred. */
   const timeline=useMemo(()=>{
@@ -340,6 +369,7 @@ function Transcript({messages,members,events,lastEvent,api}:{messages:Message[];
               ? <span key={i} className={`mention ${segment.mention.kind}`} data-principal-id={segment.mention.principal_id}>{segment.text}</span>
               : <Fragment key={i}>{segment.text}</Fragment>)}</p>
             {message.attachments?.map(file=><AttachmentCard key={file.id} artifact={file} api={api}/>)}
+            {message.sender_principal_id===currentId&&<Receipts message={message} positions={readPositions} senderId={currentId}/>}
           </div>
           </article>;
           /* The day, written once above the first message of it. A room keeps its history, so a
@@ -642,7 +672,9 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     if(!latestSeq)return;
     let timer:number|undefined;
     const mark=()=>{
-      if(document.visibilityState!=='visible'||!document.hasFocus()||latestSeq<=readSeq.current)return;
+      // Visible is read. Keyboard focus is not required: inside the Mac app focus often sits outside
+      // the page while the person is plainly looking at the room, and the room then never cleared.
+      if(document.visibilityState!=='visible'||latestSeq<=readSeq.current)return;
       window.clearTimeout(timer);
       timer=window.setTimeout(()=>{readSeq.current=Math.max(readSeq.current,latestSeq);void api.markRead(latestSeq).catch(()=>{readSeq.current=0})},400);
     };
@@ -650,6 +682,16 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     window.addEventListener('focus',mark);document.addEventListener('visibilitychange',mark);
     return()=>{window.clearTimeout(timer);window.removeEventListener('focus',mark);document.removeEventListener('visibilitychange',mark)};
   },[latestSeq,api]);
+  /* Who has read what, for receipts. Reading moves no room event, so it is asked for again every
+     so often while the room is on screen, and whenever the room itself changes. */
+  const [readPositions,setReadPositions]=useState<ReadPosition[]>([]);
+  useEffect(()=>{if(snapshot?.read_positions)setReadPositions(snapshot.read_positions)},[snapshot]);
+  useEffect(()=>{
+    let live=true;
+    const load=()=>{if(document.visibilityState==='visible')void api.readPositions().then(r=>{if(live)setReadPositions(r.read_positions)}).catch(()=>{})};
+    const timer=window.setInterval(load,15_000);
+    return()=>{live=false;window.clearInterval(timer)};
+  },[api]);
   /* A notification about a decision opens the panel it waits in. */
   useEffect(()=>{if(/^#decision-/i.test(location.hash))setOversightOpen(true)},[]);
 
@@ -745,7 +787,7 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
     {connection==='revoked'&&<div className="revoked-screen" role="alert"><ShieldAlert/><h2>Room access removed</h2><p>{error}</p></div>}
     <div className="worktable" aria-hidden={connection==='revoked'}>
       <RoomContext workspace={workspace} snapshot={snapshot}/>
-      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript api={api} messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><AttachmentComposer api={api} members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to,ids,key,mentions)=>mutate(()=>api.sendMessage(body,to,ids,key,mentions))} ownerNames={ownerNames} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
+      <section className="conversation" aria-label="Live room conversation"><div className="section-heading"><div><span>Room conversation</span><strong>Shared, visible, durable</strong></div></div><Transcript api={api} currentId={identity.principalId} readPositions={readPositions} messages={snapshot.messages} members={snapshot.members} events={recent} lastEvent={lastEvent}/><AttachmentComposer api={api} members={snapshot.members.filter(m=>m.principal_id!==identity.principalId)} onSend={(body,to,ids,key,mentions)=>mutate(()=>api.sendMessage(body,to,ids,key,mentions))} ownerNames={ownerNames} to={addressee} onAddressee={setAddressee} focusToken={composerFocus}/></section>
       <aside className="supervision" aria-label="Live team and human oversight" data-open={oversightOpen}>
         <div className="sheet-bar">
           <span>Team &amp; work</span>

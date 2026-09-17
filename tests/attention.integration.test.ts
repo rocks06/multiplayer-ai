@@ -90,7 +90,7 @@ describe("structured mentions", () => {
     expect((await notificationsFor(f.owner.principal_id, cursor)).notifications).toEqual([]);
   });
 
-  it("a person mentions an agent: only the mentioned agent wakes, and a message naming no agent still reaches every agent", async () => {
+  it("a person mentions an agent: only that agent wakes; Everyone without a mention and a hand-typed name wake no agent", async () => {
     const f = await fixture();
     const body = `${token("Fixture Agent One")} please draft the outline`;
     const sent = (await say(f, f.owner.principal_id, body, { mentions: [mention(body, f.first.principal_id, "Fixture Agent One")] })).json();
@@ -98,9 +98,17 @@ describe("structured mentions", () => {
     expect(event.payload.mentions).toEqual([{ principal_id: f.first.principal_id, kind: "agent", start: 0, end: token("Fixture Agent One").length }]);
     expect(await isRelevantActionable(asMarker(event), f.first.principal_id, noLookups)).toBe(true);
     expect(await isRelevantActionable(asMarker(event), f.second.principal_id, noLookups)).toBe(false);
+    expect(event.payload.wake_principal_ids).toEqual([f.first.principal_id]);
+    // To Everyone with no agent mentioned: context for every agent, a prompt for none.
     const plain = (await say(f, f.owner.principal_id, "Everyone, a general update")).json();
     const [broadcast] = await messageEvent(f, plain.id);
-    for (const a of [f.first, f.second]) expect(messageWakes(broadcast, a.principal_id)).toBe(true);
+    expect(broadcast.payload.wake_principal_ids).toEqual([]);
+    for (const a of [f.first, f.second]) expect(messageWakes(broadcast, a.principal_id)).toBe(false);
+    // "@Name" typed by hand, never chosen, is plain text: no mention stored, nobody woken.
+    const typed = (await say(f, f.owner.principal_id, `${token("Fixture Agent One")} typed by hand`)).json();
+    const [handTyped] = await messageEvent(f, typed.id);
+    expect(handTyped.payload.mentions).toEqual([]);
+    expect(handTyped.payload.wake_principal_ids).toEqual([]);
   });
 
   it("an agent mentions a person by writing @Name and naming them; the server places the mention", async () => {
@@ -309,5 +317,118 @@ describe("human and agent ownership", () => {
     const unjoined = await f.agent("Fixture Agent Three", false);
     expect((await call("GET", f.url(`/agents`), f.owner.principal_id)).json().agents.find((a: any) => a.principal_id === unjoined.principal_id)).toMatchObject({ rooms: [], owners: [expect.objectContaining({ principal_id: f.owner.principal_id })] });
     expect((await call("DELETE", f.url(`/agents/${f.first.principal_id}/owners/${f.colleague.principal_id}`), f.owner.principal_id)).json().owners.map((o: any) => o.principal_id)).toEqual([f.owner.principal_id]);
+  });
+});
+
+describe("who a message wakes", () => {
+  const wakes = async (f: Fixture, messageId: string) => (await messageEvent(f, messageId))[0].payload.wake_principal_ids;
+
+  it("a person mentioning a person wakes no agent; an agent mentioning a person wakes no agent and tells that person", async () => {
+    const f = await fixture();
+    const body = `${token("Fixture Colleague")} over to you`;
+    const human = (await say(f, f.owner.principal_id, body, { mentions: [mention(body, f.colleague.principal_id, "Fixture Colleague")] })).json();
+    expect(await wakes(f, human.id)).toEqual([]);
+    const cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    const agent = await (await agentSays(f.first, `${token("Fixture Owner")} the draft is ready`, { mentions: [{ principal_id: f.owner.principal_id }] })).json();
+    expect(await wakes(f, agent.id)).toEqual([]);
+    expect(await roomFor(f, f.owner.principal_id)).toMatchObject({ mention_count: 1 });
+    expect((await notificationsFor(f.owner.principal_id, cursor)).notifications.map((n: any) => n.kind)).toEqual(["mention"]);
+  });
+
+  it("an agent mentioning an agent wakes that agent exactly once; Send to plus a mention of the same agent is one wake", async () => {
+    const f = await fixture();
+    const handoff = await (await agentSays(f.first, `${token("Fixture Agent Two")} please check the numbers`, { mentions: [{ principal_id: f.second.principal_id }] })).json();
+    expect(await messageEvent(f, handoff.id)).toHaveLength(1);
+    expect(await wakes(f, handoff.id)).toEqual([f.second.principal_id]);
+    const body = `${token("Fixture Agent One")} this is yours`;
+    const direct = (await say(f, f.owner.principal_id, body, { addressed_principal_id: f.first.principal_id, mentions: [mention(body, f.first.principal_id, "Fixture Agent One")] })).json();
+    expect(await wakes(f, direct.id)).toEqual([f.first.principal_id]);
+  });
+});
+
+describe("bounded agent collaboration", () => {
+  const collaboration = async (f: Fixture) => (await pool.query(`SELECT * FROM agent_collaborations WHERE room_id=$1 ORDER BY created_at DESC LIMIT 1`, [f.room.id])).rows[0];
+  const turn = async (a: Fixture["first"], body: string, extra: Record<string, unknown> = {}) => {
+    const sent = await (await agentSays(a, body, extra)).json();
+    return (await pool.query(`SELECT payload FROM room_events WHERE entity_id=$1 AND event_type='message.sent'`, [sent.id])).rows[0].payload;
+  };
+
+  it("continues without re-mentioning, every turn a persisted message, and stops when its turn budget is spent", async () => {
+    const f = await fixture();
+    const opened = await turn(f.first, `${token("Fixture Agent Two")} let us work this out`, { mentions: [{ principal_id: f.second.principal_id }] });
+    expect(opened.wake_principal_ids).toEqual([f.second.principal_id]);
+    expect(opened.collaboration).toMatchObject({ status: "active", turn: 1, max_turns: 12 });
+    // The reply mentions nobody, and still reaches the other participant: the conversation goes on.
+    const reply = await turn(f.second, "Numbers checked, one correction needed");
+    expect(reply.wake_principal_ids).toEqual([f.first.principal_id]);
+    expect(reply.collaboration).toMatchObject({ id: opened.collaboration.id, turn: 2 });
+    let last = reply;
+    for (let i = 3; i <= 12; i++) last = await turn(i % 2 ? f.first : f.second, `Turn ${i}`);
+    // The budget's last turn wakes nobody, and the collaboration is over.
+    expect(last.collaboration).toMatchObject({ status: "exhausted", turn: 12 });
+    expect(last.wake_principal_ids).toEqual([]);
+    expect(await collaboration(f)).toMatchObject({ status: "exhausted", ended_reason: "max_turns", turn_count: 12 });
+    const after = await turn(f.first, "Anything else?");
+    expect(after.wake_principal_ids).toEqual([]);
+    expect((await pool.query(`SELECT count(*)::int n FROM room_events WHERE room_id=$1 AND event_type='message.sent'`, [f.room.id])).rows[0].n).toBe(13);
+  });
+
+  it("ends when an agent says the joint work is done", async () => {
+    const f = await fixture();
+    await turn(f.first, `${token("Fixture Agent Two")} please finish the summary`, { mentions: [{ principal_id: f.second.principal_id }] });
+    const done = await turn(f.second, "Summary is complete", { collaboration_done: true });
+    expect(done.wake_principal_ids).toEqual([]);
+    expect(done.collaboration).toMatchObject({ status: "completed" });
+    expect((await turn(f.first, "Thanks")).wake_principal_ids).toEqual([]);
+  });
+
+  it("waits while a person is asked to decide, and resumes once they answer", async () => {
+    const f = await fixture();
+    await turn(f.first, `${token("Fixture Agent Two")} can you prepare the release?`, { mentions: [{ principal_id: f.second.principal_id }] });
+    const asked = await f.second.client.requestDecision({ title: "Release now", question: "Publish the release?", proposed_action: { type: "publish" } }, "collab-decision");
+    expect(asked.status).toBe(200);
+    expect(await collaboration(f)).toMatchObject({ status: "waiting_for_human" });
+    expect((await turn(f.first, "Any update?")).wake_principal_ids).toEqual([]);
+    const decision = (await pool.query(`SELECT id,version,proposed_action_digest FROM decisions WHERE room_id=$1`, [f.room.id])).rows[0];
+    const approved = await call("POST", f.url(`/rooms/${f.room.id}/decisions/${decision.id}/approve`), f.owner.principal_id, { proposed_action_digest: decision.proposed_action_digest, expected_version: decision.version });
+    expect(approved.statusCode).toBe(200);
+    expect(await collaboration(f)).toMatchObject({ status: "active" });
+    expect((await turn(f.second, "Published")).wake_principal_ids).toEqual([f.first.principal_id]);
+  });
+
+  it("expires after a long silence rather than waking anyone later", async () => {
+    const f = await fixture();
+    await turn(f.first, `${token("Fixture Agent Two")} start when ready`, { mentions: [{ principal_id: f.second.principal_id }] });
+    await pool.query(`UPDATE agent_collaborations SET updated_at=now()-interval '31 minutes' WHERE room_id=$1`, [f.room.id]);
+    expect((await turn(f.second, "Starting now")).wake_principal_ids).toEqual([]);
+    expect(await collaboration(f)).toMatchObject({ status: "expired", ended_reason: "idle" });
+  });
+});
+
+describe("read receipts", () => {
+  it("shows which people have read a message, and which agents only had it delivered", async () => {
+    const f = await fixture();
+    f.first.client.roomId = f.room.id; await f.first.client.connect(0);
+    const sent = (await say(f, f.owner.principal_id, "Please look at the plan")).json();
+    const snapshot = (await call("GET", f.url(`/rooms/${f.room.id}/snapshot`), f.owner.principal_id)).json();
+    expect(snapshot.messages.at(-1)).toMatchObject({ id: sent.id, room_seq: sent.room_seq });
+    const positions = async () => (await call("GET", f.url(`/rooms/${f.room.id}/read-positions`), f.owner.principal_id)).json().read_positions;
+    expect((await positions()).find((p: any) => p.principal_id === f.colleague.principal_id)).toMatchObject({ kind: "human", last_read_seq: 0, delivered_seq: null });
+    await call("POST", f.url(`/rooms/${f.room.id}/read`), f.colleague.principal_id, { room_seq: sent.room_seq });
+    expect((await positions()).find((p: any) => p.principal_id === f.colleague.principal_id)).toMatchObject({ last_read_seq: sent.room_seq });
+    // An agent is never "seen": its connector acknowledged delivery, reported as its own thing.
+    await f.first.client.waitFor((x: any) => x.type === "room.event" && x.event.entity_id === sent.id);
+    const deadline = Date.now() + 3000;
+    let agent: any;
+    while (Date.now() < deadline) { agent = (await positions()).find((p: any) => p.principal_id === f.first.principal_id); if ((agent.delivered_seq ?? 0) >= sent.room_seq) break; await new Promise(r => setTimeout(r, 50)); }
+    expect(agent).toMatchObject({ kind: "agent", last_read_seq: null });
+    expect(agent.delivered_seq).toBeGreaterThanOrEqual(sent.room_seq);
+    const outsider = await seedHuman(pool, f.company.id, `${crypto.randomUUID()}@example.test`, "Fixture Non Member");
+    expect((await call("GET", f.url(`/rooms/${f.room.id}/read-positions`), outsider.principal_id)).statusCode).toBe(403);
+  });
+
+  it("reports which server build is running, so a stale deploy is visible", async () => {
+    const config = (await app.inject({ method: "GET", url: "/v1/app-config" })).json();
+    expect(config).toHaveProperty("build_commit");
   });
 });

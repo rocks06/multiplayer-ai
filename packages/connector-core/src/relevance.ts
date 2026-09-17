@@ -66,18 +66,20 @@ export async function isRelevantActionable(
 /**
  * Whether a message is this agent's to act on.
  *
- * Addressed to it, or naming it with a structured mention — from a person or another agent — is.
- * One event carries both, so an agent both addressed and mentioned is woken once, not twice. A
- * person's message to Everyone that mentions anyone is for the ones it mentions — "@a colleague,
- * can you review?" is not a prompt for every agent to answer; one that mentions nobody is for every
- * agent in the room, as it always was. An agent never wakes itself, and "@Name" written without a
- * mention routes nothing: only structure does.
+ * The workspace decides and records it on the event as `wake_principal_ids`: sent to this agent,
+ * mentioned by structure, or its turn in a bounded collaboration. A message to Everyone is context,
+ * not a prompt — no agent replies merely because it was said to the room. One event is one wake, so
+ * an agent both sent and mentioned is woken once, and an agent never wakes itself. "@Name" written
+ * without a structured mention routes nothing.
+ *
+ * Events from before the workspace recorded recipients fall back to the same rule from their own
+ * fields: addressed or mentioned, and never a broadcast.
  */
 export function messageWakes(event: RoomEvent, agentPrincipalId: string): boolean {
   if (event.actor_principal_id === agentPrincipalId) return false;
-  const addressed = event.payload?.addressed_principal_id as string | undefined | null;
-  if (addressed === agentPrincipalId) return true;
-  const mentions = Array.isArray(event.payload?.mentions) ? event.payload!.mentions as Array<{ principal_id?: string; kind?: string }> : [];
-  if (mentions.some(mention => mention?.principal_id === agentPrincipalId)) return true;
-  return event.actor_kind === "human" && !addressed && mentions.length === 0;
+  const recorded = event.payload?.wake_principal_ids;
+  if (Array.isArray(recorded)) return recorded.includes(agentPrincipalId);
+  if (event.payload?.addressed_principal_id === agentPrincipalId) return true;
+  const mentions = Array.isArray(event.payload?.mentions) ? event.payload!.mentions as Array<{ principal_id?: string }> : [];
+  return mentions.some(mention => mention?.principal_id === agentPrincipalId);
 }

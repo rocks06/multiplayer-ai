@@ -135,15 +135,23 @@ public struct WorkspaceRoom: Equatable, Sendable, Identifiable {
     public let name: String
     public let projectId: String
     public let projectName: String
+    /// This person's read position and what is unread after it, when the server reports them.
+    public var lastReadSeq: Int? = nil
+    public var lastEventSeq: Int? = nil
+    public var unreadCount: Int? = nil
     public var id: String { roomId }
     public init(roomId: String, name: String, projectId: String, projectName: String) {
         self.roomId = roomId; self.name = name; self.projectId = projectId; self.projectName = projectName
     }
     public static func decode(_ row: [String: Any]) -> WorkspaceRoom? {
         guard let roomId = row["room_id"] as? String, let name = row["name"] as? String else { return nil }
-        return WorkspaceRoom(roomId: roomId, name: name,
-                             projectId: row["project_id"] as? String ?? "",
-                             projectName: row["project_name"] as? String ?? name)
+        var room = WorkspaceRoom(roomId: roomId, name: name,
+                                 projectId: row["project_id"] as? String ?? "",
+                                 projectName: row["project_name"] as? String ?? name)
+        room.lastReadSeq = row["last_read_seq"] as? Int
+        room.lastEventSeq = row["last_event_seq"] as? Int
+        room.unreadCount = row["unread_count"] as? Int
+        return room
     }
 }
 
@@ -235,10 +243,21 @@ public final class WorkspaceClient: @unchecked Sendable {
         components.path = "/v1/me/notifications"
         if let after { components.queryItems = [URLQueryItem(name: "after", value: after)] }
         guard let path = components.string else { throw WorkspaceError.malformed() }
-        let payload = try await send("GET", path)
+        let payload: [String: Any]
+        do { payload = try await send("GET", path) }
+        catch let error as WorkspaceError where error.status == 404 {
+            // The route is missing, not the person's notifications: a server older than this app.
+            throw WorkspaceError(code: "notifications_unavailable", message: "The workspace server does not provide notifications yet.",
+                                 status: 404, recovery: "It is probably running an older build than this app. Deploy the server, then check again.")
+        }
         guard let cursor = payload["cursor"] as? String else { throw WorkspaceError.malformed() }
         let items = (payload["notifications"] as? [[String: Any]] ?? []).compactMap(RoomNotification.decode)
         return NotificationPage(cursor: cursor, notifications: items)
+    }
+
+    /// The server's public configuration, including which build it is.
+    public func appConfig() async throws -> [String: Any] {
+        try await send("GET", "/v1/app-config")
     }
 
     public func rooms(companyId: String) async throws -> [WorkspaceRoom] {

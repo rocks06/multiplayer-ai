@@ -25,6 +25,8 @@ public final class ConnectorModel {
         enrolments.first { $0.agentPrincipalId == principalId }
     }
     public var showingDiagnostics = false
+    /// Notification and unread state, when the app has started notifications. Shown in Diagnostics.
+    public var attention: AttentionDiagnostics?
 
     /* The menu bar popover tears its content view down every time it closes, which is exactly
        what happens when someone clicks away to copy their code. Anything they have typed lives
