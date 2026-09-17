@@ -467,6 +467,10 @@ public final class AppModel {
     /// is asked of macOS until there is something to show.
     public func enableNotifications(poster: NotificationPosting) {
         notificationPoster = poster
+        // The native path is testable before anyone signs in: it needs no workspace at all.
+        connector.notificationTrace = poster.trace
+        connector.sendTestNotification = { [weak poster] in _ = await poster?.sendTest() }
+        Task { _ = await poster.permissionStatus() }
         updateNotifications()
     }
 

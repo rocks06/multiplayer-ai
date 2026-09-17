@@ -168,7 +168,7 @@ export function AttachmentComposer({members,onSend,to,onAddressee,focusToken,api
             if(e.key==='Escape'){e.preventDefault();setPicking(null);return}
           }
           if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void submit()}
-        }}/><button disabled={busy||(!body.trim()&&!files.length)} aria-label="Send message">{busy?'…':'↑'}</button></div>
+        }}/><button className="composer-send" disabled={busy||(!body.trim()&&!files.length)} aria-label="Send message">{busy?'…':'↑'}</button></div>
     {error&&<p className="form-error" role="alert">{error}</p>}
   </form>;
 }

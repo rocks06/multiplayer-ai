@@ -384,7 +384,61 @@ describe("bounded agent collaboration", () => {
     const final = await turn(f.first, "Final version attached", { collaboration_done: true });
     expect(final.wake_principal_ids).toEqual([]);
     expect(final.collaboration).toMatchObject({ status: "completed" });
-    expect((await turn(f.second, "Thanks")).wake_principal_ids).toEqual([]);
+    // Finished means finished: no participant posts about it again until a person speaks.
+    expect((await agentSays(f.second, "Thanks", {})).status).toBe(409);
+  });
+
+  const readyFile = async (f: Fixture, creator: string, name: string) => {
+    const id = crypto.randomUUID();
+    await pool.query(`INSERT INTO artifacts(id,company_id,room_id,creator_principal_id,filename,content_type,byte_size,storage_key,status,delivered_at)
+      VALUES($1,$2,$3,$4,$5,'application/pdf',10,$6,'ready',now())`, [id, f.company.id, f.room.id, creator, name, `fixture/${id}`]);
+    return id;
+  };
+
+  it("a person asking two agents to work together gets exactly one final message and one final file", async () => {
+    const f = await fixture();
+    const body = `${token("Fixture Agent One")} ${token("Fixture Agent Two")} write the report together`;
+    const asked = (await say(f, f.owner.principal_id, body, { mentions: [mention(body, f.first.principal_id, "Fixture Agent One"), mention(body, f.second.principal_id, "Fixture Agent Two")] })).json();
+    const [started] = await messageEvent(f, asked.id);
+    expect(started.payload.collaboration).toMatchObject({ lead_principal_id: f.first.principal_id });
+
+    // Both were woken at once. The contributor cannot publish a file, with or without finishing.
+    const contributorFile = await agentSays(f.second, "Here is my version", { artifact_ids: [await readyFile(f, f.second.principal_id, "second.pdf")] });
+    expect(contributorFile.status).toBe(409);
+    expect((await contributorFile.json()).error.code).toBe("collaboration_result_reserved");
+    expect((await agentSays(f.second, "Here is my version", { artifact_ids: [await readyFile(f, f.second.principal_id, "second-b.pdf")], collaboration_done: true })).status).toBe(409);
+    // The lead cannot publish a file except as the one final result.
+    expect((await agentSays(f.first, "Draft attached", { artifact_ids: [await readyFile(f, f.first.principal_id, "draft.pdf")] })).status).toBe(409);
+
+    // What is allowed: a contribution in words, then the lead's single final result.
+    expect((await turn(f.second, "My part: sections two and three", { collaboration_done: true })).collaboration).toMatchObject({ finalizing: true });
+    const final = await turn(f.first, "Final report attached", { artifact_ids: [await readyFile(f, f.first.principal_id, "report.pdf")], collaboration_done: true });
+    expect(final.collaboration).toMatchObject({ status: "completed" });
+
+    // A run still going when it closed cannot add a second answer or a second file — from anyone.
+    const late = await agentSays(f.second, "Final report", { artifact_ids: [await readyFile(f, f.second.principal_id, "late.pdf")], collaboration_done: true });
+    expect(late.status).toBe(409);
+    expect((await late.json()).error.code).toBe("collaboration_closed");
+    expect((await agentSays(f.second, "Final report: here are the results", {})).status).toBe(409);
+    expect((await agentSays(f.first, "Final report again", { artifact_ids: [await readyFile(f, f.first.principal_id, "again.pdf")], collaboration_done: true })).status).toBe(409);
+
+    const finals = await pool.query(`SELECT e.actor_principal_id FROM room_events e WHERE e.room_id=$1 AND e.event_type='message.sent' AND e.actor_kind='agent'
+      AND e.payload->'collaboration'->>'status'='completed'`, [f.room.id]);
+    expect(finals.rows.map(r => r.actor_principal_id)).toEqual([f.first.principal_id]);
+    const files = await pool.query(`SELECT a.filename FROM message_artifacts ma JOIN artifacts a ON a.id=ma.artifact_id WHERE ma.room_id=$1`, [f.room.id]);
+    expect(files.rows.map(r => r.filename)).toEqual(["report.pdf"]);
+
+    // A person asking something new opens the room to the agents again.
+    await say(f, f.owner.principal_id, "Thanks — one follow-up question for everyone");
+    expect((await agentSays(f.second, "Happy to answer", {})).status).toBe(200);
+  });
+
+  it("an agent cannot send a message to itself: it is sent to the room and wakes nobody", async () => {
+    const f = await fixture();
+    const own = await turn(f.first, "Hey, note to self", { addressed_principal_id: f.first.principal_id });
+    expect(own.addressed_principal_id).toBeNull();
+    expect(own.wake_principal_ids).toEqual([]);
+    expect(await collaboration(f)).toBeUndefined();
   });
 
   it("a person bringing several agents together makes the first one named the lead", async () => {

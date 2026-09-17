@@ -166,3 +166,25 @@ for(const viewport of [{width:1440,height:900},{width:1024,height:640},{width:12
     if(viewport.width>=1180){await page.getByRole('button',{name:'Briefing',exact:false}).click();const briefing=await measure(page);expect(briefing.composer.bottom).toBe(before.composer.bottom);expect(briefing.shell.scrollHeight).toBe(briefing.shell.clientHeight)}
   });
 }
+for(const colorScheme of ['light','dark'] as const)test(`the send button uses the app's primary-action colours and states in ${colorScheme} mode`,async({page})=>{
+  await page.emulateMedia({colorScheme});
+  await page.setViewportSize({width:1440,height:900});await openRoom(page);
+  const send=page.getByRole('button',{name:'Send message'});
+  const look=()=>send.evaluate(el=>{const s=getComputedStyle(el),root=getComputedStyle(document.documentElement);
+    const probe=(v:string)=>{const d=document.createElement('i');d.style.color=`var(${v})`;document.body.append(d);const c=getComputedStyle(d).color;d.remove();return c};
+    return {background:s.backgroundColor,color:s.color,opacity:s.opacity,ink:probe('--ink'),onInk:probe('--on-ink'),moss:probe('--moss'),scheme:root.colorScheme}});
+  // Nothing to send: the usual dimmed primary, not a different colour.
+  await expect(send).toBeDisabled();
+  let state=await look();
+  expect(state.background).toBe(state.ink);expect(state.color).toBe(state.onInk);expect(state.opacity).toBe('0.4');
+  await page.getByRole('textbox',{name:'Message',exact:true}).fill('Ready to send');
+  await expect(send).toBeEnabled();
+  await page.waitForTimeout(200);
+  state=await look();
+  expect(state.background).toBe(state.ink);expect(state.color).toBe(state.onInk);expect(state.opacity).toBe('1');
+  // The arrow stays legible against its own background in either theme.
+  expect(state.color).not.toBe(state.background);
+  await send.hover();await page.waitForTimeout(200);
+  state=await look();
+  expect(state.background).toBe(state.ink);expect(state.background).not.toBe(state.moss);expect(state.opacity).toBe('0.88');
+});

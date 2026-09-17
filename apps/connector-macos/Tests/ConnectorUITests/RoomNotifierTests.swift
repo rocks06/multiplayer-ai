@@ -16,7 +16,54 @@ import Foundation
             if status == "not determined" { status = allowed ? "authorized" : "denied" }
             return allowed
         }
-        func post(_ notification: RoomNotification) async { posted.append(notification) }
+        var refusal: String?
+        var tests = 0
+        let trace = NotificationTrace()
+        func post(_ notification: RoomNotification) async -> NotificationDelivery {
+            if let refusal { return .refused(refusal) }
+            posted.append(notification); return .accepted("fixture")
+        }
+        func sendTest() async -> NotificationDelivery { tests += 1; trace.test = "Sent"; return .accepted("fixture") }
+    }
+
+    @Test func aNotificationMacOSRefusesIsNotReportedAsShown() async {
+        let poster = RecordingPoster(); poster.status = "authorized"
+        poster.refusal = "macOS refused it: Notifications are not allowed for this application (UNErrorDomain 1)"
+        let notifier = RoomNotifier(fetch: { _ in NotificationPage(cursor: "c1", notifications: [Self.note("n1")]) },
+                                    poster: poster, memory: MemoryNotifierMemory(), visibleRoom: { nil })
+        let shown = await notifier.poll()
+        #expect(shown.isEmpty)
+        #expect(notifier.diagnostics.lastShown == "—")
+        #expect(notifier.diagnostics.lastSuppressed.contains("macOS did not show it"))
+        #expect(notifier.diagnostics.lastSuppressed.contains("UNErrorDomain 1"))
+    }
+
+    @Test func permissionWithBannersSetToNoneIsCalledOutAsTheReasonNothingAppears() {
+        let none = NotificationTrace.describe(authorization: .authorized, alert: .enabled, style: .none, sound: .enabled, notificationCenter: .enabled)
+        #expect(none.summary.contains("allowed"))
+        #expect(none.summary.contains("style none"))
+        #expect(none.blocker?.contains("Banners are off") == true)
+        let off = NotificationTrace.describe(authorization: .authorized, alert: .disabled, style: .banner, sound: .enabled, notificationCenter: .enabled)
+        #expect(off.blocker?.contains("Banners are off") == true)
+        let denied = NotificationTrace.describe(authorization: .denied, alert: .disabled, style: .none, sound: .disabled, notificationCenter: .disabled)
+        #expect(denied.blocker?.contains("Allow Notifications") == true)
+        let working = NotificationTrace.describe(authorization: .authorized, alert: .enabled, style: .banner, sound: .enabled, notificationCenter: .enabled)
+        #expect(working.blocker == nil)
+        #expect(working.summary == "allowed · style banners · sound on · Notification Center on")
+        #expect(NotificationTrace.describe(NSError(domain: "UNErrorDomain", code: 1, userInfo: [NSLocalizedDescriptionKey: "Not allowed"])) == "Not allowed (UNErrorDomain 1)")
+    }
+
+    @Test func diagnosticsCanSendATestNotificationBeforeAnyoneSignsIn() async {
+        let connector = ConnectorModel(live: false)
+        let app = AppModel(store: MemoryProgressStore(Progress()), connector: connector)
+        let poster = RecordingPoster()
+        app.enableNotifications(poster: poster)
+        #expect(app.notifier == nil)
+        #expect(connector.notificationTrace === poster.trace)
+        await connector.sendTestNotification?()
+        #expect(poster.tests == 1)
+        #expect(poster.trace.rows.contains { $0.0 == "Test notification" && $0.1 == "Sent" })
+        #expect(poster.posted.isEmpty)
     }
 
     static let company = "00000000-0000-4000-8000-0000000000c1"

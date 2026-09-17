@@ -27,6 +27,10 @@ public final class ConnectorModel {
     public var showingDiagnostics = false
     /// Notification and unread state, when the app has started notifications. Shown in Diagnostics.
     public var attention: AttentionDiagnostics?
+    /// What happened between this app and the screen for the last notification, and a way to send
+    /// one from Diagnostics that proves the native path on its own.
+    public var notificationTrace: NotificationTrace?
+    public var sendTestNotification: (() async -> Void)?
 
     /* The menu bar popover tears its content view down every time it closes, which is exactly
        what happens when someone clicks away to copy their code. Anything they have typed lives

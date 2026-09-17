@@ -38,6 +38,16 @@ public struct NotificationPage: Sendable {
     public init(cursor: String, notifications: [RoomNotification]) { self.cursor = cursor; self.notifications = notifications }
 }
 
+/// What became of one notification handed to macOS.
+public enum NotificationDelivery: Equatable, Sendable {
+    /// macOS took it. The detail says what is known about whether a banner can appear.
+    case accepted(String)
+    /// It never got to the screen, and why.
+    case refused(String)
+
+    public var accepted: Bool { if case .accepted = self { return true } else { return false } }
+}
+
 /// Where notifications go. The system implementation below; a recording one in tests.
 @MainActor
 public protocol NotificationPosting: AnyObject {
@@ -45,7 +55,79 @@ public protocol NotificationPosting: AnyObject {
     func permissionStatus() async -> String
     /// Ask, if the person has never been asked. Returns whether notifications may be shown.
     func requestPermission() async -> Bool
-    func post(_ notification: RoomNotification) async
+    func post(_ notification: RoomNotification) async -> NotificationDelivery
+    /// A notification made here and now, needing no workspace, server or event: whether a banner
+    /// can reach this screen at all, proved on its own.
+    func sendTest() async -> NotificationDelivery
+    /// Every step between this app and the screen, for Diagnostics.
+    var trace: NotificationTrace { get }
+}
+
+/**
+ * The path a notification takes after this app decides to show it — which is where a notification
+ * that was received, counted and never seen disappeared without a word. Each step records what
+ * happened: macOS's settings for this app (permission is not the same as banners), whether macOS
+ * accepted it, whether macOS asked the frontmost app how to present it, and whether it reached
+ * Notification Center.
+ */
+@Observable
+@MainActor
+public final class NotificationTrace {
+    public var settings = "Not checked"
+    public var lastAttempt = "—"
+    public var lastOutcome = "—"
+    public var presentation = "—"
+    public var notificationCenter = "—"
+    public var lastClick = "—"
+    public var test = "Not sent"
+    public init() {}
+
+    public var rows: [(String, String)] {
+        [("Notification settings", settings), ("Last delivery attempt", lastAttempt), ("Delivery outcome", lastOutcome),
+         ("Presentation", presentation), ("Notification Center", notificationCenter), ("Last click", lastClick),
+         ("Test notification", test)]
+    }
+
+    /// macOS's settings for this app, said plainly, with the one thing standing between them and a
+    /// banner if there is one. Permission granted with the alert style set to None shows nothing.
+    nonisolated public static func describe(authorization: UNAuthorizationStatus, alert: UNNotificationSetting,
+                                            style: UNAlertStyle, sound: UNNotificationSetting,
+                                            notificationCenter: UNNotificationSetting) -> (summary: String, blocker: String?) {
+        let permission: String
+        switch authorization {
+        case .authorized: permission = "allowed"
+        case .provisional: permission = "allowed quietly (provisional)"
+        case .denied: permission = "denied"
+        case .notDetermined: permission = "not asked yet"
+        default: permission = "unavailable"
+        }
+        let styleName: String
+        switch style {
+        case .banner: styleName = "banners"
+        case .alert: styleName = "alerts"
+        default: styleName = "none"
+        }
+        let summary = "\(permission) · style \(styleName) · sound \(sound == .enabled ? "on" : "off") · Notification Center \(notificationCenter == .enabled ? "on" : "off")"
+        switch authorization {
+        case .denied:
+            return (summary, "Notifications are turned off for Multiplayer AI. Turn on Allow Notifications in System Settings › Notifications › Multiplayer AI.")
+        case .notDetermined:
+            return (summary, "macOS has not been asked yet.")
+        case .authorized, .provisional:
+            if style == .none || alert == .disabled {
+                return (summary, "Banners are off for Multiplayer AI: set its alert style to Banners or Alerts in System Settings › Notifications › Multiplayer AI.")
+            }
+            return (summary, nil)
+        default:
+            return (summary, "Notifications are not available to this app.")
+        }
+    }
+
+    /// An error from macOS, with the code that identifies it — the message alone is often generic.
+    nonisolated public static func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        return "\(ns.localizedDescription) (\(ns.domain) \(ns.code))"
+    }
 }
 
 /**
@@ -183,9 +265,14 @@ public final class RoomNotifier {
             if RoomNotifier.suppressed(notification, visible: visibleRoom()) {
                 diagnostics.lastSuppressed = "\(label) (room already on screen)"; continue
             }
-            await poster.post(notification)
-            diagnostics.lastShown = label
-            shown.append(notification)
+            // Shown means macOS took it, not that this app asked: that difference hid every failure.
+            switch await poster.post(notification) {
+            case .accepted:
+                diagnostics.lastShown = label
+                shown.append(notification)
+            case .refused(let reason):
+                diagnostics.lastSuppressed = "\(label) (macOS did not show it: \(reason))"
+            }
         }
         memory.delivered = Array(delivered.suffix(RoomNotifier.rememberedDeliveries))
         memory.cursor = page.cursor
@@ -231,19 +318,28 @@ public final class RoomNotifier {
 public final class SystemNotificationPoster: NSObject, NotificationPosting, UNUserNotificationCenterDelegate {
     private let center: UNUserNotificationCenter
     private let open: (String) -> Void
+    private let appActive: () -> Bool
+    public let trace = NotificationTrace()
+    /// Notifications macOS asked this app how to present — the proof the delegate is reached.
+    private var presented: Set<String> = []
 
     /// `open` receives the notification's link when it is clicked.
-    public init(open: @escaping (String) -> Void) {
+    public init(appActive: @escaping () -> Bool = { false }, open: @escaping (String) -> Void) {
         self.center = UNUserNotificationCenter.current()
         self.open = open
+        self.appActive = appActive
         super.init()
         center.delegate = self
     }
 
     public func permissionStatus() async -> String {
-        switch await center.notificationSettings().authorizationStatus {
-        case .authorized: return "authorized"
-        case .provisional: return "provisional"
+        let settings = await center.notificationSettings()
+        let described = NotificationTrace.describe(authorization: settings.authorizationStatus, alert: settings.alertSetting,
+                                                   style: settings.alertStyle, sound: settings.soundSetting,
+                                                   notificationCenter: settings.notificationCenterSetting)
+        trace.settings = described.summary
+        switch settings.authorizationStatus {
+        case .authorized, .provisional: return described.blocker.map { "authorized, but \($0)" } ?? "authorized"
         case .denied: return "denied — allow Multiplayer AI in System Settings › Notifications"
         case .notDetermined: return "not determined"
         default: return "unavailable"
@@ -253,12 +349,14 @@ public final class SystemNotificationPoster: NSObject, NotificationPosting, UNUs
     public func requestPermission() async -> Bool {
         switch await center.notificationSettings().authorizationStatus {
         case .authorized, .provisional: return true
-        case .notDetermined: return (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
+        case .notDetermined:
+            do { return try await center.requestAuthorization(options: [.alert, .sound, .badge]) }
+            catch { trace.settings = "Asking macOS for permission failed: \(NotificationTrace.describe(error))"; return false }
         default: return false
         }
     }
 
-    public func post(_ notification: RoomNotification) async {
+    public func post(_ notification: RoomNotification) async -> NotificationDelivery {
         let content = UNMutableNotificationContent()
         content.title = notification.title
         content.subtitle = notification.roomName
@@ -268,20 +366,87 @@ public final class SystemNotificationPoster: NSObject, NotificationPosting, UNUs
         content.userInfo = ["link": notification.link]
         if notification.category != "informational" { content.sound = .default }
         // The id is the event's: even the system collapses a repeat of the same one.
-        let request = UNNotificationRequest(identifier: notification.id, content: content, trigger: nil)
-        try? await center.add(request)
+        return await deliver(id: notification.id, content: content, label: "\(notification.title) · \(notification.roomName)")
+    }
+
+    public func sendTest() async -> NotificationDelivery {
+        let content = UNMutableNotificationContent()
+        content.title = "Multiplayer AI"
+        content.body = "Test notification — if you can see this banner, notifications reach your screen."
+        content.sound = .default
+        let sent = AttentionDiagnostics.stamp()
+        let result = await deliver(id: "test-\(UUID().uuidString)", content: content, label: "Test notification")
+        switch result {
+        case .accepted(let detail): trace.test = "Sent \(sent) — \(detail)"
+        case .refused(let reason): trace.test = "Failed \(sent) — \(reason)"
+        }
+        return result
+    }
+
+    /// Hand one notification to macOS and record every step of what happened to it.
+    private func deliver(id: String, content: UNNotificationContent, label: String) async -> NotificationDelivery {
+        trace.lastAttempt = "\(label) · \(AttentionDiagnostics.stamp())"
+        trace.presentation = "—"; trace.notificationCenter = "—"
+        func refuse(_ reason: String) -> NotificationDelivery { trace.lastOutcome = "Not shown: \(reason)"; return .refused(reason) }
+
+        if await center.notificationSettings().authorizationStatus == .notDetermined {
+            do { _ = try await center.requestAuthorization(options: [.alert, .sound, .badge]) }
+            catch { return refuse("asking macOS for permission failed: \(NotificationTrace.describe(error))") }
+        }
+        let settings = await center.notificationSettings()
+        let described = NotificationTrace.describe(authorization: settings.authorizationStatus, alert: settings.alertSetting,
+                                                   style: settings.alertStyle, sound: settings.soundSetting,
+                                                   notificationCenter: settings.notificationCenterSetting)
+        trace.settings = described.summary
+        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+            return refuse(described.blocker ?? "macOS does not allow notifications for this app.")
+        }
+        let active = appActive()
+        do { try await center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) }
+        catch { return refuse("macOS refused it: \(NotificationTrace.describe(error))") }
+
+        let detail = described.blocker ?? (active
+            ? "accepted by macOS while the app is frontmost; the app asked for a banner"
+            : "accepted by macOS while the app is in the background; macOS shows the banner")
+        trace.lastOutcome = "Accepted \(AttentionDiagnostics.stamp()) — \(detail)"
+        trace.presentation = active ? "Waiting for macOS to ask the app how to present it" : "App in background — macOS presents it without asking the app"
+        Task { [weak self] in await self?.confirm(id: id, active: active) }
+        return .accepted(detail)
+    }
+
+    /// What macOS did next: whether it asked the frontmost app how to present the notification, and
+    /// whether the notification is in Notification Center. Neither step reports an error on its own.
+    private func confirm(id: String, active: Bool) async {
+        try? await Task.sleep(for: .milliseconds(1500))
+        let listed = await center.deliveredNotifications().contains { $0.request.identifier == id }
+        trace.notificationCenter = listed
+            ? "Listed \(AttentionDiagnostics.stamp())"
+            : "Not listed — macOS did not keep it (Notification Center may be off for this app)"
+        if active && !presented.contains(id) {
+            trace.presentation = "macOS never asked the app how to present it while frontmost — no banner can appear in the foreground"
+        }
     }
 
     nonisolated public func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                                    withCompletionHandler completionHandler: @escaping () -> Void) {
         let link = response.notification.request.content.userInfo["link"] as? String
+        let title = response.notification.request.content.title
         completionHandler()
-        guard let link, AppModel.sharedRoomLink(link) != nil else { return }
-        Task { @MainActor in self.open(link) }
+        Task { @MainActor in
+            self.trace.lastClick = "\(title) · \(AttentionDiagnostics.stamp())"
+            guard let link, AppModel.sharedRoomLink(link) != nil else { return }
+            self.open(link)
+        }
     }
 
     nonisolated public func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                                    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // Frontmost apps get no banner unless they ask for one here.
         completionHandler([.banner, .list, .sound])
+        let id = notification.request.identifier
+        Task { @MainActor in
+            self.presented.insert(id)
+            self.trace.presentation = "macOS asked the frontmost app; banner requested \(AttentionDiagnostics.stamp())"
+        }
     }
 }

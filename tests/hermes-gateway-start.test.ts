@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HermesAdapter, deliveryPrompt } from '../packages/connector-hermes/src/index.js';
+import { HermesAdapter, deliveryPrompt, selfIdentity } from '../packages/connector-hermes/src/index.js';
 
 /**
  * Starting a stopped agent, without sending anybody to a terminal.
@@ -141,5 +141,37 @@ describe('delivering files in a collaboration', () => {
     expect(contributor).not.toContain(output.directory);
     expect(contributor).toMatch(/lead produces the single agreed result/);
     expect(contributor).toContain('--collaboration-done');
+  });
+});
+
+describe('an agent knows which participant it is', () => {
+  const HUMAN_MESSAGE = (mentions: Array<{ principal_id: string; start: number; end: number }>, body: string) =>
+    [{ type: 'room.event', event: { id: 'h', room_seq: 1, event_type: 'message.sent', actor_principal_id: 'person', actor_kind: 'human', payload: { body_text: body, mentions } } }];
+
+  it('names itself from the mention that woke it, and is told never to address itself', () => {
+    const body = '@Alpha @Beta work this out together';
+    const trigger = HUMAN_MESSAGE([{ principal_id: 'a', start: 0, end: 6 }, { principal_id: 'b', start: 7, end: 12 }], body);
+    const alpha = selfIdentity({ trigger: trigger as any, agentPrincipalId: 'a' });
+    const beta = selfIdentity({ trigger: trigger as any, agentPrincipalId: 'b' });
+    expect(alpha).toContain('you are Alpha');
+    expect(alpha).toContain('never write "@Alpha" or "Hey Alpha"');
+    expect(beta).toContain('you are Beta');
+    expect(beta).not.toContain('Alpha');
+  });
+
+  it('without a mention it points at its own principal id rather than guessing a name', () => {
+    const text = selfIdentity({ trigger: [] as any, agentPrincipalId: 'a' });
+    expect(text).toContain('principal id is a');
+    expect(text).toContain('Never address, greet, mention or send a message to yourself');
+  });
+
+  it('the full prompt carries the identity and does not present the profile as the room name', () => {
+    const adapter = new HermesAdapter({ command: '/nonexistent' });
+    const trigger = HUMAN_MESSAGE([{ principal_id: 'a', start: 0, end: 6 }], '@Alpha please help');
+    const prompt = adapter.buildPrompt({ profile: 'fixture-profile', roomId: 'r', agentPrincipalId: 'a', trigger: trigger as any, assignedTasks: [],
+      commandSurface: { template: 'tool COMMAND', verbs: ['message'] } as any, logPath: '/tmp/x.log' });
+    expect(prompt).toContain('local profile fixture-profile');
+    expect(prompt).toContain('you are Alpha');
+    expect(prompt).toContain('collaboration_closed');
   });
 });

@@ -273,9 +273,18 @@ describe("one agreed result per collaboration", () => {
     expect(collaborationContributor([turn(PEER, ME)], ME)).toBe(false);
   });
 
-  it("a person asking this agent directly in the same wake is not held back", () => {
-    const person: { type: string; event: RoomEvent } = { type: "room.event", event: { id: "p", room_seq: 2, event_type: "message.sent", actor_principal_id: HUMAN, actor_kind: "human", payload: { addressed_principal_id: ME } } };
-    expect(collaborationContributor([turn(PEER, PEER), person], ME)).toBe(false);
+  it("a person starting a collaboration by mentioning several agents leaves only its lead producing the result", () => {
+    const started = (lead: string): { type: string; event: RoomEvent } => ({ type: "room.event", event: { id: `h-${lead}`, room_seq: 2, event_type: "message.sent", actor_principal_id: HUMAN, actor_kind: "human",
+      payload: { mentions: [{ principal_id: lead, kind: "agent" }, { principal_id: lead === ME ? PEER : ME, kind: "agent" }], collaboration: { id: "c", status: "active", turn: 0, lead_principal_id: lead } } } });
+    expect(collaborationContributor([started(PEER)], ME)).toBe(true);
+    expect(collaborationContributor([started(ME)], ME)).toBe(false);
+    const person: { type: string; event: RoomEvent } = { type: "room.event", event: { id: "p", room_seq: 3, event_type: "message.sent", actor_principal_id: HUMAN, actor_kind: "human", payload: { addressed_principal_id: ME } } };
+    expect(collaborationContributor([turn(PEER, PEER), person], ME)).toBe(true);
+  });
+
+  it("a finished collaboration makes nobody a contributor", () => {
+    const done: { type: string; event: RoomEvent } = { type: "room.event", event: { id: "d", room_seq: 4, event_type: "message.sent", actor_principal_id: PEER, actor_kind: "agent", payload: { collaboration: { id: "c", status: "completed", lead_principal_id: PEER } } } };
+    expect(collaborationContributor([done], ME)).toBe(false);
   });
 
   it("anything that is not a collaboration turn is not a contributor wake", () => {

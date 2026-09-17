@@ -646,7 +646,42 @@ export class RoomService {
     };
   }
 
+  /**
+   * One collaboration, one published result — enforced here, because two agents each told to
+   * "deliver the result" will each deliver one however carefully they are prompted.
+   *
+   * While a collaboration is going, files are published only by its lead, and only with the message
+   * that finishes it; everyone else contributes in words. Once the lead has finished it, its
+   * participants' conversation about it is over: a run that was still going when it closed cannot
+   * post a second answer or a second file. That lasts until a person asks something new in the room
+   * (or for as long as a collaboration may sit idle), and never touches work on an assigned task.
+   */
+  private async guardCollaborationResult(c:DbClient,input:{companyId:string;roomId:string;actorId:string;artifactCount:number;collaborationDone?:boolean;taskId?:string}) {
+    const found=await c.query<{status:string;lead_principal_id:string;lead_name:string|null;person_since:boolean}>(
+      `SELECT ac.status,ac.lead_principal_id,p.display_name lead_name,
+              EXISTS(SELECT 1 FROM room_events e WHERE e.company_id=ac.company_id AND e.room_id=ac.room_id AND e.actor_kind='human'
+                       AND (e.event_type='message.sent' OR e.event_type LIKE 'task.%' OR e.event_type LIKE 'decision.%') AND e.created_at>ac.updated_at) person_since
+         FROM agent_collaborations ac LEFT JOIN principals p ON p.company_id=ac.company_id AND p.id=ac.lead_principal_id
+        WHERE ac.company_id=$1 AND ac.room_id=$2 AND $3::uuid=ANY(ac.participant_principal_ids)
+          AND ac.status IN ('active','waiting_for_human','completed') AND ac.updated_at>=now()-make_interval(mins=>$4::int)
+        ORDER BY ac.updated_at DESC LIMIT 1`,[input.companyId,input.roomId,input.actorId,COLLABORATION_IDLE_MINUTES]);
+    const current=found.rows[0];
+    if(!current)return;
+    const lead=current.lead_name?`@${current.lead_name}`:'the lead';
+    if(current.status==='completed'){
+      if(current.person_since||input.taskId)return;
+      throw new DomainError('collaboration_closed',`This collaboration is finished and ${lead} has published its result. Do not post another answer; wait for a person to ask something new.`,409);
+    }
+    if(!input.artifactCount)return;
+    if(current.lead_principal_id!==input.actorId)
+      throw new DomainError('collaboration_result_reserved',`Only ${lead} publishes the result of this collaboration. Send your contribution as a message without files.`,409);
+    if(!input.collaborationDone)
+      throw new DomainError('collaboration_result_reserved','Publish files once, with the final result: send them with --collaboration-done.',409);
+  }
+
   async sendMessage(input:{companyId:string;roomId:string;actorId:string;addressedPrincipalId?:string;body:string;artifactIds?:string[];mentions?:MentionInput[];collaborationDone?:boolean;taskId?:string;inReplyToMessageId?:string;idempotencyKey:string;runGuard?:RunGuard}) {
+    // Sending a message to yourself reaches nobody; it only reads as talking to yourself.
+    if(input.addressedPrincipalId===input.actorId)input={...input,addressedPrincipalId:undefined};
     const artifactIds=[...new Set(input.artifactIds??[])];
     if(!input.body.trim()&&!artifactIds.length)throw new DomainError('message_empty','Write a message or attach a file',400);
     if(artifactIds.length>10)throw new DomainError('too_many_artifacts','Attach at most ten files per message',400);
@@ -654,6 +689,8 @@ export class RoomService {
     const mentionInput=(input.mentions??[]).filter(m=>m.principal_id!==input.actorId).map(m=>({principal_id:m.principal_id,start:m.start,end:m.end}));
     return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds,...(mentionInput.length?{mentions:mentionInput}:{}),...(input.collaborationDone?{collaborationDone:true}:{})},permission:'message.send'},async(c,actor)=>{
       if(input.addressedPrincipalId)await this.membership(c,input.companyId,input.roomId,input.addressedPrincipalId);
+      if(actor.kind==='agent')await this.guardCollaborationResult(c,{companyId:input.companyId,roomId:input.roomId,actorId:input.actorId,
+        artifactCount:artifactIds.length,collaborationDone:input.collaborationDone,taskId:input.taskId});
       const mentions=await this.resolveMentions(c,input.companyId,input.roomId,input.body,mentionInput);
       if(input.inReplyToMessageId){
         const parent=await c.query(`SELECT 1 FROM messages WHERE company_id=$1 AND room_id=$2 AND id=$3`,[input.companyId,input.roomId,input.inReplyToMessageId]);

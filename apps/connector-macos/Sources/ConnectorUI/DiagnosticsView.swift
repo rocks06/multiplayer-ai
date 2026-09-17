@@ -10,6 +10,7 @@ public struct DiagnosticsView: View {
     @Bindable var model: ConnectorModel
     @State private var report: [String: Any] = [:]
     @State private var copied = false
+    @State private var testing = false
 
     public init(model: ConnectorModel) { self.model = model }
 
@@ -51,6 +52,13 @@ public struct DiagnosticsView: View {
                 Button(copied ? "Copied" : "Copy report") { copyReport() }
                 Button("Open log folder") { openSupportFolder() }
                 Spacer()
+                if let send = model.sendTestNotification {
+                    Button(testing ? "Sending…" : "Send test notification") {
+                        testing = true
+                        Task { await send(); testing = false }
+                    }
+                    .disabled(testing)
+                }
             }
             .font(.system(size: 12))
         }
@@ -94,7 +102,7 @@ public struct DiagnosticsView: View {
             ("Last error", state.lastError ?? "—"),
         ]
         let attention: [(String, String)] = model.attention?.rows ?? [("Notifications", "Not started — sign in to the workspace")]
-        return connector + attention
+        return connector + attention + (model.notificationTrace?.rows ?? [])
     }
 
     private func load() async {

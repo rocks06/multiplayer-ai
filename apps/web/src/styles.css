@@ -733,3 +733,10 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .room-header .home-button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .unread-divider{display:flex;align-items:center;gap:10px;margin:4px 0 16px;color:var(--moss);font-size:10px;font-weight:650;text-transform:uppercase;letter-spacing:.06em}
 .unread-divider::before,.unread-divider::after{content:"";flex:1;height:1px;background:color-mix(in srgb,var(--live) 40%,transparent)}
+/* Send is the composer's primary action and looks like every other one: ink with its own on-ink
+   text in either theme (a fixed white arrow vanished on the light ink of dark mode), a quiet
+   opacity change on hover rather than a jump to green, and the app's usual dimmed disabled state. */
+.composer-input .composer-send{display:grid;place-items:center;flex:0 0 34px;width:34px;height:34px;padding:0;border:0;border-radius:10px;background:var(--ink);color:var(--on-ink);font-size:15px;font-weight:600;transition:opacity var(--m-state) var(--ease),transform 100ms ease-out}
+.composer-input .composer-send:not(:disabled):hover{opacity:.88;transform:none;background:var(--ink)}
+.composer-input .composer-send:not(:disabled):active{transform:scale(.97)}
+.composer-input .composer-send:disabled{opacity:.4;cursor:default;background:var(--ink)}
