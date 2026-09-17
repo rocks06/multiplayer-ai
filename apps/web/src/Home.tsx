@@ -189,7 +189,6 @@ export function Home({workspace,memberships,onNavigate}:{
               <span className="home-agent-copy">
                 <strong>{agent.display_name}</strong>
                 <small className={`connect-state ${state.tone}`}><span className="state-dot" aria-hidden="true"/>{state.label}</small>
-                {agent.owners?.length?<small className="home-agent-owner">{agent.owners.map(owner=>owner.display_name).join(', ')}'s agent</small>:null}
               </span>
               {/* Where it works, from real membership rather than an assumption. */}
               <span className="home-agent-rooms">

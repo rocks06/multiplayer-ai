@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as pg from "pg";
 import { buildApp } from "../apps/api/src/app.js";
 import { RoomInviteService } from "../apps/api/src/invites/room-invite-service.js";
+import { AgentRuntimeService } from "../apps/api/src/agent-runtime/runtime-service.js";
+import { RoomService } from "../apps/api/src/room-service.js";
 import { isRelevantActionable, messageWakes } from "../packages/connector-core/src/relevance.js";
 import { FakeExternalAgentClient } from "./fake-external-agent.js";
 import { seedCompany, seedHuman } from "./support/bootstrap.js";
@@ -341,7 +343,7 @@ describe("per-room notification preferences", () => {
     await mentionOwner(); await direct(); await broadcast();
     expect(await kinds(cursor)).toEqual(["mention", "direct_message", "room_message"]);
 
-    await setLevel(f, f.owner.principal_id, "important");
+    await setLevel(f, f.owner.principal_id, "needs_you");
     cursor = (await notificationsFor(f.owner.principal_id)).cursor;
     await mentionOwner(); await direct(); await broadcast();
     expect(await kinds(cursor)).toEqual([]);
@@ -357,6 +359,40 @@ describe("per-room notification preferences", () => {
     const room = await roomFor(f, f.owner.principal_id);
     expect(room.unread_count).toBeGreaterThan(0);
     expect(room.mention_count).toBeGreaterThan(0);
+  });
+
+  it("Needs you is a fixed set of events, not a judgement about what matters", async () => {
+    const f = await fixture();
+    await setLevel(f, f.owner.principal_id, "needs_you");
+    const kinds = async (after: string) => (await notificationsFor(f.owner.principal_id, after)).notifications.map((n: any) => n.kind);
+    let cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+
+    // A decision only a person can make.
+    expect((await f.first.client.requestDecision({ title: "Approve", question: "Approve?", proposed_action: { type: "publish" } }, "needs-decision")).status).toBe(200);
+    // An agent blocked waiting for a person.
+    const task = (await call("POST", f.url(`/rooms/${f.room.id}/tasks`), f.owner.principal_id, { title: "Needs a key", description: "", assignee_principal_id: f.first.principal_id })).json();
+    const started = await f.first.client.updateTask(task.id, "in_progress", task.version, "needs-start");
+    expect((await f.first.client.updateTask(task.id, "blocked", started.body.version, "needs-block")).status).toBe(200);
+    // A run that has failed for good — which is how a missing permission or credential arrives.
+    const runtime = new AgentRuntimeService(pool, new RoomService(pool));
+    const queued = await runtime.queueRun({ companyId: f.company.id, roomId: f.room.id, actorId: f.owner.principal_id,
+      agentPrincipalId: f.first.principal_id, taskId: task.id, script: [], maxAttempts: 1, idempotencyKey: "needs-run" });
+    const lease = await runtime.claimNext("fixture-worker", 10_000);
+    expect(lease?.id).toBe(queued.id);
+    expect(await runtime.failRun(lease!, { code: "missing_credential", message: "No credential" })).toBe("failed");
+
+    expect(await kinds(cursor)).toEqual(["decision_requested", "agent_blocked", "agent_failed"]);
+    const failure = (await notificationsFor(f.owner.principal_id, cursor)).notifications.at(-1);
+    expect(failure).toMatchObject({ category: "action_required", body: "Its run failed: missing credential" });
+
+    // Nothing else is "needs you": not finished work, not being named, not the room talking.
+    cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    const resumed = await f.first.client.updateTask(task.id, "in_progress", (await pool.query(`SELECT version FROM tasks WHERE id=$1`, [task.id])).rows[0].version, "needs-resume");
+    expect((await f.first.client.completeTask(task.id, resumed.body.version, "needs-complete")).status).toBe(200);
+    const named = `${token("Fixture Owner")} have a look`;
+    await say(f, f.colleague.principal_id, named, { mentions: [mention(named, f.owner.principal_id, "Fixture Owner")] });
+    await say(f, f.colleague.principal_id, "For the room");
+    expect(await kinds(cursor)).toEqual([]);
   });
 
   it("does not notify a person for every turn agents take with each other, even at all activity", async () => {

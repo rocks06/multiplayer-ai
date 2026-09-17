@@ -739,12 +739,30 @@ public final class AppModel {
     /// Long enough to read "Connected", short enough not to be waited on.
     var discoveryCloseDelay: Duration = .milliseconds(1200)
 
-    func closeDiscoveryWhenConnected() async {
-        guard discoveryPhase == .connected, connector.health == .connected else { return }
+    /**
+     * Close Detect Agent once this agent really has a session, and only then.
+     *
+     * It is the agent's own session that decides — running, enrolled, and a gateway the helper
+     * marks live, which it does only after the workspace's session.ready. The headline health was
+     * the wrong thing to ask: it reads as reconnecting while anything else on this Mac is busy,
+     * and as unavailable when the runtime has not re-reported itself yet, so a connection that had
+     * plainly succeeded left the sheet open.
+     */
+    func closeDiscoveryWhenConnected(principalId: String? = nil) async {
+        let principal = principalId ?? connector.enrolment?.agentPrincipalId
+        guard discoveryPhase == .connected, sessionIsReady(principal) else { return }
         try? await Task.sleep(for: discoveryCloseDelay)
         // Only if nothing has happened since: a person who pressed Retry is not interrupted.
-        guard discoveryPhase == .connected, showingAgentDiscovery, pendingAgentMove == nil else { return }
+        guard discoveryPhase == .connected, showingAgentDiscovery, pendingAgentMove == nil,
+              sessionIsReady(principal) else { return }
         dismissAgentDiscovery()
+    }
+
+    /// The helper reports this agent live, which it does only once the workspace said session.ready.
+    func sessionIsReady(_ principalId: String?) -> Bool {
+        guard let principalId else { return false }
+        let state = connector.state(of: principalId)
+        return state.running && state.enrolled && state.gateway == "live"
     }
 
     public func dismissAgentDiscovery() {
@@ -923,7 +941,7 @@ public final class AppModel {
             await readWorkspace(companyId)
             /* Connected is an answer, not a screen to stay on: the sheet says so, then gets out of
                the way. A failure keeps it open, because that is where the failure is explained. */
-            await closeDiscoveryWhenConnected()
+            await closeDiscoveryWhenConnected(principalId: connected.principalId)
         } catch let error as WorkspaceError {
             problem = error; discoveryPhase = .failed(error.message + " " + error.recovery)
         } catch {

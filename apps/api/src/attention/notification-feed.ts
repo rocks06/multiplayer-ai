@@ -4,7 +4,7 @@ import { DomainError } from "../../../../packages/domain/src/index.js";
 
 /** Why a person is being told: something visible, something said to them, or something only they can do. */
 export type NotificationCategory = "informational" | "mention" | "action_required";
-export type NotificationKind = "direct_message" | "mention" | "room_message" | "decision_requested" | "agent_blocked" | "agent_finished";
+export type NotificationKind = "direct_message" | "mention" | "room_message" | "decision_requested" | "agent_blocked" | "agent_failed" | "agent_finished";
 
 export interface RoomNotification {
   id: string;
@@ -75,9 +75,16 @@ export class NotificationFeed {
                OR (e.payload->'mentioned_principal_ids' @> to_jsonb(me.principal_id::text) AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','mentions'))
                OR (COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}')='all'
                    AND NOT (e.actor_kind='agent' AND COALESCE(e.payload->'collaboration','null'::jsonb)<>'null'::jsonb))))
-            OR (e.event_type='decision.requested' AND rm.role='manager' AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','important'))
+            /* Needs you is a fixed set, not a judgement: a decision only a person can make, an
+               agent blocked waiting for one, and a run that has failed for good — which is also
+               how a missing permission, credential or input arrives. */
+            OR (e.event_type='decision.requested' AND rm.role='manager' AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','needs_you'))
             OR (e.event_type='task.blocked' AND e.actor_kind='agent' AND (rm.role='manager' OR t.created_by_principal_id=me.principal_id)
-                AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','important'))
+                AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','needs_you'))
+            OR (e.event_type='agent.run_failed' AND (rm.role='manager' OR EXISTS(
+                  SELECT 1 FROM agent_human_relationships rel WHERE rel.company_id=e.company_id
+                    AND rel.agent_principal_id=e.actor_principal_id AND rel.human_principal_id=me.principal_id))
+                AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}') IN ('all','direct_mentions','needs_you'))
             OR (e.event_type='task.completed' AND e.actor_kind='agent' AND (rm.role='manager' OR t.created_by_principal_id=me.principal_id)
                 AND COALESCE(np.level,'${DEFAULT_NOTIFICATION_LEVEL}')='all'))
         ORDER BY e.created_at, e.id
@@ -117,6 +124,14 @@ function describe(row: any): RoomNotification {
     return { id: row.event_id, ...room, created_at, link: link(`decision:${row.entity_id}`),
       kind: "decision_requested", category: "action_required",
       title: `${actor} needs your decision`, body: excerpt(row.payload?.title) || "A decision is waiting for you" };
+  }
+  if (row.event_type === "agent.run_failed") {
+    const code = typeof row.payload?.error_code === "string" ? row.payload.error_code : "";
+    // The run itself is not a thing to open: the link lands in the room, which is where it shows.
+    return { id: row.event_id, ...room, created_at, link: link(`run:${row.entity_id}`),
+      kind: "agent_failed", category: "action_required",
+      title: `${actor} stopped and needs you`,
+      body: code ? `Its run failed: ${code.replace(/_/g, " ")}` : "Its run failed and cannot continue without a person" };
   }
   if (row.event_type === "task.blocked") {
     return { id: row.event_id, ...room, created_at, link: link(`task:${row.entity_id}`),

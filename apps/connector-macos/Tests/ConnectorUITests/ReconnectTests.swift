@@ -68,6 +68,34 @@ import Foundation
         sidecar.stop()
     }
 
+    @Test func aSessionThatIsReadyClosesTheSheetEvenWhenNothingElseIsHealthyYet() async throws {
+        /* What the Air saw: the session was live and the sheet stayed open, because the headline
+           health reads as reconnecting while the Mac is busy and as unavailable until the runtime
+           reports itself again. The agent's own session is what decides. */
+        let model = ConnectorModel(live: false, state: SidecarState(
+            enrolled: true, running: true, startedAt: nil, gateway: "live",
+            runtime: .init(available: false, name: "Fixture Runtime"), sync: .init(), identity: nil, lastError: nil))
+        model.busy = true
+        let app = AppModel.discoveryPreview(records: [], phase: .connected, connector: model)
+        app.discoveryCloseDelay = .milliseconds(10)
+        app.showingAgentDiscovery = true
+        #expect(model.health != .connected)
+        #expect(app.sessionIsReady(nil) == false)
+        await app.closeDiscoveryWhenConnected(principalId: "fixture-agent")
+        #expect(app.showingAgentDiscovery == false)
+    }
+
+    @Test func aSessionThatIsNotReadyLeavesTheSheetOpen() async throws {
+        let model = ConnectorModel(live: false, state: SidecarState(
+            enrolled: true, running: true, startedAt: nil, gateway: "reconnecting",
+            runtime: .init(available: true, name: "Fixture Runtime"), sync: .init(), identity: nil, lastError: nil))
+        let app = AppModel.discoveryPreview(records: [], phase: .connected, connector: model)
+        app.discoveryCloseDelay = .milliseconds(10)
+        app.showingAgentDiscovery = true
+        await app.closeDiscoveryWhenConnected(principalId: "fixture-agent")
+        #expect(app.showingAgentDiscovery)
+    }
+
     @Test func aConnectedAgentClosesTheDetectAgentSheetOnItsOwn() async throws {
         let model = ConnectorModel(live: false, state: SidecarState(
             enrolled: true, running: true, startedAt: nil, gateway: "live",
@@ -76,7 +104,7 @@ import Foundation
         app.discoveryCloseDelay = .milliseconds(10)
         app.showingAgentDiscovery = true
         #expect(model.health == .connected)
-        await app.closeDiscoveryWhenConnected()
+        await app.closeDiscoveryWhenConnected(principalId: "fixture-agent")
         #expect(app.showingAgentDiscovery == false)
     }
 

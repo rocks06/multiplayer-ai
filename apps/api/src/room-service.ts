@@ -23,7 +23,7 @@ interface ResolvedMention {principal_id:string;kind:PrincipalKind;display_name:s
 /** Room activity worth a person's attention: what somebody said or asked, and work an agent finished
  *  or is stuck on. Presence, sessions and bookkeeping are deliberately absent. */
 /** How much a person wants to be told about a room, most to least. */
-export const NOTIFICATION_LEVELS=['all','direct_mentions','mentions','important','off'] as const;
+export const NOTIFICATION_LEVELS=['all','direct_mentions','mentions','needs_you','off'] as const;
 export type NotificationLevel=typeof NOTIFICATION_LEVELS[number];
 /* Sent to you, naming you, or needing you — the three things nobody wants to miss, and nothing
    else. A room says a great deal that is worth reading later and worth nobody's banner now. */

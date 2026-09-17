@@ -566,8 +566,6 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .attention.unread{background:var(--ink);color:var(--surface)}
 .attention.mention{background:var(--moss-soft);color:var(--moss)}
 .attention.action{background:transparent;border:1px solid var(--line-strong);color:var(--ink)}
-.home-agent-owner{font-size:10px;color:var(--faint)}
-.person-owner{display:block;font-size:10px;color:var(--faint)}
 .mention{font-weight:600;border-radius:4px;padding:0 2px;background:var(--moss-soft);color:var(--moss)}
 .mention.human{background:var(--soft);color:var(--ink)}
 .composer-input{position:relative}
@@ -765,15 +763,30 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .agent-detail-confirm p{margin:0 0 10px;font-size:12px;line-height:1.5}
 
 /* How much one room may interrupt this person. Native notifications only; unread is unaffected. */
-.room-notifications{position:relative}
+.room-notifications{position:relative;display:flex;align-items:center}
 .room-notifications-button{display:flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid var(--line);border-radius:var(--r-pill);font-size:11px;font-weight:650;color:var(--muted);white-space:nowrap}
 .room-notifications-button:hover{border-color:var(--line-strong);color:var(--ink)}
-.room-notifications-menu{position:absolute;z-index:30;right:0;top:calc(100% + 6px);width:min(320px,80vw);padding:6px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);box-shadow:var(--shadow-float)}
-.room-notifications-menu button{display:flex;align-items:flex-start;gap:8px;width:100%;padding:7px 8px;border-radius:var(--r-control);text-align:left}
-.room-notifications-menu button:hover,.room-notifications-menu button:focus-visible{background:var(--soft)}
-.room-notifications-mark{display:grid;place-items:center;width:16px;height:16px;flex:0 0 auto;color:var(--moss)}
-.room-notifications-copy{display:grid;gap:2px;min-width:0}
-.room-notifications-copy strong{font-size:12px;font-weight:600}
-.room-notifications-copy small{font-size:10px;line-height:1.4;color:var(--muted)}
-.room-notifications-lead{margin:6px 8px;font-size:10px;line-height:1.4;color:var(--faint)}
-@media (max-width:860px){.room-notifications-button span{display:none}}
+.room-notifications-button[aria-expanded="true"]{border-color:var(--line-strong);background:var(--soft);color:var(--ink)}
+.room-notifications-scrim{position:fixed;inset:0;z-index:38;border:0;background:transparent;cursor:default}
+.room-notifications-panel{position:fixed;z-index:39;width:min(320px,calc(100vw - 24px));max-height:min(78vh,540px);overflow:auto;
+  padding:10px;border:1px solid var(--line);border-radius:var(--r-surface);background:var(--surface);box-shadow:var(--shadow-float)}
+.room-notifications-title{margin:2px 6px 8px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.room-notifications-rows{display:grid;gap:2px}
+.room-notifications-panel [role="menuitemradio"]{display:grid;grid-template-columns:minmax(0,1fr) 18px;align-items:start;gap:10px;
+  width:100%;padding:8px 9px;border-radius:var(--r-control);text-align:left}
+.room-notifications-panel [role="menuitemradio"]:hover,.room-notifications-panel [role="menuitemradio"]:focus-visible{background:var(--soft)}
+.room-notifications-panel [role="menuitemradio"][aria-checked="true"]{background:var(--soft)}
+.room-notifications-panel [role="menuitemradio"]:disabled{opacity:.55;cursor:default}
+.room-notifications-copy{display:grid;gap:3px;min-width:0}
+.room-notifications-copy strong{font-size:12px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.room-notifications-copy small{font-size:10.5px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
+.room-notifications-mark{display:grid;place-items:center;width:18px;height:18px;margin-top:1px;color:var(--moss)}
+.room-notifications-foot{margin:9px 7px 2px;padding-top:8px;border-top:1px solid var(--line);font-size:10px;line-height:1.45;color:var(--faint)}
+.room-notifications-panel .form-error{margin:6px 7px 0}
+/* Narrow: a panel anchored to a shrinking header collides with everything. A centred sheet does not. */
+@media (max-width:700px){
+  .room-notifications-button span{display:none}
+  .room-notifications-button{padding:8px}
+  .room-notifications-scrim{background:color-mix(in srgb,var(--ink) 26%,transparent);backdrop-filter:blur(2px)}
+  .room-notifications-panel{z-index:40;width:min(340px,calc(100vw - 24px));max-height:min(70vh,520px)}
+}

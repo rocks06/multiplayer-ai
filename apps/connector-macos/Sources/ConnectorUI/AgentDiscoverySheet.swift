@@ -89,7 +89,9 @@ public struct AgentDiscoverySheet: View {
                 }
             }.padding(.vertical, 24)
         case .connected:
-            if app.connector.health == .connected {
+            // This agent's own session, not the headline health: the headline reads as reconnecting
+            // while anything else on this Mac is busy, which is not this agent being interrupted.
+            if app.sessionIsReady(app.connector.enrolment?.agentPrincipalId) {
                 Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.headline)
                 Text("\(app.progress.agentDisplayName ?? "Your agent") is connected to \(app.nameOfRoom(app.discoveryRoomId) ?? "the selected room").")
             } else {

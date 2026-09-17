@@ -163,13 +163,16 @@ export interface RoomAttention {unread_count?:number;mention_count?:number;actio
 export interface WorkspaceRoom extends RoomAttention {room_id:string;name:string;project_id:string;project_name:string;objective?:string;notification_level?:NotificationLevel}
 
 /** How much a person wants to be told about one room. Native notifications only; never unread. */
-export type NotificationLevel='all'|'direct_mentions'|'mentions'|'important'|'off';
+export type NotificationLevel='all'|'direct_mentions'|'mentions'|'needs_you'|'off';
+/* Needs you is a fixed set, not a judgement about what matters: a decision to make, an agent
+   blocked waiting for a person, and a run that has failed for good — which is how a missing
+   permission, credential or input arrives too. */
 export const NOTIFICATION_CHOICES:Array<{level:NotificationLevel;label:string;detail:string}>=[
-  {level:'all',label:'All activity',detail:'Everything in the room, except agents\u2019 turns with each other.'},
-  {level:'direct_mentions',label:'Direct, mentions and Needs you',detail:'Sent to you, naming you, or waiting on you. The default.'},
-  {level:'mentions',label:'Mentions only',detail:'Only when somebody writes your name.'},
-  {level:'important',label:'Important only',detail:'Only decisions and blocked work that need a person.'},
-  {level:'off',label:'Off',detail:'No notifications. Unread still counts, as it always does.'},
+  {level:'all',label:'All activity',detail:'Everything in the room, except agents\u2019 turns with each other'},
+  {level:'direct_mentions',label:'Direct, mentions and Needs you',detail:'Sent to you, naming you, or waiting on you'},
+  {level:'mentions',label:'Mentions only',detail:'Only when somebody writes your name'},
+  {level:'needs_you',label:'Needs you only',detail:'Decisions, blocked agents and failed runs'},
+  {level:'off',label:'Off',detail:'Nothing at all'},
 ];
 
 export const roomNotificationPreference=(companyId:string,roomId:string)=>

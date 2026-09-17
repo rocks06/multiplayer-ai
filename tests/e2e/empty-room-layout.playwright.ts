@@ -189,3 +189,41 @@ for(const colorScheme of ['light','dark'] as const)test(`the send button uses th
   state=await look();
   expect(state.background).toBe(state.ink);expect(state.background).not.toBe(state.moss);expect(state.opacity).toBe('0.88');
 });
+for(const viewport of [{width:1440,height:900},{width:1024,height:640},{width:375,height:667}])
+test(`the notification settings fit and stay readable at ${viewport.width}x${viewport.height}`,async({page})=>{
+  await page.setViewportSize(viewport);await openRoom(page);
+  const trigger=page.getByRole('button',{name:/^Notifications:/});
+  await expect(trigger).toBeVisible();
+  // The header says only which setting it is, so it cannot crowd the room's own controls.
+  expect((await trigger.boundingBox())!.width).toBeLessThanOrEqual(150);
+  await trigger.click();
+  const panel=page.getByRole('menu',{name:'Notifications for this room'});
+  const box=(await panel.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x+box.width).toBeLessThanOrEqual(viewport.width);
+  expect(box.y+box.height).toBeLessThanOrEqual(viewport.height);
+  const rows=page.getByRole('menuitemradio');
+  await expect(rows).toHaveCount(5);
+  expect(await rows.allInnerTexts()).toEqual([
+    'All activity\nEverything in the room, except agents’ turns with each other',
+    'Direct, mentions and Needs you\nSent to you, naming you, or waiting on you',
+    'Mentions only\nOnly when somebody writes your name',
+    'Needs you only\nDecisions, blocked agents and failed runs',
+    'Off\nNothing at all',
+  ]);
+  // No row clips its own text, and no two rows overlap.
+  const geometry=await rows.evaluateAll(items=>items.map(item=>{
+    const rect=item.getBoundingClientRect();
+    const copy=item.querySelector('.room-notifications-copy')!;
+    const strong=item.querySelector('strong')!,small=item.querySelector('small')!;
+    return {top:rect.top,bottom:rect.bottom,clipped:item.scrollHeight>item.clientHeight+1||copy.scrollWidth>copy.clientWidth+1,
+      gap:small.getBoundingClientRect().top-strong.getBoundingClientRect().bottom};
+  }));
+  for(const row of geometry){expect(row.clipped).toBe(false);expect(row.gap).toBeGreaterThanOrEqual(0)}
+  for(let i=1;i<geometry.length;i++)expect(geometry[i]!.top).toBeGreaterThanOrEqual(geometry[i-1]!.bottom-1);
+  // The transcript underneath is covered deliberately, not collided with: Escape puts it back.
+  await page.keyboard.press('Escape');
+  await expect(panel).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});

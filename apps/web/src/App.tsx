@@ -65,12 +65,11 @@ function useCoarseNow(active:boolean){
 
 /* Primitive props so the memo actually holds: a row re-renders only when something it shows
    has changed, not every time the rail's clock ticks. */
-const PresenceRow=memo(function PresenceRow({name,initial,label,tone,detail,elapsed,lastSeenAt,paused,owner}:{name:string;initial:string;label:string;tone:string;detail?:string;elapsed:string|null;lastSeenAt?:string;paused?:boolean;owner?:string[]}){
+const PresenceRow=memo(function PresenceRow({name,initial,label,tone,detail,elapsed,lastSeenAt,paused}:{name:string;initial:string;label:string;tone:string;detail?:string;elapsed:string|null;lastSeenAt?:string;paused?:boolean}){
   return <>
     <span className="identity-mark agent" aria-hidden="true">{initial}</span>
     <span className="person-copy">
       <strong>{name}</strong>
-      {owner?.length?<small className="person-owner">{owner.join(', ')}'s agent</small>:null}
       <small className="person-state">
         <span className={`state-dot ${tone}`} aria-hidden="true"/>
         <span className="state-label">{label}</span>
@@ -163,7 +162,7 @@ export function Participants({members,currentId,tasks,decisions,companyAgents,ca
       const record=companyAgents?.find(a=>a.principal_id===agent.principal_id);
       return <li className="person-row" key={agent.principal_id}>
         <PresenceRow name={agent.display_name} initial={agent.display_name.slice(0,1).toUpperCase()}
-          label={presence.label} tone={presence.tone} detail={presence.detail} owner={ownerNames[agent.principal_id]} paused={record?.status==='paused'}
+          label={presence.label} tone={presence.tone} detail={presence.detail} paused={record?.status==='paused'}
           elapsed={elapsedLabel(presence.since,now)} lastSeenAt={agent.agent_last_seen_at??undefined}/>
         {actions&&onMessage&&
           <AgentControls member={agent} agent={record} canManage={Boolean(canManage)} actions={actions} onMessage={onMessage} onConnect={onConnect} onDisconnect={onDisconnect} onRemove={onRemove}/>}
@@ -762,9 +761,13 @@ function Room({identity,workspace,onNavigate}:{identity:RoomIdentity;workspace:s
   const current=snapshot.members.find(m=>m.principal_id===identity.principalId);
   const managers=current?.role==='manager';const agents=snapshot.members.filter(m=>m.kind==='agent');const pending=snapshot.briefing.unresolved_decisions;
   const recent=snapshot.briefing.important_recent_activity;
-  // Who owns which agent here, for labelling — "a person's agent" — never for authority.
+  /* Who owns which agent, for the one place it tells a person something they do not know: choosing
+     between agents belonging to different people. Their own agents are not labelled as theirs —
+     every card saying "your agent" to you is a line that never varies and never informs. Ownership
+     itself is unchanged and still recorded; this is only about what is worth showing. */
   const ownerNames:Record<string,string[]>={};
-  for(const rel of snapshot.relationships??[])(ownerNames[rel.agent_principal_id]??=[]).push(rel.human_display_name);
+  for(const rel of snapshot.relationships??[])
+    if(rel.human_principal_id!==identity.principalId)(ownerNames[rel.agent_principal_id]??=[]).push(rel.human_display_name);
   const mutate=async(action:()=>Promise<unknown>)=>{await action();await refresh()};
   /* Every consequential change is an explicit, named command against a real primitive. There is
      no intent parsing: what the person pressed is what is sent. */

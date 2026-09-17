@@ -90,8 +90,11 @@ describe('how much a room may interrupt', () => {
     fireEvent.click(button);
     const menu = await screen.findByRole('menu', {name: 'Notifications for this room'});
     expect(within(menu).getAllByRole('menuitemradio').map(item => item.querySelector('strong')?.textContent)).toEqual([
-      'All activity', 'Direct, mentions and Needs you', 'Mentions only', 'Important only', 'Off',
+      'All activity', 'Direct, mentions and Needs you', 'Mentions only', 'Needs you only', 'Off',
     ]);
+    // "Needs you" is a fixed set, not a judgement about what matters.
+    expect(within(menu).getByRole('menuitemradio', {name: /Needs you only/}).textContent)
+      .toContain('Decisions, blocked agents and failed runs');
     expect(within(menu).getByRole('menuitemradio', {name: /Direct, mentions and Needs you/})).toHaveAttribute('aria-checked', 'true');
     // Unread is not a preference, and the menu says so.
     expect(within(menu).getByText(/Unread counts everything/)).toBeInTheDocument();
@@ -99,7 +102,7 @@ describe('how much a room may interrupt', () => {
     fireEvent.click(within(menu).getByRole('menuitemradio', {name: /Mentions only/}));
     await waitFor(() => expect(saved).toEqual(['mentions']));
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
-    expect(await screen.findByRole('button', {name: /Notifications: Mentions only/})).toBeInTheDocument();
+    expect(await screen.findByRole('button', {name: /Notifications: Mentions only/})).toHaveTextContent('Mentions');
   });
 
   it('keeps the previous level and says so when saving fails', async () => {
