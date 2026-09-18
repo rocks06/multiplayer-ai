@@ -26,6 +26,21 @@ import Foundation
         func sendTest() async -> NotificationDelivery { tests += 1; trace.test = "Sent"; return .accepted("fixture") }
     }
 
+    /// The server renames what it calls things; an installed app must not care. A build shipped
+    /// before "addressed" existed still shows the banner, because only the category drives it.
+    @Test func aNotificationKindThisBuildHasNeverSeenStillReaches() async {
+        let poster = RecordingPoster(); poster.status = "authorized"
+        let addressed = RoomNotification(id: "n1", kind: "addressed", category: "mention",
+                                         companyId: Self.company, roomId: Self.room, roomName: "Fixture Room",
+                                         title: "Fixture Colleague addressed you", body: "The contract is attached",
+                                         link: Self.note("n1").link)
+        let notifier = RoomNotifier(fetch: { _ in NotificationPage(cursor: "c1", notifications: [addressed]) },
+                                    poster: poster, memory: MemoryNotifierMemory(), visibleRoom: { nil })
+        let shown = await notifier.poll()
+        #expect(shown.map(\.id) == ["n1"])
+        #expect(poster.posted.first?.title == "Fixture Colleague addressed you")
+    }
+
     @Test func aNotificationMacOSRefusesIsNotReportedAsShown() async {
         let poster = RecordingPoster(); poster.status = "authorized"
         poster.refusal = "macOS refused it: Notifications are not allowed for this application (UNErrorDomain 1)"

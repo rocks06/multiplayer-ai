@@ -256,12 +256,36 @@ describe("notifications", () => {
     expect((await notificationsFor(f.colleague.principal_id, cursor)).notifications).toEqual([]);
   });
 
+  /**
+   * Addressing is routing, not secrecy — pinned here so nobody can come to believe otherwise from
+   * the wording of a notification. A room is shared, and this asserts that it behaves that way.
+   */
+  it("shows an addressed message to the whole room, including agents, and says so in the notification", async () => {
+    const f = await fixture();
+    const cursor = (await notificationsFor(f.owner.principal_id)).cursor;
+    const sent = (await say(f, f.colleague.principal_id, "The contract is attached", { addressed_principal_id: f.owner.principal_id })).json();
+
+    // The third person in the room reads it, though it was addressed to somebody else.
+    const forThirdParty = (await call("GET", f.url(`/rooms/${f.room.id}/snapshot`), f.owner.principal_id)).json();
+    expect(forThirdParty.messages.some((m: any) => m.id === sent.id)).toBe(true);
+    const asAgent = await f.first.client.snapshot();
+    expect(asAgent.status).toBe(200);
+    expect(asAgent.body.messages.some((m: any) => m.id === sent.id)).toBe(true);
+
+    // And the person addressed is told they were addressed, not that they were messaged privately.
+    const feed = await notificationsFor(f.owner.principal_id, cursor);
+    expect(feed.notifications.map((n: any) => [n.kind, n.title])).toEqual([
+      ["addressed", "Fixture Colleague addressed you"],
+    ]);
+    expect(JSON.stringify(feed)).not.toMatch(/sent you a message|private/i);
+  });
+
   it("a direct message is its own kind; an ordinary message to everyone notifies nobody", async () => {
     const f = await fixture();
     const cursor = (await notificationsFor(f.colleague.principal_id)).cursor;
     await say(f, f.owner.principal_id, "Just for you", { addressed_principal_id: f.colleague.principal_id });
     await say(f, f.owner.principal_id, "General chatter");
-    expect((await notificationsFor(f.colleague.principal_id, cursor)).notifications.map((n: any) => n.kind)).toEqual(["direct_message"]);
+    expect((await notificationsFor(f.colleague.principal_id, cursor)).notifications.map((n: any) => n.kind)).toEqual(["addressed"]);
   });
 
   it("keeps Needs You for real authority: a decision is action required for managers only, a mention is not", async () => {
@@ -331,7 +355,7 @@ describe("per-room notification preferences", () => {
 
     let cursor = (await notificationsFor(f.owner.principal_id)).cursor;
     await mentionOwner(); await direct(); await broadcast();
-    expect(await kinds(cursor)).toEqual(["mention", "direct_message"]);
+    expect(await kinds(cursor)).toEqual(["mention", "addressed"]);
 
     await setLevel(f, f.owner.principal_id, "mentions");
     cursor = (await notificationsFor(f.owner.principal_id)).cursor;
@@ -341,7 +365,7 @@ describe("per-room notification preferences", () => {
     await setLevel(f, f.owner.principal_id, "all");
     cursor = (await notificationsFor(f.owner.principal_id)).cursor;
     await mentionOwner(); await direct(); await broadcast();
-    expect(await kinds(cursor)).toEqual(["mention", "direct_message", "room_message"]);
+    expect(await kinds(cursor)).toEqual(["mention", "addressed", "room_message"]);
 
     await setLevel(f, f.owner.principal_id, "needs_you");
     cursor = (await notificationsFor(f.owner.principal_id)).cursor;

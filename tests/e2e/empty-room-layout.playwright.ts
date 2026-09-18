@@ -207,7 +207,7 @@ test(`the notification settings fit and stay readable at ${viewport.width}x${vie
   await expect(rows).toHaveCount(5);
   expect(await rows.allInnerTexts()).toEqual([
     'All activity\nEverything in the room, except agents’ turns with each other',
-    'Direct, mentions and Needs you\nSent to you, naming you, or waiting on you',
+    'Addressed to me, mentions and Needs you\nAddressed to you, naming you, or waiting on you',
     'Mentions only\nOnly when somebody writes your name',
     'Needs you only\nDecisions, blocked agents and failed runs',
     'Off\nNothing at all',
@@ -226,4 +226,20 @@ test(`the notification settings fit and stay readable at ${viewport.width}x${vie
   await page.keyboard.press('Escape');
   await expect(panel).toHaveCount(0);
   await expect(trigger).toBeFocused();
+});
+for(const viewport of [{width:1440,height:900},{width:375,height:667}])
+test(`the composer says who reads a message at ${viewport.width}x${viewport.height}`,async({page})=>{
+  await page.setViewportSize(viewport);await openRoom(page,false,false,true);
+  // Addressing routes a message; it has never made one private, and the composer says so.
+  const addressee=page.getByLabel(/Address to/);
+  await expect(addressee).toBeVisible();
+  const visibility=page.getByText('Everyone in the room reads every message');
+  await expect(visibility).toBeVisible();
+  const box=(await visibility.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x+box.width).toBeLessThanOrEqual(viewport.width);
+  // Addressing one participant changes nothing about who reads it.
+  await addressee.selectOption({label:'Fixture Agent'});
+  await expect(visibility).toBeVisible();
+  expect(await page.locator('body').innerText()).not.toMatch(/direct message|privately|is private/i);
 });

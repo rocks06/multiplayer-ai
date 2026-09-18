@@ -15,8 +15,10 @@ const taskStatuses=z.enum(["open","in_progress","blocked","awaiting_decision","c
 
 /** Resolves the acting human principal for a company, the same way the room routes do. */
 export type ResolveHumanPrincipal = (request:any,companyId:string)=>Promise<string>;
+/** Counts what one principal is doing, and refuses past the allowance. Returns the principal. */
+export type LimitAction = (action:"messages"|"uploads"|"sockets",principalId:string)=>Promise<string>;
 
-export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGatewayService,rooms:RoomService,runtime:AgentRuntimeService,realtime:RealtimeHub,resolvePrincipal:ResolveHumanPrincipal,artifacts:ArtifactService) {
+export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGatewayService,rooms:RoomService,runtime:AgentRuntimeService,realtime:RealtimeHub,resolvePrincipal:ResolveHumanPrincipal,artifacts:ArtifactService,limit:LimitAction=async(_action,principalId)=>principalId) {
   app.post("/v1/companies/:companyId/agents/:agentPrincipalId/gateway-credentials",async req=>{
     const p=parse(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);
     const x=parse(z.object({label:z.string().min(1).max(100)}),req.body);
@@ -61,14 +63,14 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
     const q=parse(z.object({filename:z.string().min(1).max(255),content_type:z.string().min(1).max(255).optional()}),req.query);
     const bytes=req.body as Buffer;
     if(!Buffer.isBuffer(bytes))throw new DomainError("artifact_empty","Send the file as the request body",400);
-    return artifacts.create({companyId:s.companyId,roomId:s.roomId,principalId:s.principalId,
+    return artifacts.create({companyId:s.companyId,roomId:s.roomId,principalId:await limit("uploads",s.principalId),
       filename:q.filename,contentType:q.content_type??String(req.headers["content-type"]??"application/octet-stream"),
       body:new Uint8Array(bytes)});
   });
 
   app.post("/v1/agent-gateway/v1/sessions/:sessionId/messages",async req=>{
     const s=await session(req);const x=parse(z.object({body:z.string().max(100000),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional(),artifact_ids:z.array(z.string().uuid()).max(10).optional(),mentions:z.array(z.object({principal_id:z.string().uuid(),start:z.number().int().min(0).optional(),end:z.number().int().min(0).optional()})).max(50).optional(),collaboration_done:z.boolean().optional()}),req.body);
-    return rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:s.principalId,body:x.body,artifactIds:x.artifact_ids,mentions:x.mentions,collaborationDone:x.collaboration_done,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idempotency(req)});
+    return rooms.sendMessage({companyId:s.companyId,roomId:s.roomId,actorId:await limit("messages",s.principalId),body:x.body,artifactIds:x.artifact_ids,mentions:x.mentions,collaborationDone:x.collaboration_done,addressedPrincipalId:x.addressed_principal_id,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idempotency(req)});
   });
   app.patch("/v1/agent-gateway/v1/sessions/:sessionId/tasks/:taskId/status",async req=>{
     const p=parse(sessionParams.extend({taskId:z.string().uuid()}),req.params);const s=await gateway.authenticateSession(p.sessionId,authorization(req));const x=parse(z.object({status:taskStatuses,expected_version:z.number().int().positive()}),req.body);
@@ -91,6 +93,7 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
       void (async()=>{try{
         const p=parse(sessionParams,req.params);const q=parse(z.object({after_seq:z.coerce.number().int().min(0).optional()}),req.query);const auth=authorization(req);
         const s=await gateway.resumeSession(p.sessionId,auth);const afterSeq=q.after_seq;
+        await limit("sockets",s.principalId);
         await realtime.attach(socket,{companyId:s.companyId,roomId:s.roomId,principalId:s.principalId,afterSeq,protocol:"agent-gateway.v1",gatewaySessionId:s.sessionId,validate:async()=>{await gateway.authenticateSession(p.sessionId,auth)},onAck:seq=>gateway.acknowledge(p.sessionId,auth,seq),onDisconnect:async()=>{try{await gateway.disconnect(p.sessionId,auth)}catch{}}});
       }catch(error){const e=error instanceof DomainError?error:new DomainError("validation_error","Invalid gateway subscription",400);socket.send(JSON.stringify({type:"protocol_error",code:e.code,message:e.message}));socket.close(e.statusCode===401?4401:4403,"subscription_rejected")}})();
     });

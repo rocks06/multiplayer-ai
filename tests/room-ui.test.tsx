@@ -137,7 +137,7 @@ describe('Slice 6 room interface',()=>{
 
  it('sends an addressed message and clears the composer after authoritative success',async()=>{
   render(<RoomApp/>);await screen.findByRole('heading',{name:'Launch room'});
-  fireEvent.change(screen.getByLabelText('Send to'),{target:{value:agent}});
+  fireEvent.change(screen.getByLabelText(/Address to/),{target:{value:agent}});
   fireEvent.change(screen.getByLabelText('Message'),{target:{value:'Check the final citations.'}});
   await act(async()=>fireEvent.click(screen.getByRole('button',{name:'Send message'})));
   await waitFor(()=>expect(screen.getByLabelText('Message')).toHaveValue(''));
@@ -290,4 +290,33 @@ describe('Slice 6 room interface',()=>{
   expect(await screen.findByText('MPAI-82HT-KT87-BZ74')).toBeVisible();
   expect(vi.mocked(fetch).mock.calls.some(([url,init]:any)=>init?.method==='POST'&&String(url).includes('/enrollments'))).toBe(true);
  });
+
+/**
+ * A room is shared, and every word on screen has to agree with that.
+ *
+ * "Send to" and "To Dana" read as delivery to one person; the message was always readable by the
+ * whole room, agents included. Nothing here may imply otherwise again.
+ */
+ it('offers addressing, states who can read it, and never claims privacy', async () => {
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+
+  // The composer names what it does, and says who reads it, while you are typing.
+  expect(screen.getByLabelText(/Address to/)).toBeInTheDocument();
+  expect(screen.getByText('Everyone in the room reads every message')).toBeVisible();
+  expect(screen.queryByLabelText(/^Send to/)).not.toBeInTheDocument();
+
+  // And nowhere in the room does any word promise secrecy.
+  const room=document.body.textContent??'';
+  expect(room).not.toMatch(/direct message|privately|is private|only you can/i);
+ });
+
+ it('labels an addressed message as addressed, not as delivered to one person', async () => {
+  render(<RoomApp/>);
+  await screen.findByRole('heading',{name:'Launch room'});
+  const addressed=await screen.findByText(/^Addressed to /);
+  expect(addressed).toBeVisible();
+  expect(addressed.getAttribute('title')).toMatch(/Everyone in this room can read it/);
+ });
+
 });

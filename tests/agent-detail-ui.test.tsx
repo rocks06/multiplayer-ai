@@ -85,17 +85,17 @@ describe('how much a room may interrupt', () => {
       return new Response(JSON.stringify({room_id: 'r1', level: 'direct_mentions'}), {status: 200, headers: {'content-type': 'application/json'}});
     }));
     render(<RoomNotifications companyId="c1" roomId="r1"/>);
-    const button = await screen.findByRole('button', {name: /Notifications: Direct, mentions and Needs you/});
+    const button = await screen.findByRole('button', {name: /Notifications: Addressed to me, mentions and Needs you/});
 
     fireEvent.click(button);
     const menu = await screen.findByRole('menu', {name: 'Notifications for this room'});
     expect(within(menu).getAllByRole('menuitemradio').map(item => item.querySelector('strong')?.textContent)).toEqual([
-      'All activity', 'Direct, mentions and Needs you', 'Mentions only', 'Needs you only', 'Off',
+      'All activity', 'Addressed to me, mentions and Needs you', 'Mentions only', 'Needs you only', 'Off',
     ]);
     // "Needs you" is a fixed set, not a judgement about what matters.
     expect(within(menu).getByRole('menuitemradio', {name: /Needs you only/}).textContent)
       .toContain('Decisions, blocked agents and failed runs');
-    expect(within(menu).getByRole('menuitemradio', {name: /Direct, mentions and Needs you/})).toHaveAttribute('aria-checked', 'true');
+    expect(within(menu).getByRole('menuitemradio', {name: /Addressed to me, mentions and Needs you/})).toHaveAttribute('aria-checked', 'true');
     // Unread is not a preference, and the menu says so.
     expect(within(menu).getByText(/Unread counts everything/)).toBeInTheDocument();
 

@@ -30,6 +30,24 @@ export const AUTH_LIMITS = {
 };
 
 /**
+ * What one principal may do to a room in a short time.
+ *
+ * Not a product rule: no person types this fast and no honest agent needs to. They exist because
+ * a room's write paths, its file uploads and its sockets each cost real storage, real bandwidth
+ * and a full snapshot query, and until now nothing at all stood between a stuck retry loop — or
+ * somebody's curl — and the bill. Set high enough that meeting one means something is wrong.
+ */
+export const ACTION_LIMITS = {
+  messages: { limit: 240, windowSeconds: 60 } as Allowance,
+  uploads: { limit: 120, windowSeconds: 600 } as Allowance,
+  sockets: { limit: 240, windowSeconds: 300 } as Allowance,
+};
+
+/** Buckets are namespaced per action so one cannot spend another's allowance. */
+export const actionBucket = (action: keyof typeof ACTION_LIMITS, principalId: string) =>
+  `${action}:${principalId}`;
+
+/**
  * Whether this hit is over the line. Pure, and deliberately not told anything about the address
  * beyond the count: a limiter that consulted the users table would answer differently for an
  * address that has an account, which is the one thing these routes exist to keep quiet about.

@@ -217,6 +217,30 @@ function scrollTranscript(list:HTMLElement,top:number){
   }));
 }
 
+/**
+ * What "Send to" never did.
+ *
+ * It was labelled as though it delivered a message to one person. It routes and notifies; the
+ * room reads it, as the room always did. Anyone who used it under the old wording deserves to be
+ * told once, by us, rather than to find out from somebody quoting it back to them.
+ */
+const ADDRESSING_NOTICE='mpai:notice:addressing:v1';
+export function AddressingNotice(){
+  const [dismissed,setDismissed]=useState(()=>{
+    try{return localStorage.getItem(ADDRESSING_NOTICE)==='dismissed'}catch{return false}
+  });
+  if(dismissed)return null;
+  return <aside className="room-notice" role="note">
+    <p><strong>“Send to” is now “Address to”.</strong> Addressing a message routes it and notifies that
+      participant. It has never made a message private — everyone in the room, including agents, can
+      read every message in it.</p>
+    <button type="button" onClick={()=>{
+      try{localStorage.setItem(ADDRESSING_NOTICE,'dismissed')}catch{}
+      setDismissed(true);
+    }}>Got it</button>
+  </aside>;
+}
+
 function relationshipOf(message:Message,byId:Map<string,Message>,members:Member[]){
   const parent=message.in_reply_to_message_id?byId.get(message.in_reply_to_message_id):undefined;
   const addressee=message.addressed_principal_id?members.find(m=>m.principal_id===message.addressed_principal_id):undefined;
@@ -362,7 +386,10 @@ function Transcript({messages,members,events,lastEvent,api,currentId='',readPosi
   return <div className="transcript-wrap">
     <div className="pulse-rail" aria-hidden="true"><span className={lastEvent?'pulse active':'pulse'}/></div>
     <div className="transcript" ref={listRef} data-testid="transcript" onScroll={measureLatest}>
-      {!timeline.length&&<div className="empty"><strong>The room is ready.</strong><p>Start with a clear direction or assign the first piece of work.</p></div>}
+      {/* A note about the room, inside the room's own scroll: it never takes height from the
+          conversation, and it goes away with one press. */}
+      <AddressingNotice/>
+      {!timeline.length&&<div className="empty"><strong>The room is ready.</strong><p>Start with a clear direction or assign the first piece of work.</p><p className="empty-visibility">Rooms are shared: everyone in this room, including agents, can read everything in it.</p></div>}
       {timeline.map((entry,index)=>{
         if(entry.kind==='decision'){
           const verb=DECISION_VERBS[entry.event.event_type]??entry.event.event_type;
@@ -403,7 +430,9 @@ function Transcript({messages,members,events,lastEvent,api,currentId='',readPosi
                   <span className="reply-excerpt">{rel.reply.excerpt}</span>
                 </button>
               : <span className="reply-cue static"><span className="reply-who">Replying to an earlier message</span></span>)}
-            {rel.showAddress&&<span className={`address ${rel.addressee?.kind}`}>To {rel.addressee?.display_name}</span>}
+            {/* Addressed, not private: the chip says who it is for, the tooltip says who can read it. */}
+            {rel.showAddress&&<span className={`address ${rel.addressee?.kind}`}
+              title="Addressed to one participant. Everyone in this room can read it.">Addressed to {rel.addressee?.display_name}</span>}
             <p>{bodySegments(message.body_text,message.mentions).map((segment,i)=>segment.mention
               ? <span key={i} className={`mention ${segment.mention.kind}`} data-principal-id={segment.mention.principal_id}>{segment.text}</span>
               : <Fragment key={i}>{segment.text}</Fragment>)}</p>
@@ -433,7 +462,7 @@ function Composer({members,onSend,to,onAddressee,focusToken}:{members:Member[];o
   useEffect(()=>{if(focusToken)field.current?.focus()},[focusToken]);
   const submit=async(e?:FormEvent)=>{e?.preventDefault();if(!body.trim()||busy)return;setBusy(true);setError('');try{await onSend(body.trim(),to||undefined);setBody('')}catch(x){setError((x as Error).message)}finally{setBusy(false)}};
   return <form className="composer" onSubmit={submit} aria-label="Send a room message" data-onboarding="conversation">
-    <div className="composer-meta"><label>Send to <select value={to} onChange={e=>onAddressee(e.target.value)}><option value="">Everyone</option>{members.map(m=><option value={m.principal_id} key={m.principal_id}>{m.display_name}</option>)}</select></label><span>Enter to send · Shift Enter for a new line</span></div>
+    <div className="composer-meta"><label>Address to <select value={to} onChange={e=>onAddressee(e.target.value)}><option value="">Everyone</option>{members.map(m=><option value={m.principal_id} key={m.principal_id}>{m.display_name}</option>)}</select></label><span className="composer-visibility">Everyone in the room reads every message</span></div>
     <div className="composer-input"><textarea ref={field} aria-label="Message" placeholder="Add direction, context, or a question…" value={body} rows={2} onChange={e=>setBody(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();void submit()}}}/><button disabled={!body.trim()||busy} aria-label="Send message"><ArrowUp size={18}/></button></div>
     {error&&<p className="form-error" role="alert">{error}</p>}
   </form>

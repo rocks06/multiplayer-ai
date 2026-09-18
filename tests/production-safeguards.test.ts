@@ -31,6 +31,35 @@ describe("refusing to start a public origin with a development setting on", () =
   });
 
   /**
+   * Fails closed, because the failure that matters is the one nobody notices: a hosted deployment
+   * that never set DEPLOYMENT_ENV, or set it to "prod", was exempt from every check meant to
+   * protect it — while serving perfectly. Declaring a machine local is now a statement somebody
+   * makes on purpose rather than something that happens by leaving a variable out.
+   */
+  it("treats a hosted origin or a networked bind as production unless told otherwise", () => {
+    expect(isProduction({ RENDER: "true" })).toBe(true);
+    expect(isProduction({ RENDER_EXTERNAL_URL: "https://example.invalid" })).toBe(true);
+    expect(isProduction({ DEPLOYMENT_ENV: "prod" })).toBe(true);            // not the magic word
+    expect(isProduction({ HOST: "0.0.0.0" })).toBe(true);                   // reachable from a network
+    expect(isProduction({ HOST: "127.0.0.1" })).toBe(false);
+    expect(isProduction({ HOST: "localhost" })).toBe(false);
+    expect(isProduction({})).toBe(false);
+    // A laptop serving a LAN says so, and keeps its development settings.
+    expect(isProduction({ HOST: "0.0.0.0", DEPLOYMENT_ENV: "development" })).toBe(false);
+    expect(isProduction({ RENDER: "true", DEPLOYMENT_ENV: "test" })).toBe(false);
+    expect(productionProblems({ HOST: "0.0.0.0", DEPLOYMENT_ENV: "development", ALLOW_HEADER_PRINCIPAL: "1" })).toEqual([]);
+  });
+
+  /** It hands an authenticated caller another person's sign-in token, which is their account. */
+  it.each(["1", "true", "TRUE"])("refuses MPAI_OPERATOR_SIGN_IN_LINKS=%s", value => {
+    const problems = productionProblems({ ...production, MPAI_OPERATOR_SIGN_IN_LINKS: value });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("MPAI_OPERATOR_SIGN_IN_LINKS");
+    expect(() => assertProductionSafe({ ...production, MPAI_OPERATOR_SIGN_IN_LINKS: value }))
+      .toThrow(ProductionConfigurationError);
+  });
+
+  /**
    * The one that matters most. It accepts a caller-supplied x-principal-id *and* re-opens the
    * unauthenticated company and human bootstrap routes — on a public origin that is not a
    * weakened check, it is no check at all.

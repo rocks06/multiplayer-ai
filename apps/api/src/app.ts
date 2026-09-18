@@ -18,8 +18,8 @@ import { deliveryMode, resolveSignInDelivery, type DeliveryEnvironment } from ".
 import { assertProductionSafe, isProduction } from "./production-guard.js";
 import { ArtifactService, isPreviewable } from "./artifacts/artifact-service.js";
 import { storageFrom, LocalArtifactStorage, type ArtifactStorage } from "./artifacts/storage.js";
-import { AUTH_LIMITS, PostgresRateLimitStore, clientBucket, emailBucket, overLimit,
-  type RateLimitStore } from "./auth/rate-limit.js";
+import { ACTION_LIMITS, AUTH_LIMITS, PostgresRateLimitStore, actionBucket, clientBucket, emailBucket,
+  overLimit, type Allowance, type RateLimitStore } from "./auth/rate-limit.js";
 
 const fakeStep=z.discriminatedUnion('kind',[
   z.object({kind:z.literal('tool'),id:z.string().min(1),name:z.enum(['room.send_message','task.get','task.list_eligible','task.update_status','task.complete','decision.request','decision.get']),arguments:z.record(z.string(),z.unknown())}),
@@ -58,6 +58,11 @@ export interface AppOptions {
   webAppUrl?: string;
   /** How far behind now the notification feed reads, so late-committing events are never skipped. */
   notificationSettleSeconds?: number;
+  /**
+   * Hand an authenticated caller another person's sign-in token. A local deployment with no email
+   * transport only; `assertProductionSafe` refuses to boot with it on a production origin.
+   */
+  operatorSignInLinks?: boolean;
 }
 const idem = (request:any) => { const key=request.headers["idempotency-key"]; if(typeof key!=="string") throw new DomainError("idempotency_key_required","Idempotency-Key is required",400); return key; };
 
@@ -79,6 +84,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
      is a claim, and what it is allowed to be is decided in the service, not here. */
   app.addContentTypeParser('*',{parseAs:'buffer'},(_request,payload,done)=>done(null,payload));
   const allowHeaderPrincipal=options.allowHeaderPrincipal ?? process.env.ALLOW_HEADER_PRINCIPAL==="1";
+  const operatorSignInLinks=options.operatorSignInLinks ?? environmentForGuard.MPAI_OPERATOR_SIGN_IN_LINKS==="1";
   /* Where a browser sign-in has to come back to.
 
      Read from configuration and never from the request, because the alternative is trusting a
@@ -125,11 +131,53 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   const agentGateway=new AgentGatewayService(pool,service);
   app.register(websocket);
   app.setErrorHandler((error,request,reply)=>{ if(error instanceof DomainError) return reply.status(error.statusCode).send({error:{code:error.code,message:error.message,request_id:request.id,details:error.details}}); if(error instanceof z.ZodError) return reply.status(400).send({error:{code:"validation_error",message:"Invalid request",request_id:request.id,details:error.issues}}); request.log.error(error); return reply.status(500).send({error:{code:"internal_error",message:"Internal server error",request_id:request.id}}); });
+  /**
+   * What a browser is allowed to do with what we send it.
+   *
+   * The web app is served from this origin, so these headers are the app's headers. Scripts come
+   * from here and nowhere else, nothing may frame us, and a response that carries somebody's room
+   * is never written to a shared cache. Inline styles are permitted because React writes element
+   * styles directly; inline *script* is not, which is the half that matters. `blob:` is allowed to
+   * be framed because that is how a PDF is previewed without handing the file to a third party.
+   */
+  const contentSecurityPolicy=[
+    "default-src 'self'","script-src 'self'","style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:","font-src 'self'","connect-src 'self' ws: wss:",
+    "frame-src 'self' blob:","media-src 'self' blob:","object-src 'none'",
+    "base-uri 'none'","form-action 'self'","frame-ancestors 'none'",
+  ].join('; ');
+  app.addHook('onSend',async(request,reply,payload)=>{
+    reply.header('content-security-policy',contentSecurityPolicy);
+    reply.header('x-content-type-options','nosniff');
+    reply.header('x-frame-options','DENY');
+    reply.header('referrer-policy','no-referrer');
+    reply.header('cross-origin-opener-policy','same-origin');
+    reply.header('permissions-policy','camera=(), microphone=(), geolocation=(), payment=()');
+    // Only where TLS is actually in front of us; over plain http it would be a promise we break.
+    if(production)reply.header('strict-transport-security','max-age=31536000; includeSubDomains');
+    // Anything answered for a signed-in caller is that person's, and belongs in no shared cache.
+    if(String(request.url).startsWith('/v1/')&&!reply.hasHeader('cache-control'))
+      reply.header('cache-control','no-store');
+    return payload;
+  });
+
+  /**
+   * What one principal may do to a room in a short time. Counted after authentication, so the
+   * bucket is a principal rather than an address behind a proxy, and never before: an unauthorized
+   * caller is refused by authorization, which is cheaper than counting them.
+   */
+  const withinActionLimits=async(action:keyof typeof ACTION_LIMITS,principalId:string,allowance:Allowance=ACTION_LIMITS[action])=>{
+    const count=await rateLimits.hit(actionBucket(action,principalId),allowance.windowSeconds);
+    if(overLimit(count,allowance))
+      throw new DomainError('rate_limited','That is more than this room accepts right now. Wait a moment and try again.',429);
+    return principalId;
+  };
+
   /* Liveness: the process is up and answering. Deliberately touches nothing else. */
   app.get('/health',async()=>({status:'ok'}));
 
   /* Readiness: whether this instance can actually serve the product.
-  
+
      /health answers from the process alone, so a deployment whose database is unreachable or
      unmigrated reports itself perfectly healthy while every route that matters returns 500 — which
      is exactly what a hosted deployment did, and what cost an afternoon to find from the outside.
@@ -168,9 +216,23 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
      proxy access logs and referrers; preview and acceptance carry the secret in a POST body. */
   app.post('/v1/room-invites/preview',async req=>{const x=body(z.object({token:z.string().min(20).max(200)}),req.body);return invites.preview(x.token)});
   app.post('/v1/room-invites/accept',async req=>{const x=body(z.object({token:z.string().min(20).max(200)}),req.body);const session=await auth.resolveSession(readSessionCookie(req));return invites.accept(x.token,session.userId)});
-  // Developer beta: no email transport, so an authorized company member mints a link and
-  // reads it once from this response. Delivery stays behind the SignInLinkDelivery seam.
-  app.post('/v1/companies/:companyId/users/:userId/sign-in-links',async req=>{const p=body(z.object({companyId:z.string().uuid(),userId:z.string().uuid()}),req.params);const session=await auth.resolveSession(readSessionCookie(req));return auth.issueSignInLinkFor({companyId:p.companyId,actorUserId:session.userId,userId:p.userId})});
+  /* Issuing somebody else's sign-in link is issuing their account.
+
+     This was a served route that asked only whether the caller belonged to the same workspace, so
+     any colleague could mint the owner's token and sign in as them. It exists now only where a
+     deployment has turned it on by name, for a laptop with no email transport, and a production
+     environment refuses to boot with it enabled at all. */
+  if(operatorSignInLinks){
+    app.post('/v1/companies/:companyId/users/:userId/sign-in-links',async req=>{
+      const p=body(z.object({companyId:z.string().uuid(),userId:z.string().uuid()}),req.params);
+      const session=await auth.resolveSession(readSessionCookie(req));
+      const actorPrincipalId=await auth.principalFor(session.userId,p.companyId);
+      // Counted like the public mail routes: a local escape hatch is still a way to send mail.
+      await withinAuthLimits(req,String(session.userId));
+      return auth.issueSignInLinkFor({companyId:p.companyId,actorUserId:session.userId,
+        actorPrincipalId,userId:p.userId,reveal:true});
+    });
+  }
   // Authenticated workspace creation. The unauthenticated POST /v1/companies below remains a
   // developer bootstrap and a documented staging blocker; this path does not depend on it.
   app.post('/v1/workspaces',async req=>{const x=body(z.object({name:z.string().min(1).max(100)}),req.body);const session=await auth.resolveSession(readSessionCookie(req));return service.createWorkspaceForUser(session.userId,x.name)});
@@ -237,7 +299,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
     else userId=(await auth.resolveSession(readSessionCookie(req))).userId;
     return notifications.forUser(userId,q.after);
   });
-  app.post('/v1/companies/:companyId/rooms/:roomId/messages',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({body:z.string().max(100000),artifact_ids:z.array(z.string().uuid()).max(10).optional(),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional(),mentions:mentionsSchema}),req.body);return service.sendMessage({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),addressedPrincipalId:x.addressed_principal_id,mentions:x.mentions,body:x.body,artifactIds:x.artifact_ids,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idem(req)})});
+  app.post('/v1/companies/:companyId/rooms/:roomId/messages',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({body:z.string().max(100000),artifact_ids:z.array(z.string().uuid()).max(10).optional(),addressed_principal_id:z.string().uuid().optional(),task_id:z.string().uuid().optional(),in_reply_to_message_id:z.string().uuid().optional(),mentions:mentionsSchema}),req.body);return service.sendMessage({companyId:p.companyId,roomId:p.roomId,actorId:await withinActionLimits('messages',await principal(req,p.companyId)),addressedPrincipalId:x.addressed_principal_id,mentions:x.mentions,body:x.body,artifactIds:x.artifact_ids,taskId:x.task_id,inReplyToMessageId:x.in_reply_to_message_id,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/tasks',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({title:z.string().min(1),description:z.string().default(''),assignee_principal_id:z.string().uuid().optional()}),req.body);return service.createTask({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),title:x.title,description:x.description,assigneePrincipalId:x.assignee_principal_id,idempotencyKey:idem(req)})});
   app.patch('/v1/companies/:companyId/rooms/:roomId/tasks/:taskId/status',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),taskId:z.string().uuid()}),req.params);const x=body(z.object({status:z.enum(['open','in_progress','blocked','awaiting_decision','completed','cancelled']),expected_version:z.number().int().positive()}),req.body);return service.updateTaskStatus({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),taskId:p.taskId,status:x.status,expectedVersion:x.expected_version,idempotencyKey:idem(req)})});
   app.post('/v1/companies/:companyId/rooms/:roomId/tasks/:taskId/dependencies',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),taskId:z.string().uuid()}),req.params);const x=body(z.object({depends_on_task_id:z.string().uuid()}),req.body);return service.addTaskDependency({companyId:p.companyId,roomId:p.roomId,actorId:await principal(req,p.companyId),taskId:p.taskId,dependsOnTaskId:x.depends_on_task_id,idempotencyKey:idem(req)})});
@@ -267,7 +329,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
     const bytes=req.body as Buffer;
     if(!Buffer.isBuffer(bytes))throw new DomainError('artifact_empty','Send the file as the request body',400);
     return artifacts.create({companyId:p.companyId,roomId:p.roomId,
-      principalId:await principal(req,p.companyId),filename:q.filename,
+      principalId:await withinActionLimits('uploads',await principal(req,p.companyId)),filename:q.filename,
       contentType:q.content_type??String(req.headers['content-type']??'application/octet-stream'),
       body:new Uint8Array(bytes)});
   });
@@ -292,7 +354,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
 
   app.get('/v1/companies/:companyId/rooms/:roomId/snapshot',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.snapshot(p.companyId,p.roomId,await principal(req,p.companyId))});
   app.get('/v1/companies/:companyId/rooms/:roomId/events',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const q=body(z.object({after_seq:z.coerce.number().int().min(0).default(0),limit:z.coerce.number().int().positive().max(500).default(100)}),req.query);return service.events(p.companyId,p.roomId,await principal(req,p.companyId),q.after_seq,q.limit)});
-  registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime,principal,artifacts);
+  registerAgentGatewayRoutes(app,agentGateway,service,agentRuntime,realtime,principal,artifacts,withinActionLimits);
   app.register(async realtimeRoutes=>{
     realtimeRoutes.get('/v1/companies/:companyId/rooms/:roomId/stream',{websocket:true},(socket,req)=>{
       void (async()=>{ try {
@@ -301,6 +363,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
         let principalId:string|undefined;
         if(allowHeaderPrincipal){ const header=req.headers['x-principal-id']; principalId=typeof header==='string'?header:q.principal_id; }
         if(!principalId){ const session=await auth.resolveSession(readSessionCookie(req)); principalId=await auth.principalFor(session.userId,p.companyId); }
+        await withinActionLimits('sockets',principalId);
         await realtime.attach(socket,{companyId:p.companyId,roomId:p.roomId,principalId,afterSeq:q.after_seq});
       } catch(error) {
         const domain=error instanceof DomainError?error:new DomainError('validation_error','Invalid realtime subscription',400);

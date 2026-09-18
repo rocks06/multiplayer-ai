@@ -728,7 +728,8 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
   .room-title>span{font-size:9px}
   .share-room{padding-inline:4px}
   .delete-room{font-size:11px}
-  .composer-meta>span{display:none}
+  /* The keyboard hint is a convenience and can go; who can read the message cannot. */
+  .composer-meta>.composer-hint{display:none}
 }
 }
 
@@ -798,3 +799,13 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
   .room-notifications-scrim{background:color-mix(in srgb,var(--ink) 26%,transparent);backdrop-filter:blur(2px)}
   .room-notifications-panel{z-index:40;width:min(340px,calc(100vw - 24px));max-height:min(70vh,520px)}
 }
+
+/* A room is shared, said where the belief forms rather than in a policy nobody opens. */
+.composer-visibility{color:var(--faint)}
+.empty-visibility{margin-top:10px;max-width:320px;font-size:var(--t-caption);color:var(--faint)}
+.room-notice{display:flex;align-items:flex-start;gap:12px;margin:0 0 16px;padding:10px 12px;max-width:720px;
+  border:1px solid color-mix(in srgb,var(--wait) 35%,transparent);border-radius:var(--r-surface);background:var(--wait-soft)}
+.room-notice p{margin:0;font-size:var(--t-caption);line-height:1.5;color:var(--ink-2)}
+.room-notice strong{color:var(--ink)}
+.room-notice button{flex:0 0 auto;padding:6px 10px;border:1px solid var(--line-strong);border-radius:var(--r-control);
+  background:var(--surface);font-size:var(--t-caption);font-weight:600}

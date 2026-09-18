@@ -169,7 +169,7 @@ export type NotificationLevel='all'|'direct_mentions'|'mentions'|'needs_you'|'of
    permission, credential or input arrives too. */
 export const NOTIFICATION_CHOICES:Array<{level:NotificationLevel;label:string;detail:string}>=[
   {level:'all',label:'All activity',detail:'Everything in the room, except agents\u2019 turns with each other'},
-  {level:'direct_mentions',label:'Direct, mentions and Needs you',detail:'Sent to you, naming you, or waiting on you'},
+  {level:'direct_mentions',label:'Addressed to me, mentions and Needs you',detail:'Addressed to you, naming you, or waiting on you'},
   {level:'mentions',label:'Mentions only',detail:'Only when somebody writes your name'},
   {level:'needs_you',label:'Needs you only',detail:'Decisions, blocked agents and failed runs'},
   {level:'off',label:'Off',detail:'Nothing at all'},

@@ -4,7 +4,7 @@ import { DomainError } from "../../../../packages/domain/src/index.js";
 
 /** Why a person is being told: something visible, something said to them, or something only they can do. */
 export type NotificationCategory = "informational" | "mention" | "action_required";
-export type NotificationKind = "direct_message" | "mention" | "room_message" | "decision_requested" | "agent_blocked" | "agent_failed" | "agent_finished";
+export type NotificationKind = "addressed" | "mention" | "room_message" | "decision_requested" | "agent_blocked" | "agent_failed" | "agent_finished";
 
 export interface RoomNotification {
   id: string;
@@ -116,9 +116,12 @@ function describe(row: any): RoomNotification {
       return { id: row.event_id, ...room, created_at, link: link(`message:${row.entity_id}`), body: text,
         kind: "room_message", category: "informational", title: `${actor} posted in ${row.room_name}` };
     }
+    /* "Sent you a message" claimed something the product does not do: a room is shared, and a
+       message addressed to one person is read by everyone in it, agents included. Being addressed
+       is real and worth a notification — it is being spoken to, not being spoken to privately. */
     return { id: row.event_id, ...room, created_at, link: link(`message:${row.entity_id}`), body: text,
-      kind: direct ? "direct_message" : "mention", category: "mention",
-      title: direct ? `${actor} sent you a message` : `${actor} mentioned you` };
+      kind: direct ? "addressed" : "mention", category: "mention",
+      title: direct ? `${actor} addressed you` : `${actor} mentioned you` };
   }
   if (row.event_type === "decision.requested") {
     return { id: row.event_id, ...room, created_at, link: link(`decision:${row.entity_id}`),

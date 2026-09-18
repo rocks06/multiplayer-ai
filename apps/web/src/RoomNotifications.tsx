@@ -5,7 +5,7 @@ import {NOTIFICATION_CHOICES,roomNotificationPreference,setRoomNotificationPrefe
   type NotificationLevel} from './api';
 
 /** What the header says when there is no room for a sentence. */
-const SHORT:Record<NotificationLevel,string>={all:'All',direct_mentions:'Direct',mentions:'Mentions',needs_you:'Needs you',off:'Off'};
+const SHORT:Record<NotificationLevel,string>={all:'All',direct_mentions:'Addressed',mentions:'Mentions',needs_you:'Needs you',off:'Off'};
 
 /**
  * How much this room is allowed to interrupt this person.

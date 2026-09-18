@@ -92,7 +92,9 @@ describe("room invitation HTTP authorization",()=>{
     expect((await call("POST",`/v1/companies/${x.company.id}/projects`,{name:"Unauthorized",objective:"No"},{cookie})).statusCode).toBe(403);
     expect((await call("POST",`/v1/companies/${x.company.id}/projects/${x.project.id}/rooms`,{name:"Unauthorized Room"},{cookie})).statusCode).toBe(403);
     expect((await call("PATCH",`/v1/companies/${x.company.id}/projects/${x.project.id}/objective`,{objective:"Changed",expected_objective:"Collaborate"},{cookie})).statusCode).toBe(403);
-    expect((await call("POST",`/v1/companies/${x.company.id}/users/${userId}/sign-in-links`,{},{cookie})).statusCode).toBe(403);
+    /* Stronger than the 403 this once asserted: issuing another person's sign-in token is not a
+       route this deployment serves at all, to a guest or to anybody else. */
+    expect((await call("POST",`/v1/companies/${x.company.id}/users/${userId}/sign-in-links`,{},{cookie})).statusCode).toBe(404);
     expect((await call("POST",`/v1/companies/${x.company.id}/rooms/${x.invitedRoom.id}/invites`,{},{cookie})).statusCode).toBe(403);
     expect((await call("POST",`/v1/companies/${x.company.id}/rooms/${x.invitedRoom.id}/members`,{principal_id:principalId,role:"manager",responsibilities:""},{cookie,"idempotency-key":crypto.randomUUID()})).statusCode).toBe(403);
     // Even if a separate room-level action later promotes this principal, room management alone

@@ -234,28 +234,68 @@ describe("Human authentication", () => {
     await limited.close();
   });
 
-  it("lets an authorized company member issue a link for a colleague, and no one else", async () => {
+  /**
+   * Issuing somebody else's sign-in link is issuing their account.
+   *
+   * This was a served route guarded only by "same workspace", so any colleague could mint the
+   * owner's token and become them. It is gone from the default surface; where a local deployment
+   * turns it on by name, what it issues is recorded against whoever asked for it.
+   */
+  it("never hands one member another member's sign-in token on the default surface", async () => {
     const f = await company();
     const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
     const { cookie } = await signIn(f.owner.user_id, email);
+    const colleague = await seedHuman(pool, f.id, `mate-${crypto.randomUUID()}@example.com`, "Mate");
 
-    const colleague = (await seedHuman(pool, f.id, ({ email: `mate-${crypto.randomUUID()}@example.com`, display_name: "Mate" }).email, ({ email: `mate-${crypto.randomUUID()}@example.com`, display_name: "Mate" }).display_name));
-    const issued = await call("POST", `/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, {}, { cookie });
-    expect(issued.statusCode).toBe(200);
-    expect(issued.json().token).toMatch(/^mpsi_/);
+    const attempt = await call("POST", `/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, {}, { cookie });
+    expect(attempt.statusCode).toBe(404);
+    expect(JSON.stringify(attempt.json())).not.toMatch(/mpsi_/);
+    // And nothing was minted in the attempt.
+    expect((await pool.query(`SELECT count(*)::int n FROM user_auth_tokens WHERE user_id=$1`, [colleague.user_id])).rows[0].n).toBe(0);
+  });
 
-    // The colleague can use it, which proves the link is real and not merely displayed.
-    const theirs = await call("POST", "/v1/auth/sessions", { token: issued.json().token });
-    expect(theirs.statusCode).toBe(200);
+  it("issues an operator link only where a deployment asked for it, and records who asked", async () => {
+    const operator = buildApp(new Pool({ connectionString }), { pollIntervalMs: 50 },
+      { allowHeaderPrincipal: false, cookieSecure: true, signInDelivery: new SilentSignInLinkDelivery(),
+        operatorSignInLinks: true });
+    try {
+      const base = await operator.listen({ host: "127.0.0.1", port: 0 });
+      const f = await company();
+      const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
+      const { cookie } = await signIn(f.owner.user_id, email);
+      const colleague = await seedHuman(pool, f.id, `mate-${crypto.randomUUID()}@example.com`, "Mate");
+      const send = (path: string, cookieHeader?: string) => operator.inject({ method: "POST", url: path, payload: {},
+        headers: cookieHeader ? { cookie: cookieHeader } : {} });
 
-    // An unauthenticated caller cannot mint links for anyone.
-    expect((await call("POST", `/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, {})).statusCode).toBe(401);
+      const issued = await send(`/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, cookie);
+      expect(issued.statusCode).toBe(200);
+      expect(issued.json().token).toMatch(/^mpsi_/);
+      // Recorded against the person who asked, so the path is answerable for afterwards.
+      const provenance = await pool.query(`SELECT issue_reason,issued_by_principal_id FROM user_auth_tokens WHERE user_id=$1`, [colleague.user_id]);
+      expect(provenance.rows[0].issue_reason).toBe("operator");
+      expect(provenance.rows[0].issued_by_principal_id).toBe(f.owner.principal_id);
 
-    // Nor can a member of a different company.
-    const other = await company("Other");
-    const otherEmail = (await pool.query(`SELECT email FROM users WHERE id=$1`, [other.owner.user_id])).rows[0].email;
-    const { cookie: otherCookie } = await signIn(other.owner.user_id, otherEmail);
-    expect((await call("POST", `/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, {}, { cookie: otherCookie })).statusCode).toBe(403);
+      // The checks that were always there still hold.
+      expect((await send(`/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`)).statusCode).toBe(401);
+      const other = await company("Other");
+      const otherEmail = (await pool.query(`SELECT email FROM users WHERE id=$1`, [other.owner.user_id])).rows[0].email;
+      const { cookie: otherCookie } = await signIn(other.owner.user_id, otherEmail);
+      expect((await send(`/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, otherCookie)).statusCode).toBe(403);
+      expect(base).toContain("127.0.0.1");
+    } finally { await operator.close(); }
+  });
+
+  it("records why every ordinary sign-in token exists", async () => {
+    const f = await company();
+    const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
+    await call("POST", "/v1/auth/sign-in-links", { email });
+    const asked = await pool.query(`SELECT issue_reason,issued_by_principal_id FROM user_auth_tokens WHERE user_id=$1 ORDER BY id DESC LIMIT 1`, [f.owner.user_id]);
+    expect(asked.rows[0]).toMatchObject({ issue_reason: "self_service", issued_by_principal_id: null });
+
+    const fresh = `new-${crypto.randomUUID()}@example.com`;
+    await call("POST", "/v1/auth/sign-up", { name: "New", email: fresh });
+    const signedUp = await pool.query(`SELECT t.issue_reason FROM user_auth_tokens t JOIN users u ON u.id=t.user_id WHERE u.email=$1`, [fresh]);
+    expect(signedUp.rows[0].issue_reason).toBe("sign_up");
   });
 
   it("marks the session cookie httpOnly and same-site, and secure when configured", async () => {
