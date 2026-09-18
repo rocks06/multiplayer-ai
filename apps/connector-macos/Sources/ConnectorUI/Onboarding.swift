@@ -82,8 +82,15 @@ public struct Progress: Codable, Equatable, Sendable {
     public var workspaceAddress: String?
     /// The room the person was last in, so relaunching returns them to it.
     public var lastRoomPath: String?
+    /// Whether anyone has ever been signed in on this Mac. Signing out does not clear it: the
+    /// person reaching the account screen afterwards has an account, and is shown Sign in.
+    /// Optional so that progress saved before this existed still decodes.
+    public var hasSignedIn: Bool?
 
     public init() {}
+
+    /// An account has been used here, by this record or by one saved before the record existed.
+    public var knowsAnAccount: Bool { hasSignedIn == true || companyId != nil }
 }
 
 /// Reading and writing `Progress`. A protocol so the state machine can be exercised against a

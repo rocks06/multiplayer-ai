@@ -469,8 +469,14 @@ describe("Agent Gateway v1",()=>{
 
   // A session the Gateway still calls connected but which stopped reporting must not read
   // as live — this is the state that made a vanished connector look healthy.
-  await pool.query(`UPDATE external_agent_sessions SET last_seen_at=now()-interval '2 minutes' WHERE id=$1`,[c.sessionId]);
-  expect((await mine()).agent_presence).toBe("stale");
+  /* The socket is still open, and every realtime poll re-validates it — which is itself evidence
+     of life and touches last_seen_at. A poll landing between the backdate and the read is a real
+     writer, not a bug; the claim is that an old last_seen reads stale, so backdate until the read
+     observes it rather than hoping no poll arrives in between. */
+  await until(async()=>{
+    await pool.query(`UPDATE external_agent_sessions SET last_seen_at=now()-interval '2 minutes' WHERE id=$1`,[c.sessionId]);
+    return (await mine()).agent_presence==="stale";
+  });
 
   await pool.query(`UPDATE external_agent_sessions SET status='offline',disconnected_at=now() WHERE id=$1`,[c.sessionId]);
   expect((await mine()).agent_presence).toBe("offline");

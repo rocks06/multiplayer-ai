@@ -172,7 +172,37 @@ import Foundation
 /// it was invisible because it lived in view state that nothing asserted.
 @Suite struct FirstRunAccountTests {
     @Test func aFreshlyInstalledAppOpensOnCreatingAnAccount() {
-        #expect(AccountScreen.opensCreating, "first run must offer to create an account, not to sign in")
+        #expect(AccountScreen.opensCreating(knowsAnAccount: Progress().knowsAnAccount),
+                "first run must offer to create an account, not to sign in")
+    }
+
+    /// The physical failure: signing out opened on "Create your account", which reads as though
+    /// the account had gone. A Mac that has had anybody signed in is shown Sign in afterwards.
+    @Test func aMacThatHasBeenSignedInOpensOnSignIn() {
+        var signedInBefore = Progress(); signedInBefore.hasSignedIn = true
+        #expect(!AccountScreen.opensCreating(knowsAnAccount: signedInBefore.knowsAnAccount))
+        // An install from before the record existed, which already names a workspace, counts too.
+        var older = Progress(); older.companyId = "00000000-0000-4000-8000-0000000000c1"
+        #expect(!AccountScreen.opensCreating(knowsAnAccount: older.knowsAnAccount))
+    }
+
+    /// Progress saved by an older build has no `hasSignedIn` and must still load, or everybody's
+    /// saved setup would be lost on upgrade.
+    @Test func progressSavedBeforeTheRecordExistedStillLoads() throws {
+        let old = #"{"setupComplete":true,"companyId":"00000000-0000-4000-8000-0000000000c1","workspaceAddress":"https://workspace.example"}"#
+        let decoded = try JSONDecoder().decode(Progress.self, from: Data(old.utf8))
+        #expect(decoded.setupComplete)
+        #expect(decoded.hasSignedIn == nil)
+        #expect(decoded.knowsAnAccount)
+    }
+
+    /// Only methods both sides support are offered, most preferred first, and the emailed link is
+    /// never missing: a passkey arrives by being listed, not by a client guessing.
+    @Test func signInMethodsAreWhatBothSidesSupportWithTheLinkAsFallback() {
+        #expect(AppModel.offered(["email_link"]) == ["email_link"])
+        #expect(AppModel.offered(["passkey", "email_link"]) == ["email_link"])   // this build has no passkey yet
+        #expect(AppModel.offered(nil) == ["email_link"])
+        #expect(AppModel.offered(["something_new"]) == ["email_link"])
     }
 
     /// The two routes are not interchangeable: only one of them can make an account exist.

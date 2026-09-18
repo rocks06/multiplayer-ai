@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState,type FormEvent} from 'react';
-import {currentIdentity,redeemSignInToken,requestSignInLink,signInDelivery,type SignInDelivery,type SignedInIdentity} from './api';
+import {currentIdentity,redeemSignInToken,requestSignInLink,signInDelivery,signInMethods,takeSignedOutNotice,
+  type SignInDelivery,type SignInMethod,type SignedInIdentity} from './api';
 import {rememberAcross} from './pending-invite';
 
 const INTENT_KEY='mpai:after-sign-in';
@@ -47,8 +48,21 @@ type Phase=
  *  destination should mount once, cleanly, with the session already set. */
 const hardNavigate=(to:string)=>{location.replace(to)};
 
-export default function SignIn({onAuthenticated=hardNavigate}:{onAuthenticated?:(to:string)=>void}={}){
+/**
+ * The front door, for people who already have an account — which, after signing out, is
+ * everybody who sees it. Creating an account is one link away for the ones who do not.
+ *
+ * Methods are rendered from the list the server declares, most preferred first. Today that is the
+ * emailed link alone; a passkey slots in above it without this screen changing shape, and the link
+ * stays underneath as the way in that works anywhere.
+ */
+export default function SignIn({onAuthenticated=hardNavigate,onNavigate=hardNavigate}:{
+  onAuthenticated?:(to:string)=>void;onNavigate?:(to:string)=>void}={}){
   const [phase,setPhase]=useState<Phase>({step:'checking'});
+  // Read once, on arrival: said on the screen that follows signing out, and not again.
+  const [signedOut]=useState(()=>takeSignedOutNotice());
+  const [methods,setMethods]=useState<SignInMethod[]>(['email_link']);
+  useEffect(()=>{void signInMethods().then(setMethods)},[]);
   const [email,setEmail]=useState('');
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
@@ -109,16 +123,23 @@ export default function SignIn({onAuthenticated=hardNavigate}:{onAuthenticated?:
       {phase.step==='redeeming'&&<p className="auth-quiet" role="status">Signing you in…</p>}
 
       {phase.step==='email'&&<>
-        <h1>Multiplayer</h1>
-        <p className="auth-lead">A room where your agents work together.</p>
-        <form onSubmit={submit} noValidate>
-          <label htmlFor="auth-email">Email</label>
-          <input id="auth-email" ref={emailField} type="email" inputMode="email" autoComplete="email"
-            autoCapitalize="off" spellCheck={false} placeholder="you@company.com"
-            value={email} onChange={event=>setEmail(event.target.value)}/>
-          <button disabled={busy||!email.trim()}>{busy?'Sending…':'Continue'}</button>
-          {error&&<p className="auth-error" role="alert">{error}</p>}
-        </form>
+        <h1>Sign in</h1>
+        {signedOut
+          ? <p className="auth-note" role="status">You’re signed out. Your account and your workspaces are unchanged — sign in to pick up where you left off.</p>
+          : <p className="auth-lead">A room where your agents work together.</p>}
+        {methods.map(method=>method==='email_link'
+          ? <form key={method} onSubmit={submit} noValidate aria-label="Sign in with an emailed link">
+              <label htmlFor="auth-email">Email</label>
+              <input id="auth-email" ref={emailField} type="email" inputMode="email" autoComplete="email"
+                autoCapitalize="off" spellCheck={false} placeholder="you@company.com"
+                value={email} onChange={event=>setEmail(event.target.value)}/>
+              <button disabled={busy||!email.trim()}>{busy?'Sending…':'Email me a sign-in link'}</button>
+              <p className="auth-hint">No password. The link works once, within fifteen minutes.</p>
+              {error&&<p className="auth-error" role="alert">{error}</p>}
+            </form>
+          : null)}
+        <p className="auth-switch">New to Multiplayer AI? <button type="button" className="auth-secondary"
+          onClick={()=>onNavigate('/signup')}>Create an account</button></p>
       </>}
 
       {phase.step==='issued'&&<>

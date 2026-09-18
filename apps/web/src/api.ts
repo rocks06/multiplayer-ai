@@ -250,6 +250,44 @@ export const acceptRoomInvite=(token:string)=>send<AcceptedRoomInvite>('/v1/room
  * delivery is on — and has to stay while it is not.
  */
 export type SignInDelivery='resend'|'logging'|'silent'|'custom';
+/**
+ * Ways of signing in, in the order they are offered. A passkey goes first once one exists; the
+ * emailed link stays last because it is the one that always works. The server lists what it
+ * accepts, this client lists what it can do, and only methods on both lists are shown.
+ */
+export type SignInMethod='passkey'|'email_link';
+export const SIGN_IN_METHOD_ORDER:readonly SignInMethod[]=['passkey','email_link'];
+export const CLIENT_SIGN_IN_METHODS:ReadonlySet<SignInMethod>=new Set(['email_link']);
+export function offeredSignInMethods(server:readonly string[]|undefined,client:ReadonlySet<SignInMethod>=CLIENT_SIGN_IN_METHODS):SignInMethod[]{
+  const offered=SIGN_IN_METHOD_ORDER.filter(method=>client.has(method)&&(server??[]).includes(method));
+  // A server that says nothing usable still has the emailed link: nobody is left without a way in.
+  return offered.length?offered:['email_link'];
+}
+export const signInMethods=()=>
+  fetch('/v1/app-config',{credentials:'same-origin'})
+    .then(response=>response.ok?response.json() as Promise<{sign_in_methods?:string[]}>:null)
+    .then(config=>offeredSignInMethods(config?.sign_in_methods))
+    .catch(()=>offeredSignInMethods(undefined));
+
+/**
+ * Signing out, said plainly afterwards.
+ *
+ * The next screen is sign-in, and without a word it can read as though the account went with
+ * the session. It did not: the account, its workspaces and everything in them are exactly as they
+ * were. The marker lives for one page load in this tab only.
+ */
+const SIGNED_OUT='mpai:signed-out';
+export function signOutAndLeave(){
+  void signOut().catch(()=>{}).finally(()=>{
+    try{sessionStorage.setItem(SIGNED_OUT,'1')}catch{}
+    location.href='/signin';
+  });
+}
+export function takeSignedOutNotice(){
+  try{const was=sessionStorage.getItem(SIGNED_OUT)==='1';sessionStorage.removeItem(SIGNED_OUT);return was}
+  catch{return false}
+}
+
 export const signInDelivery=()=>
   fetch('/v1/app-config',{credentials:'same-origin'})
     .then(response=>response.ok?response.json() as Promise<{sign_in_delivery:SignInDelivery}>:null)

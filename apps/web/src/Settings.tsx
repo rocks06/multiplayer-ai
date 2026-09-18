@@ -1,4 +1,4 @@
-import {signOut,type SignedInIdentity} from './api';
+import {signOutAndLeave,type SignedInIdentity} from './api';
 import {restartOnboarding} from './ContextualOnboarding';
 
 /**
@@ -52,7 +52,9 @@ export function Settings({identity,workspace}:{
 
     <section>
       <h2>Session</h2>
-      <button className="settings-signout" onClick={()=>{void signOut().finally(()=>{location.href='/'})}}>
+      {/* Said before it happens, so nobody hesitates over what they are about to lose: nothing. */}
+      <p className="settings-note">Signing out ends this session only. Your account, workspaces, rooms and agents stay exactly as they are.</p>
+      <button className="settings-signout" onClick={signOutAndLeave}>
         Sign out
       </button>
     </section>

@@ -237,6 +237,10 @@ public final class AppModel {
         let found = try? await client.currentIdentity()
         identity = found
         situation.signedIn = found != nil
+        if found != nil {
+            if progress.hasSignedIn != true { write { $0.hasSignedIn = true } }
+            justSignedOut = false
+        }
 
         if let found {
             // Multi-workspace is not a thing the product offers yet; the first is the one.
@@ -1063,6 +1067,17 @@ public final class AppModel {
     /// is worse than omitting a developer note.
     public private(set) var delivery: String = "resend"
 
+    /// Ways of signing in the workspace accepts, most preferred first, that this app can offer.
+    /// The emailed link is always among them; a passkey joins the front of the list when both the
+    /// server and this app support one, without the account screen changing shape.
+    public private(set) var signInMethods: [String] = ["email_link"]
+    nonisolated static let supportedSignInMethods: Set<String> = ["email_link"]
+    nonisolated static func offered(_ server: [String]?) -> [String] {
+        let order = ["passkey", "email_link"]
+        let offered = order.filter { supportedSignInMethods.contains($0) && (server ?? []).contains($0) }
+        return offered.isEmpty ? ["email_link"] : offered
+    }
+
     private func readDeliveryMode() async {
         guard let request = try? WorkspaceEndpoint.request(base: client.base, method: "GET", path: "/v1/app-config"),
               let (data, response) = try? await URLSession.shared.data(for: request),
@@ -1070,11 +1085,16 @@ public final class AppModel {
               let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let mode = payload["sign_in_delivery"] as? String else { return }
         delivery = mode
+        signInMethods = AppModel.offered(payload["sign_in_methods"] as? [String])
     }
+
+    /// Set by signing out, read by the screen that follows, so it can say that nothing was lost.
+    public var justSignedOut = false
 
     public func signOutOfAccount() async {
         await client.signOut()
         identity = nil; company = nil; rooms = []
+        justSignedOut = true
         await refresh()
     }
 

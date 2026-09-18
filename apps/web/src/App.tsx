@@ -9,7 +9,7 @@ import {RoomNotifications} from './RoomNotifications';
 import PresenceFixture from './PresenceFixture';
 import DecisionFixture from './DecisionFixture';
 import Welcome,{ConnectAgent} from './Welcome';
-import {Entry,SignUp} from './Entry';
+import {SignUp} from './Entry';
 import {Home} from './Home';
 import {Settings} from './Settings';
 import JoinRoom from './JoinRoom';
@@ -687,7 +687,7 @@ function RoomApp(){
   },[]);
   const navigate=useCallback((to:string)=>{history.pushState({},'',to);setPath(new URL(to,location.origin).pathname)},[]);
 
-  if(path==='/signin')return <SignIn/>;
+  if(path==='/signin')return <SignIn onNavigate={navigate}/>;
   if(path==='/signup')return <SignUp onNavigate={navigate}/>;
   if(path==='/join')return <JoinRoom navigate={navigate}/>;
   if(path==='/welcome')return <Welcome navigate={navigate}/>;
@@ -727,12 +727,15 @@ function Authenticated({path,navigate}:{path:string;navigate:(to:string)=>void})
     return()=>{alive=false};
   },[path]);
 
+  /* Somebody signed out is somebody with an account. The door they reach is Sign in, with
+     creating an account one link away — never a page that opens on "Create your account", which
+     reads as though the account they had is gone. */
   useEffect(()=>{
-    if(state.status==='anonymous'&&path!=='/')navigate('/');
-  },[state.status,path,navigate]);
+    if(state.status==='anonymous')navigate('/signin');
+  },[state.status,navigate]);
 
   if(state.status==='loading')return <main className="loading-room"><div className="brand-mark">M</div><div className="loading-line"/><p>Loading…</p></main>;
-  if(state.status==='anonymous')return <Entry onNavigate={navigate}/>;
+  if(state.status==='anonymous')return <SignIn onNavigate={navigate}/>;
 
   const inner=path==='/settings'
     ? state.workspace?<Settings identity={state.identity} workspace={state.workspace}/>:<Home workspace={null} onNavigate={navigate}/>

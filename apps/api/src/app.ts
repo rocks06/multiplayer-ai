@@ -206,7 +206,12 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   /* Which build this server is. The first question when the app and the web disagree is whether
      they are the same release; without this nobody could tell a stale deploy from a bug. */
   const buildCommit=(environmentForGuard.RENDER_GIT_COMMIT??environmentForGuard.MPAI_BUILD_COMMIT??'').trim().slice(0,12)||null;
-  app.get('/v1/app-config',async()=>({sign_in_delivery:mode,build_commit:buildCommit}));
+  /* Which ways of signing in this server accepts, most preferred first. Clients render what is
+     listed here and nothing else, so a passkey arrives by being added to this list and to the
+     client that supports it — never by a client guessing. The emailed link is always offered: it
+     is the fallback that works on any device, for anyone who can read their mail. */
+  const signInMethods=['email_link'] as const;
+  app.get('/v1/app-config',async()=>({sign_in_delivery:mode,sign_in_methods:signInMethods,build_commit:buildCommit}));
   app.post('/v1/auth/sign-up',async req=>{const x=body(z.object({name:z.string().min(1).max(100),email:z.string().email(),context:z.enum(['web','app']).optional()}),req.body);await withinAuthLimits(req,x.email);return auth.signUp({name:x.name,email:x.email,returnTo:returnFor(x.context)})});
   app.post('/v1/auth/sign-in-links',async req=>{const x=body(z.object({email:z.string().email(),context:z.enum(['web','app']).optional()}),req.body);await withinAuthLimits(req,x.email);return auth.requestSignInLink(x.email,returnFor(x.context))});
   app.post('/v1/auth/sessions',async(req,reply)=>{const x=body(z.object({token:z.string().min(8)}),req.body);const created=await auth.createSession(x.token);writeSessionCookie(reply,created.session_token,SESSION_MAX_AGE,cookieSecure);return auth.identity(created.user_id)});

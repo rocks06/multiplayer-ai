@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {ChevronDown} from 'lucide-react';
-import {signOut,type WorkspaceRoom} from './api';
+import {signOutAndLeave,type WorkspaceRoom} from './api';
 import {ContextualOnboarding} from './ContextualOnboarding';
 
 /**
@@ -63,7 +63,7 @@ export function Shell({workspace,rooms,currentRoomId,onNavigate,onboardingKey,ba
         {accountOpen&&<div className="shell-menu right" role="menu">
           <button type="button" role="menuitem" onClick={()=>{setAccountOpen(false);onNavigate('/settings')}}>Settings</button>
           <button type="button" role="menuitem"
-            onClick={()=>{void signOut().finally(()=>{location.href='/'})}}>Sign out</button>
+            onClick={signOutAndLeave}>Sign out</button>
         </div>}
       </div>
     </header>}

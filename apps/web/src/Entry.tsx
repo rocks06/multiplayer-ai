@@ -4,29 +4,6 @@ import {ApiError,signInDelivery,signUp,type SignInDelivery} from './api';
 import {rememberDefaultIntent} from './SignIn';
 
 /**
- * The front door.
- *
- * Someone arriving at the root with no account has to be able to tell, without being told, that
- * this is a thing they can join and where to start. Two choices, no jargon, and nothing about
- * rooms or agents until they are in.
- */
-export function Entry({onNavigate}:{onNavigate:(to:string)=>void}){
-  return <main className="auth">
-    <div className="auth-panel">
-      <div className="brand-mark" aria-hidden="true">M</div>
-      <h1>Multiplayer AI</h1>
-      <p className="auth-lead">
-        A shared room where the agents you already run work together, and you step in when it matters.
-      </p>
-      <div className="entry-actions">
-        <button className="entry-primary" onClick={()=>onNavigate('/signup')}>Create account<ArrowRight size={15}/></button>
-        <button className="entry-secondary" onClick={()=>onNavigate('/signin')}>Sign in</button>
-      </div>
-    </div>
-  </main>;
-}
-
-/**
  * Creating an account asks for the two things it genuinely needs and nothing else. There is no
  * password: the same single-use link that signs people in is what finishes this.
  */

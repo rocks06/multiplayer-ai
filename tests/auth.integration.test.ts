@@ -202,7 +202,7 @@ describe("Human authentication", () => {
     const answer = await configured.inject({ method: "GET", url: "/v1/app-config" });
     expect(answer.statusCode).toBe(200);
     // Which build answered, so a server that was never redeployed is visible from the app.
-    expect(answer.json()).toEqual({ sign_in_delivery: "logging", build_commit: "0123456789ab" });
+    expect(answer.json()).toEqual({ sign_in_delivery: "logging", sign_in_methods: ["email_link"], build_commit: "0123456789ab" });
     await configured.close();
   });
 
@@ -283,6 +283,56 @@ describe("Human authentication", () => {
       expect((await send(`/v1/companies/${f.id}/users/${colleague.user_id}/sign-in-links`, otherCookie)).statusCode).toBe(403);
       expect(base).toContain("127.0.0.1");
     } finally { await operator.close(); }
+  });
+
+  /**
+   * Signing out ends a session, and nothing else. The physical fear this guards is the one the old
+   * screen created: that the account went with it. It did not, and signing back in by link lands
+   * in the same account, the same workspace, and the same room with the same conversation in it.
+   */
+  it("signs out, refuses the old session, and signs back in to the same workspace and data", async () => {
+    const f = await company();
+    const email = (await pool.query(`SELECT email FROM users WHERE id=$1`, [f.owner.user_id])).rows[0].email;
+    const first = await signIn(f.owner.user_id, email);
+    const project = (await call("POST", `/v1/companies/${f.id}/projects`, { name: "Launch", objective: "Ship" }, { cookie: first.cookie })).json();
+    const room = (await call("POST", `/v1/companies/${f.id}/projects/${project.id}/rooms`, { name: "Launch room" }, { cookie: first.cookie })).json();
+    const said = await call("POST", `/v1/companies/${f.id}/rooms/${room.id}/messages`, { body: "Kept across sign-out" },
+      { cookie: first.cookie, "idempotency-key": crypto.randomUUID() });
+    expect(said.statusCode).toBe(200);
+
+    // Signing out revokes this session only, and says so.
+    const out = await call("DELETE", "/v1/auth/sessions/current", undefined, { cookie: first.cookie });
+    expect(out.json()).toEqual({ status: "revoked" });
+    expect(String(out.headers["set-cookie"])).toMatch(/Max-Age=0/);
+    expect((await call("GET", "/v1/auth/me", undefined, { cookie: first.cookie })).statusCode).toBe(401);
+    // The link that made the old session is spent; replaying it grants nothing.
+    expect((await call("POST", "/v1/auth/sessions", { token: first.token })).statusCode).toBe(401);
+
+    // A new link: the same person, the same workspace, the same room, the same message.
+    const again = await signIn(f.owner.user_id, email);
+    expect(again.cookie).not.toBe(first.cookie);
+    const me = (await call("GET", "/v1/auth/me", undefined, { cookie: again.cookie })).json();
+    expect(me.user.id).toBe(f.owner.user_id);
+    expect(me.companies.map((c: any) => c.company_id)).toEqual([f.id]);
+    const rooms = (await call("GET", `/v1/companies/${f.id}/rooms`, undefined, { cookie: again.cookie })).json().rooms;
+    expect(rooms.map((r: any) => r.room_id)).toEqual([room.id]);
+    const snapshot = (await call("GET", `/v1/companies/${f.id}/rooms/${room.id}/snapshot`, undefined, { cookie: again.cookie })).json();
+    expect(snapshot.messages.map((m: any) => m.body_text)).toContain("Kept across sign-out");
+  });
+
+  it("creates a new account through sign-up, and signing up again with the same address creates nothing new", async () => {
+    const email = `new-${crypto.randomUUID()}@example.com`;
+    expect((await call("POST", "/v1/auth/sign-up", { name: "New Person", email })).json()).toEqual({ status: "accepted" });
+    const users = async () => (await pool.query(`SELECT id FROM users WHERE lower(email)=lower($1)`, [email])).rows;
+    expect(await users()).toHaveLength(1);
+    const userId = (await users())[0].id;
+    const link = delivery.delivered.filter(item => item.user_id === userId).at(-1)!;
+    const session = await call("POST", "/v1/auth/sessions", { token: link.token });
+    expect(session.statusCode).toBe(200);
+    expect(session.json().user.id).toBe(userId);
+    // Asking again is answered the same way and makes no second account.
+    expect((await call("POST", "/v1/auth/sign-up", { name: "Somebody Else", email })).json()).toEqual({ status: "accepted" });
+    expect(await users()).toHaveLength(1);
   });
 
   it("records why every ordinary sign-in token exists", async () => {

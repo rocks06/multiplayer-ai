@@ -155,26 +155,40 @@ public struct AccountScreen: View {
        will not say an address has no account, deliberately, so nothing arrived and nothing
        could explain why. The likely case goes first; signing in is one tap away for the people
        who already have an account, and they are the ones who know that they do. */
-    @State private var creating = AccountScreen.opensCreating
+    @State private var creating: Bool
 
-    /// Named so it can be asserted. A default buried in view state is exactly what went wrong:
-    /// nothing could see it, so nothing caught it sending new people to the sign-in route.
-    public static let opensCreating = true
+    /**
+     Which form the screen opens on. Named so it can be asserted — a default buried in view state
+     is exactly what went wrong twice: nothing could see it.
+
+     A Mac that has never had anybody signed in is a new person, who is shown Create account, since
+     the sign-in route deliberately will not say an address has no account and so could never tell
+     them why nothing arrived. A Mac that has — which is everyone who just signed out — is shown
+     Sign in. Opening on "Create your account" after signing out read as though the account they
+     had was gone.
+     */
+    public static func opensCreating(knowsAnAccount: Bool) -> Bool { !knowsAnAccount }
     @State private var name = ""
     @State private var email = ""
     @State private var pasted = ""
 
-    public init(app: AppModel) { self.app = app }
+    public init(app: AppModel) {
+        self.app = app
+        _creating = State(initialValue: AccountScreen.opensCreating(knowsAnAccount: app.progress.knowsAnAccount))
+    }
+
+    private var lead: String {
+        if creating { return "Two things, and no password. You will name your workspace next." }
+        if app.justSignedOut { return "You’re signed out. Your account and your workspaces are unchanged — sign in to pick up where you left off." }
+        return "No password. We email you a link that signs you in."
+    }
 
     public var body: some View {
         if let sentTo = app.awaitingLinkFor { linkSent(to: sentTo) } else { form }
     }
 
     private var form: some View {
-        Sheet(title: creating ? "Create your account" : "Sign in",
-              lead: creating
-                ? "Two things, and no password. You will name your workspace next."
-                : "No password. We send a link that signs you in.") {
+        Sheet(title: creating ? "Create your account" : "Sign in", lead: lead) {
             VStack(alignment: .leading, spacing: 16) {
                 if creating {
                     Field("Your name", placeholder: "Priya Raman", value: $name) { submit() }
@@ -188,8 +202,8 @@ public struct AccountScreen: View {
             VStack(alignment: .leading, spacing: 16) {
                 PrimaryButton(creating ? "Create account" : "Continue", busy: app.busy) { submit() }
                     .disabled(!canSubmit)
-                QuietButton(creating ? "I already have an account" : "Create an account") {
-                    creating.toggle(); app.problem = nil
+                QuietButton(creating ? "I already have an account — sign in" : "New to Multiplayer AI? Create an account") {
+                    creating.toggle(); app.problem = nil; app.justSignedOut = false
                 }
             }
         }

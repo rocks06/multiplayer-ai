@@ -27,12 +27,16 @@ beforeEach(()=>{history.replaceState({},'','/')});
 afterEach(()=>{cleanup();vi.unstubAllGlobals()});
 
 describe('What the root URL means',()=>{
-  it('greets a stranger with a way in, not a broken room link',async()=>{
+  /* Signed out, the root is Sign in — the door for people who have an account, which after
+     signing out is everybody — with creating one a link away, never the page that opened on
+     "Create your account" as though the account had gone. */
+  it('greets a signed-out visitor with Sign in, and creating an account one link away',async()=>{
     backend({me:null});
     render(<RoomApp/>);
-    expect(await screen.findByRole('heading',{name:'Multiplayer AI'})).toBeVisible();
-    expect(screen.getByRole('button',{name:/Create account/})).toBeVisible();
-    expect(screen.getByRole('button',{name:'Sign in'})).toBeVisible();
+    expect(await screen.findByRole('heading',{name:'Sign in'})).toBeVisible();
+    expect(screen.getByLabelText('Email')).toBeVisible();
+    expect(screen.getByRole('button',{name:'Create an account'})).toBeVisible();
+    expect(screen.queryByRole('heading',{name:/Create your account/})).not.toBeInTheDocument();
     // The old failure mode: the root falling through to the room route.
     expect(screen.queryByText(/Room link incomplete/)).not.toBeInTheDocument();
   });
@@ -138,6 +142,7 @@ describe('Finding your way',()=>{
     backend({me:null});
     history.replaceState({},'','/settings');
     render(<RoomApp/>);
-    await waitFor(()=>expect(location.pathname).toBe('/'));
+    // The front door is Sign in, and the URL says so.
+    await waitFor(()=>expect(location.pathname).toBe('/signin'));
   });
 });

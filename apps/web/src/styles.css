@@ -809,3 +809,9 @@ button.reply-cue:focus-visible{outline:2px solid var(--focus);outline-offset:2px
 .room-notice strong{color:var(--ink)}
 .room-notice button{flex:0 0 auto;padding:6px 10px;border:1px solid var(--line-strong);border-radius:var(--r-control);
   background:var(--surface);font-size:var(--t-caption);font-weight:600}
+
+/* Sign in is the door; creating an account is the way round it for the few who need one. */
+.auth-hint{margin:6px 0 0;font-size:var(--t-caption);line-height:1.5;color:var(--faint)}
+.auth-switch{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px;margin:6px 0 0;font-size:var(--t-small);color:var(--muted)}
+.auth .auth-switch .auth-secondary{align-self:auto}
+.auth .auth-note[role="status"]{padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-control);background:var(--soft);color:var(--ink-2)}
