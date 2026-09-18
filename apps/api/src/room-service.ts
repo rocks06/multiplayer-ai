@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { v7 as uuidv7 } from "uuid";
 import type { DbClient, DbPool } from "./db.js";
 import { canTransitionTask, DomainError, roleHasPermission, type Permission, type RoomRole, type TaskStatus } from "../../../packages/domain/src/index.js";
+import { CapabilityService } from "./security/capabilities.js";
+import { eventForAgent, roomContextForAgent } from "./security/context.js";
+import { secretKinds } from "./security/secrets.js";
 
 const canonical = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(item => item === undefined ? null : canonical(item));
@@ -36,7 +39,24 @@ export const COLLABORATION_MAX_TURNS=12;
 export const COLLABORATION_IDLE_MINUTES=30;
 
 export class RoomService {
-  constructor(private readonly pool: DbPool) {}
+  /** What agents may do here. Checked in this service, so every path to an action is covered —
+   *  the gateway, the in-process worker, and any route added later. */
+  readonly capabilities: CapabilityService;
+  constructor(private readonly pool: DbPool) {
+    this.capabilities = new CapabilityService(pool, (client, input) => this.recordSecurityEvent(client, input));
+  }
+
+  /** A security fact about an agent, told in the room it concerns. Never the content attempted. */
+  async recordSecurityEvent(client: DbClient, input: {
+    companyId:string; roomId:string; actorId:string; agentPrincipalId:string; eventType:string; payload:Record<string,unknown>;
+  }) {
+    const actor = await this.actor(client, input.companyId, input.actorId);
+    const commandId = uuidv7();
+    await this.appendEvent(client, {
+      companyId: input.companyId, roomId: input.roomId, actor, eventType: input.eventType,
+      entityType: "agent", entityId: input.agentPrincipalId, payload: input.payload, commandId, correlationId: commandId,
+    });
+  }
 
   private async actor(client: DbClient, companyId: string, actorId: string): Promise<Actor> {
     const result = await client.query<Actor>(`SELECT p.id,p.company_id,p.kind,p.display_name FROM principals p LEFT JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id WHERE p.id=$1 AND p.company_id=$2 AND p.status='active' AND (p.kind<>'agent' OR a.status='active')`, [actorId, companyId]);
@@ -761,9 +781,39 @@ export class RoomService {
     const mentionInput=(input.mentions??[]).filter(m=>m.principal_id!==input.actorId).map(m=>({principal_id:m.principal_id,start:m.start,end:m.end}));
     return this.command({...input,commandType:'message.send',input:{addressedPrincipalId:input.addressedPrincipalId,body:input.body,taskId:input.taskId,inReplyToMessageId:input.inReplyToMessageId,artifactIds,...(mentionInput.length?{mentions:mentionInput}:{}),...(input.collaborationDone?{collaborationDone:true}:{})},permission:'message.send'},async(c,actor)=>{
       if(input.addressedPrincipalId)await this.membership(c,input.companyId,input.roomId,input.addressedPrincipalId);
-      if(actor.kind==='agent')await this.guardCollaborationResult(c,{companyId:input.companyId,roomId:input.roomId,actorId:input.actorId,
-        artifactCount:artifactIds.length,collaborationDone:input.collaborationDone,taskId:input.taskId});
-      const mentions=await this.resolveMentions(c,input.companyId,input.roomId,input.body,mentionInput);
+      if(actor.kind==='agent'){
+        await this.capabilities.require({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,kind:'agent',capability:'write_room_messages',action:'message.send'});
+        /* The secret boundary between agents. Whatever an agent has read on its own machine, it
+           cannot hand to the room — and so to every other agent in it — as a credential, a session
+           or a private key. Refused outright rather than redacted, because a redacted message still
+           tells the reader something was there, and the agent should know it was stopped. */
+        const found=secretKinds(input.body);
+        if(found.length){
+          await this.capabilities.deny({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,
+            action:'message.send',reason:'secret_in_content',metadata:{secret_kinds:found}});
+          throw new DomainError('secret_blocked','This message contains what looks like a credential or private key, so it was not sent. Nothing in a room may carry a secret.',422,{secret_kinds:found});
+        }
+        await this.guardCollaborationResult(c,{companyId:input.companyId,roomId:input.roomId,actorId:input.actorId,
+          artifactCount:artifactIds.length,collaborationDone:input.collaborationDone,taskId:input.taskId});
+      }
+      const mentions=await this.resolveMentions(c,input.companyId,input.roomId,input.body,mentionInput).catch(async(error)=>{
+        // A mention of somebody who is not in this room is somebody reaching for another room.
+        if(actor.kind==='agent'&&error instanceof DomainError)
+          await this.capabilities.deny({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,
+            action:'message.mention',reason:error.code,metadata:{mentioned_principal_ids:mentionInput.map(m=>m.principal_id)}});
+        throw error;
+      });
+      if(actor.kind==='agent'){
+        if(mentions.length)await this.capabilities.require({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,kind:'agent',capability:'mention_participants',action:'message.mention'});
+        // Speaking to another agent wakes it: that is invoking it, and is its own permission.
+        const addressedKind=input.addressedPrincipalId?(await c.query<{kind:string}>(`SELECT kind FROM principals WHERE company_id=$1 AND id=$2`,[input.companyId,input.addressedPrincipalId])).rows[0]?.kind:undefined;
+        const agentsReached=[...new Set([...(addressedKind==='agent'?[input.addressedPrincipalId!]:[]),
+          ...mentions.filter(m=>m.kind==='agent').map(m=>m.principal_id)])].filter(id=>id!==input.actorId);
+        if(agentsReached.length){
+          await this.capabilities.require({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,kind:'agent',capability:'invoke_agent',action:'agent.invoke',metadata:{target_principal_ids:agentsReached}});
+          await this.capabilities.recordTransfer({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,action:'agent.message_transfer',recipients:agentsReached});
+        }
+      }
       if(input.inReplyToMessageId){
         const parent=await c.query(`SELECT 1 FROM messages WHERE company_id=$1 AND room_id=$2 AND id=$3`,[input.companyId,input.roomId,input.inReplyToMessageId]);
         if(!parent.rowCount)throw new DomainError('message_not_found','The message being replied to is not in this room',404);
@@ -790,7 +840,7 @@ export class RoomService {
 
   async createTask(input:{companyId:string;roomId:string;actorId:string;title:string;description:string;assigneePrincipalId?:string;idempotencyKey:string}) { return this.command({...input,commandType:'task.create',input:{title:input.title,description:input.description,assigneePrincipalId:input.assigneePrincipalId},permission:'task.create'}, async(c)=>{ if(input.assigneePrincipalId) await this.membership(c,input.companyId,input.roomId,input.assigneePrincipalId); const id=uuidv7(); await c.query(`INSERT INTO tasks(id,company_id,room_id,title,description,created_by_principal_id,assignee_principal_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,[id,input.companyId,input.roomId,input.title,input.description,input.actorId,input.assigneePrincipalId??null]); const response={id,title:input.title,status:'open' as TaskStatus,version:1,assignee_principal_id:input.assigneePrincipalId??null}; return {response,event:{type:'task.created',entityType:'task',entityId:id,entityVersion:1,payload:response}}; }); }
 
-  async updateTaskStatus(input:{companyId:string;roomId:string;actorId:string;taskId:string;status:TaskStatus;expectedVersion:number;idempotencyKey:string;runGuard?:RunGuard}) { const client=await this.pool.connect(); let permission:Permission='task.update.own'; try { await client.query('BEGIN');const m=await this.membership(client,input.companyId,input.roomId,input.actorId); if(roleHasPermission(m.role,'task.update.any')) permission='task.update.any';await client.query('COMMIT'); } catch(e){await client.query('ROLLBACK');throw e;} finally{client.release();} return this.command({...input,commandType:'task.status.update',input:{taskId:input.taskId,status:input.status,expectedVersion:input.expectedVersion},permission}, async(c)=>{ const current=await c.query<{status:TaskStatus;version:number;assignee_principal_id:string|null}>(`SELECT status,version,assignee_principal_id FROM tasks WHERE id=$1 AND company_id=$2 AND room_id=$3 FOR UPDATE`,[input.taskId,input.companyId,input.roomId]); if(!current.rowCount)throw new DomainError('task_not_found','Task not found',404); const task=current.rows[0]!; if(permission==='task.update.own' && task.assignee_principal_id!==input.actorId)throw new DomainError('permission_denied','Only the assignee may update this task',403); if(task.version!==input.expectedVersion)throw new DomainError('version_conflict','Task changed since it was read',409,{expected_version:input.expectedVersion,current_version:task.version}); if(!canTransitionTask(task.status,input.status))throw new DomainError('invalid_task_transition',`Cannot transition ${task.status} to ${input.status}`,422); if(input.status==='in_progress')await this.assertDependenciesSatisfied(c,input.companyId,input.taskId); const updated=await c.query<{version:number}>(`UPDATE tasks SET status=$1,version=version+1,updated_at=now(),completed_at=CASE WHEN $1='completed' THEN now() ELSE completed_at END WHERE id=$2 AND company_id=$3 AND room_id=$4 AND version=$5 RETURNING version`,[input.status,input.taskId,input.companyId,input.roomId,input.expectedVersion]);if(!updated.rowCount)throw new DomainError('version_conflict','Task changed since it was read',409,{expected_version:input.expectedVersion});const nextVersion=updated.rows[0]!.version; const response={id:input.taskId,status:input.status,version:nextVersion}; return {response,event:{type:`task.${input.status}`,entityType:'task',entityId:input.taskId,entityVersion:nextVersion,payload:response}}; }); }
+  async updateTaskStatus(input:{companyId:string;roomId:string;actorId:string;taskId:string;status:TaskStatus;expectedVersion:number;idempotencyKey:string;runGuard?:RunGuard}) { const client=await this.pool.connect(); let permission:Permission='task.update.own'; try { await client.query('BEGIN');const m=await this.membership(client,input.companyId,input.roomId,input.actorId); if(roleHasPermission(m.role,'task.update.any')) permission='task.update.any';await client.query('COMMIT'); } catch(e){await client.query('ROLLBACK');throw e;} finally{client.release();} return this.command({...input,commandType:'task.status.update',input:{taskId:input.taskId,status:input.status,expectedVersion:input.expectedVersion},permission}, async(c,actor)=>{ if(actor.kind==='agent')await this.capabilities.require({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,kind:'agent',capability:'update_tasks',action:'task.status.update',targetType:'task',targetId:input.taskId}); const current=await c.query<{status:TaskStatus;version:number;assignee_principal_id:string|null}>(`SELECT status,version,assignee_principal_id FROM tasks WHERE id=$1 AND company_id=$2 AND room_id=$3 FOR UPDATE`,[input.taskId,input.companyId,input.roomId]); if(!current.rowCount)throw new DomainError('task_not_found','Task not found',404); const task=current.rows[0]!; if(permission==='task.update.own' && task.assignee_principal_id!==input.actorId)throw new DomainError('permission_denied','Only the assignee may update this task',403); if(task.version!==input.expectedVersion)throw new DomainError('version_conflict','Task changed since it was read',409,{expected_version:input.expectedVersion,current_version:task.version}); if(!canTransitionTask(task.status,input.status))throw new DomainError('invalid_task_transition',`Cannot transition ${task.status} to ${input.status}`,422); if(input.status==='in_progress')await this.assertDependenciesSatisfied(c,input.companyId,input.taskId); const updated=await c.query<{version:number}>(`UPDATE tasks SET status=$1,version=version+1,updated_at=now(),completed_at=CASE WHEN $1='completed' THEN now() ELSE completed_at END WHERE id=$2 AND company_id=$3 AND room_id=$4 AND version=$5 RETURNING version`,[input.status,input.taskId,input.companyId,input.roomId,input.expectedVersion]);if(!updated.rowCount)throw new DomainError('version_conflict','Task changed since it was read',409,{expected_version:input.expectedVersion});const nextVersion=updated.rows[0]!.version; const response={id:input.taskId,status:input.status,version:nextVersion}; return {response,event:{type:`task.${input.status}`,entityType:'task',entityId:input.taskId,entityVersion:nextVersion,payload:response}}; }); }
 
   /** Dependencies that are neither completed nor cancelled. A cancelled blocker will never
    * arrive, so it satisfies rather than blocking forever. */
@@ -872,10 +922,12 @@ export class RoomService {
   }
 
   async getTask(input:{companyId:string;roomId:string;actorId:string;taskId:string;runGuard?:RunGuard}){
+    await this.capabilities.require({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,capability:'read_room_messages',action:'task.read',targetType:'task',targetId:input.taskId});
     const c=await this.pool.connect();try{await c.query('BEGIN');await this.actor(c,input.companyId,input.actorId);await this.authorize(c,input.companyId,input.roomId,input.actorId,'room.read');if(input.runGuard)await this.assertRunGuard(c,input.companyId,input.roomId,input.actorId,input.runGuard);const result=await c.query(`SELECT id,title,description,status,assignee_principal_id,version,updated_at FROM tasks WHERE company_id=$1 AND room_id=$2 AND id=$3`,[input.companyId,input.roomId,input.taskId]);if(!result.rowCount)throw new DomainError('task_not_found','Task not found',404);await c.query('COMMIT');return result.rows[0];}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
   }
 
   async listEligibleTasks(input:{companyId:string;roomId:string;actorId:string;runGuard?:RunGuard}){
+    await this.capabilities.require({companyId:input.companyId,roomId:input.roomId,principalId:input.actorId,capability:'read_room_messages',action:'task.list'});
     const c=await this.pool.connect();try{await c.query('BEGIN');await this.actor(c,input.companyId,input.actorId);await this.authorize(c,input.companyId,input.roomId,input.actorId,'room.read');if(input.runGuard)await this.assertRunGuard(c,input.companyId,input.roomId,input.actorId,input.runGuard);const result=await c.query(`SELECT id,title,description,status,assignee_principal_id,version,updated_at FROM tasks WHERE company_id=$1 AND room_id=$2 AND assignee_principal_id=$3 AND status IN ('open','in_progress','blocked') ORDER BY created_at`,[input.companyId,input.roomId,input.actorId]);await c.query('COMMIT');return result.rows;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
   }
 
@@ -883,8 +935,9 @@ export class RoomService {
     const c=await this.pool.connect();
     try {
       await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
-      await this.actor(c,companyId,actorId);
+      const actor=await this.actor(c,companyId,actorId);
       const member=await this.authorize(c,companyId,roomId,actorId,'room.read');
+      if(actor.kind==='agent')await this.capabilities.require({companyId,roomId,principalId:actorId,kind:'agent',capability:'read_room_messages',action:'context.snapshot'});
       // A pg client executes one query at a time. Parallel request work is handled by the pool.
       const room=await c.query(`SELECT r.id,r.name,r.last_event_seq,p.id project_id,p.name project_name,p.objective FROM rooms r JOIN projects p ON p.id=r.project_id WHERE r.id=$1 AND r.company_id=$2`,[roomId,companyId]);
       if(!room.rowCount) throw new DomainError('room_not_found','Room not found',404);
@@ -928,10 +981,34 @@ export class RoomService {
         WHERE rel.company_id=$1 ORDER BY h.display_name`,[companyId,roomId]);
       const readPositions=await this.readPositionsWith(c,companyId,roomId);
       const snapshot={room:room.rows[0],read_positions:readPositions,relationships:relationships.rows,members:members.rows,tasks:tasks.rows,messages:messages.rows.reverse(),snapshot_seq:Number(room.rows[0].last_event_seq),briefing:{briefing_seq:Number(room.rows[0].last_event_seq),project_objective:room.rows[0].objective,participants:members.rows,joining_principal:{principal_id:actorId,role:member.role,responsibilities:member.responsibilities},active_tasks:active,relevant_completed_work:completed,unresolved_decisions:decisions.rows,agent_relationships:relationships.rows,blockers:active.filter((t:any)=>t.status==='blocked'),relevant_artifacts:[],important_recent_activity:events.rows.reverse()}};
+      /* Where another agent is connected names another room. People who can see the whole
+         workspace may be told; a person invited to this room alone may not. */
+      if(actor.kind==='human'){
+        const scope=await c.query<{access_scope:string}>(`SELECT cu.access_scope FROM principals p JOIN company_users cu ON cu.company_id=p.company_id AND cu.user_id=p.user_id WHERE p.company_id=$1 AND p.id=$2`,[companyId,actorId]);
+        if(scope.rows[0]?.access_scope!=='workspace')
+          for(const m of snapshot.members as any[]){m.agent_session_room_id=null;m.agent_session_room_name=null}
+      }
       await c.query('COMMIT');
+      /* An agent is shown its room and nothing past it: the one projection every agent path uses. */
+      if(actor.kind==='agent'){
+        const granted=await this.capabilities.effective(companyId,roomId,actorId);
+        await this.capabilities.recordRead({companyId,roomId,principalId:actorId,action:'context.snapshot'});
+        return roomContextForAgent(snapshot,granted) as any;
+      }
       return snapshot;
     } catch(e){await c.query('ROLLBACK');throw e;} finally { c.release(); }
   }
 
-  async events(companyId:string,roomId:string,actorId:string,afterSeq:number,limit:number) { const c=await this.pool.connect(); try { await this.actor(c,companyId,actorId); await this.authorize(c,companyId,roomId,actorId,'room.read'); const result=await c.query(`SELECT id,room_seq,event_type,actor_principal_id,actor_kind,actor_display_name,entity_type,entity_id,entity_version,payload,command_id,correlation_id,created_at FROM room_events WHERE company_id=$1 AND room_id=$2 AND room_seq>$3 ORDER BY room_seq LIMIT $4`,[companyId,roomId,afterSeq,Math.min(limit,500)]); return {events:result.rows.map((e:any)=>({...e,room_seq:Number(e.room_seq)}))}; } finally{c.release();} }
+  async events(companyId:string,roomId:string,actorId:string,afterSeq:number,limit:number) {
+    const c=await this.pool.connect();
+    try {
+      const actor=await this.actor(c,companyId,actorId);
+      await this.authorize(c,companyId,roomId,actorId,'room.read');
+      if(actor.kind==='agent')await this.capabilities.require({companyId,roomId,principalId:actorId,kind:'agent',capability:'read_room_messages',action:'context.events'});
+      const result=await c.query(`SELECT id,room_seq,event_type,actor_principal_id,actor_kind,actor_display_name,entity_type,entity_id,entity_version,payload,command_id,correlation_id,created_at FROM room_events WHERE company_id=$1 AND room_id=$2 AND room_seq>$3 ORDER BY room_seq LIMIT $4`,[companyId,roomId,afterSeq,Math.min(limit,500)]);
+      const events=result.rows.map((e:any)=>({...e,room_seq:Number(e.room_seq)}));
+      // The stream is room context too, and passes through the same firewall as the snapshot.
+      return {events:actor.kind==='agent'?events.map(eventForAgent):events};
+    } finally{c.release();}
+  }
 }

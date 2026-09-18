@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { v7 as uuidv7 } from "uuid";
 import type { DbPool } from "../db.js";
 import { DomainError } from "../../../../packages/domain/src/index.js";
+import { SecurityAudit } from "../security/audit.js";
 
 const hash = (secret:string) => createHash("sha256").update(secret).digest("hex");
 const secret = (prefix:string) => `${prefix}_${randomBytes(32).toString("base64url")}`;
@@ -187,7 +188,12 @@ export class AgentGatewayService {
   async authenticateCredential(authorization:unknown) {
     const token=this.bearer(authorization);
     const result=await this.pool.query<{id:string;company_id:string;agent_principal_id:string;agent_id:string}>(`SELECT c.id,c.company_id,c.agent_principal_id,p.agent_id FROM external_agent_credentials c JOIN principals p ON p.company_id=c.company_id AND p.id=c.agent_principal_id JOIN agents a ON a.company_id=p.company_id AND a.id=p.agent_id WHERE c.token_hash=$1 AND c.status='active' AND p.kind='agent' AND p.status='active' AND a.status='active'`,[hash(token)]);
-    if(!result.rowCount) throw new DomainError("gateway_unauthenticated","Credential is invalid or revoked",401);
+    if(!result.rowCount){
+      // A revoked, replaced or invented credential. Who presented it is unknown by definition, so
+      // only that it happened is kept — never the token, not even its prefix.
+      await new SecurityAudit(this.pool).record({actorKind:"anonymous",action:"agent.credential.authenticate",decision:"denied",reason:"credential_invalid"});
+      throw new DomainError("gateway_unauthenticated","Credential is invalid or revoked",401);
+    }
     await this.pool.query(`UPDATE external_agent_credentials SET last_used_at=now() WHERE id=$1`,[result.rows[0]!.id]);
     return result.rows[0]!;
   }
@@ -219,7 +225,13 @@ export class AgentGatewayService {
       // Serialize this single-room principal's opens/resumes, including different rooms.
       await c.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,[auth.agent_principal_id]);
       const member=await c.query(`SELECT 1 FROM room_members WHERE company_id=$1 AND room_id=$2 AND principal_id=$3 AND status='active' AND role='worker_agent' FOR UPDATE`,[auth.company_id,roomId,auth.agent_principal_id]);
-      if(!member.rowCount) throw new DomainError("room_access_denied","Active worker-agent room membership is required",403);
+      if(!member.rowCount){
+        /* Recorded against this agent's own workspace, never the room it named: an id guessed from
+           another workspace must not become a write into that workspace's records. */
+        await new SecurityAudit(this.pool).record({companyId:auth.company_id,actorKind:"agent",actorPrincipalId:auth.agent_principal_id,
+          action:"agent.session.open",decision:"denied",reason:"room_access_denied",targetType:"room",targetId:roomId});
+        throw new DomainError("room_access_denied","Active worker-agent room membership is required",403);
+      }
       const superseded=await c.query<{id:string;room_id:string}>(
         `UPDATE external_agent_sessions SET status='superseded',disconnected_at=now()
          WHERE company_id=$1 AND agent_principal_id=$2 AND status IN ('connected','offline') RETURNING id,room_id`,

@@ -21,8 +21,15 @@ export interface ArtifactRow {
  * only thing that grants access, and it is checked on the way in and again on the way out — a
  * download link is authorization that has already left, so it is never issued without asking first.
  */
+/** What the artifact layer needs to ask of the capability layer, without owning it. */
+export interface ArtifactCapabilityGate {
+  require(input: { companyId: string; roomId: string; principalId: string; capability: "create_artifacts" | "read_room_files";
+    action: string; targetType?: string; targetId?: string }): Promise<void>;
+}
+
 export class ArtifactService {
-  constructor(private readonly pool: DbPool, private readonly storage: ArtifactStorage) {}
+  constructor(private readonly pool: DbPool, private readonly storage: ArtifactStorage,
+              private readonly capabilities?: ArtifactCapabilityGate) {}
 
   /** Nobody outside a room may read or write its files, whatever they know about them. */
   private async requireMember(companyId: string, roomId: string, principalId: string) {
@@ -58,6 +65,8 @@ export class ArtifactService {
     metadata?: Record<string, unknown>;
   }) {
     await this.requireMember(input.companyId, input.roomId, input.principalId);
+    await this.capabilities?.require({ companyId: input.companyId, roomId: input.roomId, principalId: input.principalId,
+      capability: "create_artifacts", action: "artifact.create" });
     if (input.body.byteLength === 0) {
       throw new DomainError("artifact_empty", "That file is empty", 400);
     }
@@ -121,6 +130,9 @@ export class ArtifactService {
   /** Read bytes through the authenticated room boundary, not a browser navigation to storage. */
   async content(companyId: string, roomId: string, principalId: string, artifactId: string) {
     await this.requireMember(companyId, roomId, principalId);
+    // Reading what a file contains is its own permission for an agent; knowing it exists is not.
+    await this.capabilities?.require({ companyId, roomId, principalId, capability: "read_room_files",
+      action: "artifact.read", targetType: "artifact", targetId: artifactId });
     const found = await this.pool.query<{storage_key:string;filename:string;content_type:string}>(
       `SELECT storage_key,filename,content_type FROM artifacts WHERE company_id=$1 AND room_id=$2 AND id=$3 AND status='ready'`,
       [companyId, roomId, artifactId]);
@@ -139,6 +151,8 @@ export class ArtifactService {
    */
   async downloadUrl(companyId: string, roomId: string, principalId: string, artifactId: string) {
     await this.requireMember(companyId, roomId, principalId);
+    await this.capabilities?.require({ companyId, roomId, principalId, capability: "read_room_files",
+      action: "artifact.download_url", targetType: "artifact", targetId: artifactId });
     const found = await this.pool.query<{ storage_key: string; filename: string; content_type: string }>(
       `SELECT storage_key,filename,content_type FROM artifacts
         WHERE company_id=$1 AND room_id=$2 AND id=$3 AND status='ready'`,

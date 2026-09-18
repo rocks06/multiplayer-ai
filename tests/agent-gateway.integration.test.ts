@@ -83,7 +83,12 @@ describe("Agent Gateway v1",()=>{
    await call('disconnect');
    expect((await call('status')).state.gateway).not.toBe('live');
    expect((await pool.query(`SELECT status FROM external_agent_sessions WHERE id=$1`,[old.id])).rows[0].status).toBe('offline');
-   await observer.waitFor(frame=>frame.type==='room.event'&&frame.event.event_type==='agent.session.disconnected'&&frame.event.payload.session_id===old.id);
+   /* The room hears this agent left. An observing agent is told who left and never which session —
+      session ids are internal and withheld from agents — so the exact session is checked against
+      the room's own record rather than read out of another agent's stream. */
+   const left=await observer.waitFor(frame=>frame.type==='room.event'&&frame.event.event_type==='agent.session.disconnected'&&frame.event.actor_principal_id===a.principal_id);
+   expect(left.event.payload).toEqual({});
+   expect((await pool.query(`SELECT payload->>'session_id' id FROM room_events WHERE room_seq=$1 AND room_id=$2`,[left.event.room_seq,f.room.id])).rows[0].id).toBe(old.id);
    await call('configure',{...config,roomId:b.id});expect((await call('status')).state.gateway).not.toBe('live');
    await call('connect');await until(async()=>(await call('status')).state.gateway==='live',8000);
    const sessions=(await pool.query(`SELECT id,room_id,credential_id,status FROM external_agent_sessions WHERE agent_principal_id=$1`,[a.principal_id])).rows;
@@ -175,7 +180,8 @@ describe("Agent Gateway v1",()=>{
    // Move JJ A → B: A hears it left before B is live; AXON's session is untouched.
    const jjInA=(await live(jj.principal_id))[0].id;
    await call('disconnect',{agentPrincipalId:jj.principal_id});
-   await observerA.waitFor(frame=>frame.type==='room.event'&&frame.event.event_type==='agent.session.disconnected'&&frame.event.payload.session_id===jjInA);
+   const leftA=await observerA.waitFor(frame=>frame.type==='room.event'&&frame.event.event_type==='agent.session.disconnected'&&frame.event.actor_principal_id===jj.principal_id);
+   expect((await pool.query(`SELECT payload->>'session_id' id FROM room_events WHERE room_seq=$1 AND room_id=$2`,[leftA.event.room_seq,f.room.id])).rows[0].id).toBe(jjInA);
    expect(await live(jj.principal_id)).toEqual([]);
    await call('configure',{...jjConfig,roomId:b.id});
    await call('connect',{runtimeSelectionId:jjRuntime.runtimeInstallationId});

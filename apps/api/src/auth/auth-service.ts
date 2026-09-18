@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { v7 as uuidv7 } from "uuid";
 import { DomainError } from "../../../../packages/domain/src/index.js";
 import type { DbPool } from "../db.js";
+import { SecurityAudit } from "../security/audit.js";
 
 const hash = (secret: string) => createHash("sha256").update(secret).digest("hex");
 const secret = (prefix: string) => `${prefix}_${randomBytes(32).toString("base64url")}`;
@@ -173,6 +174,8 @@ export class AuthService {
     if (!target.rowCount) throw new DomainError("user_not_found", "Active company member not found", 404);
     const link = await this.mintToken(target.rows[0]!.id, target.rows[0]!.email, undefined,
       { reason: "operator", issuedByPrincipalId: input.actorPrincipalId });
+    await new SecurityAudit(this.pool).record({ companyId: input.companyId, actorKind: "human", actorPrincipalId: input.actorPrincipalId ?? null,
+      actorUserId: input.actorUserId, action: "auth.operator_link.issue", decision: "recorded", targetType: "user", targetId: input.userId });
     // This route is authenticated and hands the caller the link itself, so a delivery failure
     // costs them nothing — they already have what they asked for.
     await this.deliverQuietly(link);
@@ -191,11 +194,16 @@ export class AuthService {
         `UPDATE user_auth_tokens SET status='consumed',consumed_at=now() WHERE token_hash=$1 AND status='pending' AND purpose='sign_in' AND expires_at>now() RETURNING user_id`,
         [hash(token)],
       );
-      if (!claimed.rowCount) throw new DomainError("sign_in_invalid", "Sign-in link is invalid, already used, or expired", 401);
+      if (!claimed.rowCount) {
+        await new SecurityAudit(this.pool).record({ actorKind: "anonymous", action: "auth.session.create", decision: "denied", reason: "sign_in_invalid" });
+        throw new DomainError("sign_in_invalid", "Sign-in link is invalid, already used, or expired", 401);
+      }
       const userId = claimed.rows[0]!.user_id;
       const id = uuidv7(), sessionToken = secret("mpss");
       await c.query(`INSERT INTO user_sessions(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+($4||' days')::interval)`, [id, userId, hash(sessionToken), String(SESSION_TTL_DAYS)]);
       await c.query("COMMIT");
+      await new SecurityAudit(this.pool).record({ actorKind: "human", actorUserId: userId, action: "auth.session.create",
+        decision: "allowed", targetType: "session", targetId: id });
       return { session_id: id, session_token: sessionToken, user_id: userId };
     } catch (e) { await c.query("ROLLBACK"); throw e; } finally { c.release(); }
   }
@@ -213,7 +221,10 @@ export class AuthService {
 
   async revokeSession(token: string | undefined) {
     if (!token) return { status: "revoked" as const };
-    await this.pool.query(`UPDATE user_sessions SET status='revoked',revoked_at=now() WHERE token_hash=$1 AND status='active'`, [hash(token)]);
+    const revoked = await this.pool.query<{ id: string; user_id: string }>(
+      `UPDATE user_sessions SET status='revoked',revoked_at=now() WHERE token_hash=$1 AND status='active' RETURNING id,user_id`, [hash(token)]);
+    if (revoked.rowCount) await new SecurityAudit(this.pool).record({ actorKind: "human", actorUserId: revoked.rows[0]!.user_id,
+      action: "auth.session.revoke", decision: "recorded", targetType: "session", targetId: revoked.rows[0]!.id });
     return { status: "revoked" as const };
   }
 

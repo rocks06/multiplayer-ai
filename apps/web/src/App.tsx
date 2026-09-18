@@ -189,6 +189,15 @@ function activityText(event:RoomEvent){
     'agent.run_queued':'queued agent work','agent.run_started':'started working','agent.run_resumed':'returned to work','agent.run_completed':'completed a work session',
     'member.joined':'joined the room','member.removed':'left the room','message.sent':'sent a message'
   };
+  /* A refusal is said plainly, with what was attempted and never its content: the people
+     supervising an agent should see that it reached for something it may not have. */
+  const capability=typeof event.payload?.capability==='string'?event.payload.capability.replaceAll('_',' '):null;
+  if(event.event_type==='security.denied'){
+    if(event.payload?.reason==='secret_in_content')return 'was stopped from posting something that looked like a credential';
+    return capability?`was refused: not allowed to ${capability}`:'was refused an action it is not allowed';
+  }
+  if(event.event_type==='agent.capability_changed'&&capability)
+    return event.payload?.status==='granted'?`was allowed to ${capability}`:`is no longer allowed to ${capability}`;
   return copy[event.event_type]??event.event_type.replaceAll('.',' ').replaceAll('_',' ');
 }
 

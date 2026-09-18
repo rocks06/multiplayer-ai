@@ -5,7 +5,7 @@ import fastifyStatic from "@fastify/static";
 import {existsSync} from "node:fs";
 import {join,resolve} from "node:path";
 import { z } from "zod";
-import { DomainError } from "../../../packages/domain/src/index.js";
+import { AGENT_CAPABILITIES, DomainError } from "../../../packages/domain/src/index.js";
 import { createPool, type DbPool } from "./db.js";
 import { RoomService, NOTIFICATION_LEVELS } from "./room-service.js";
 import { RealtimeHub, type RealtimeOptions } from "./realtime/realtime-hub.js";
@@ -78,7 +78,7 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
      limit that only exists in one layer is a limit somebody will find their way around. */
   const app=Fastify({logger:false,trustProxy:production,bodyLimit:52*1024*1024});
   const storage:ArtifactStorage=options.artifactStorage??storageFrom(environmentForGuard,production);
-  const artifacts=new ArtifactService(pool,storage);
+
   /* Fastify parses JSON and text and refuses everything else, so a PDF arriving as the body would
      be rejected before any of this saw it. Binary uploads are handed over as-is; the declared type
      is a claim, and what it is allowed to be is decided in the service, not here. */
@@ -122,6 +122,8 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
     return auth.principalFor(session.userId,companyId);
   };
   const service=new RoomService(pool);
+  // Files go through the same capability layer as everything else an agent does.
+  const artifacts=new ArtifactService(pool,storage,service.capabilities);
   const notifications=new NotificationFeed(pool,options.notificationSettleSeconds);
   /* A mention names a participant by id; where it sits in the text is optional for agents, which
      write "@Name" and let the server place it. Membership and the text itself are checked there. */
@@ -290,6 +292,24 @@ export function buildApp(pool:DbPool=createPool(), realtimeOptions:RealtimeOptio
   app.post('/v1/companies/:companyId/rooms/:roomId/read',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({room_seq:z.number().int().min(0)}),req.body);return service.markRoomRead(p.companyId,p.roomId,await principal(req,p.companyId),x.room_seq)});
   app.get('/v1/companies/:companyId/rooms/:roomId/notification-preference',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);return service.notificationPreference(p.companyId,p.roomId,await principal(req,p.companyId))});
   app.put('/v1/companies/:companyId/rooms/:roomId/notification-preference',async req=>{const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid()}),req.params);const x=body(z.object({level:z.enum(NOTIFICATION_LEVELS)}),req.body);return service.setNotificationPreference(p.companyId,p.roomId,await principal(req,p.companyId),x.level)});
+  /* What an agent may do in this room, and changing it.
+
+     Anyone in the room may see what an agent in it can do — people deserve to know what the agents
+     beside them can reach. Only a person managing the room may change it, and no agent route can.
+     Each capability says whether the platform enforces it today; one that is recorded but not yet
+     enforced says so, rather than being shown as a protection that is not there. */
+  app.get('/v1/companies/:companyId/rooms/:roomId/agents/:agentPrincipalId/capabilities',async req=>{
+    const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);
+    const actorId=await principal(req,p.companyId);
+    await service.snapshot(p.companyId,p.roomId,actorId);
+    return {agent_principal_id:p.agentPrincipalId,capabilities:await service.capabilities.effective(p.companyId,p.roomId,p.agentPrincipalId)};
+  });
+  app.put('/v1/companies/:companyId/rooms/:roomId/agents/:agentPrincipalId/capabilities/:capability',async req=>{
+    const p=body(z.object({companyId:z.string().uuid(),roomId:z.string().uuid(),agentPrincipalId:z.string().uuid(),capability:z.enum(AGENT_CAPABILITIES)}),req.params);
+    const x=body(z.object({status:z.enum(['granted','revoked']),expires_at:z.string().datetime({offset:true}).optional()}),req.body);
+    return {agent_principal_id:p.agentPrincipalId,capabilities:await service.capabilities.set({companyId:p.companyId,roomId:p.roomId,
+      actorId:await principal(req,p.companyId),agentPrincipalId:p.agentPrincipalId,capability:p.capability,status:x.status,expiresAt:x.expires_at})};
+  });
   /* Stopping an agent's live session is not removing it: its credential, identity and rooms are
      untouched, and the Mac it runs on reconnects it with what it already holds. */
   app.post('/v1/companies/:companyId/agents/:agentPrincipalId/disconnect',async req=>{const p=body(z.object({companyId:z.string().uuid(),agentPrincipalId:z.string().uuid()}),req.params);return service.disconnectAgentSessions(p.companyId,await principal(req,p.companyId),p.agentPrincipalId)});

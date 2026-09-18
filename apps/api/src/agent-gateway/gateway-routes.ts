@@ -94,6 +94,8 @@ export function registerAgentGatewayRoutes(app:FastifyInstance,gateway:AgentGate
         const p=parse(sessionParams,req.params);const q=parse(z.object({after_seq:z.coerce.number().int().min(0).optional()}),req.query);const auth=authorization(req);
         const s=await gateway.resumeSession(p.sessionId,auth);const afterSeq=q.after_seq;
         await limit("sockets",s.principalId);
+        // The live stream is room context, refused before it opens rather than left open and silent.
+        await rooms.capabilities.require({companyId:s.companyId,roomId:s.roomId,principalId:s.principalId,kind:"agent",capability:"read_room_messages",action:"context.stream"});
         await realtime.attach(socket,{companyId:s.companyId,roomId:s.roomId,principalId:s.principalId,afterSeq,protocol:"agent-gateway.v1",gatewaySessionId:s.sessionId,validate:async()=>{await gateway.authenticateSession(p.sessionId,auth)},onAck:seq=>gateway.acknowledge(p.sessionId,auth,seq),onDisconnect:async()=>{try{await gateway.disconnect(p.sessionId,auth)}catch{}}});
       }catch(error){const e=error instanceof DomainError?error:new DomainError("validation_error","Invalid gateway subscription",400);socket.send(JSON.stringify({type:"protocol_error",code:e.code,message:e.message}));socket.close(e.statusCode===401?4401:4403,"subscription_rejected")}})();
     });

@@ -237,7 +237,9 @@ export class RealtimeHub {
       }
       if (result.events.length === this.options.batchSize && session.lastSentSeq < latestSeq) session.rerun = true;
     } catch (error) {
-      if (error instanceof DomainError && (error.code === "room_access_denied" || error.code === "forbidden" || error.code === "gateway_session_invalid")) {
+      // Losing the right to read the room ends the stream, exactly as losing membership does.
+      if (error instanceof DomainError && (error.code === "room_access_denied" || error.code === "forbidden"
+          || error.code === "gateway_session_invalid" || error.code === "capability_denied")) {
         this.send(session,{type:"access_revoked",room_id:session.roomId});
         session.socket.close(4403,"access_revoked");
         this.sessions.delete(session);
